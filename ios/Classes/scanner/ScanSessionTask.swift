@@ -349,17 +349,26 @@ final class ScanSessionTask {
     ) async {
         guard !assets.isEmpty else { return }
 
-        // 1. Load pixel buffers concurrently; record failures immediately
+        // 1. Load pixel buffers concurrently; record failures immediately.
+        //    Capture the underlying error so it surfaces in Dart logs instead
+        //    of the opaque "pixelBuffer unavailable" message.
         var orderedBuffers: [CVPixelBuffer?] = Array(repeating: nil, count: assets.count)
-        await withTaskGroup(of: (Int, CVPixelBuffer?).self) { group in
+        var bufferErrors:   [String?]        = Array(repeating: nil, count: assets.count)
+        await withTaskGroup(of: (Int, CVPixelBuffer?, String?).self) { group in
             for (i, pair) in assets.enumerated() {
                 group.addTask {
-                    let buf = try? await analyzer.pixelBuffer(for: pair.asset)
-                    return (i, buf)
+                    do {
+                        let buf = try await analyzer.pixelBuffer(for: pair.asset)
+                        return (i, buf, nil)
+                    } catch {
+                        let desc = "\(type(of: error)): \(error.localizedDescription)"
+                        return (i, nil, desc)
+                    }
                 }
             }
-            for await (i, buf) in group {
+            for await (i, buf, err) in group {
                 orderedBuffers[i] = buf
+                bufferErrors[i]   = err
             }
         }
 
@@ -369,10 +378,12 @@ final class ScanSessionTask {
             if let buf = orderedBuffers[i] {
                 validPairs.append((i, pair.asset, buf))
             } else {
-                NSLog("[NSFW] Asset FAILED (pixelBuffer): %@", pair.asset.localIdentifier)
+                let reason = bufferErrors[i] ?? "renderToPooledBuffer returned nil"
+                NSLog("[NSFW] Asset FAILED (pixelBuffer): %@ — %@",
+                      pair.asset.localIdentifier, reason)
                 batcher.recordResult(eventSink.buildResultMap(
                     asset: pair.asset, classification: .unknown,
-                    status: "failed", errorMessage: "pixelBuffer unavailable"))
+                    status: "failed", errorMessage: "pixelBuffer unavailable: \(reason)"))
                 let s = scanned.increment()
                 batcher.recordProgress(eventSink.buildProgressMap(
                     scanned: s, total: total, isComplete: s == total, currentAsset: pair.asset))
