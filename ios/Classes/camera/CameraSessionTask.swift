@@ -48,6 +48,15 @@ final class CameraSessionTask: NSObject {
 
         session.startRunning()
         isRunning = true
+
+        // WIDGET-01 cross-phase contract — publish the configured session so
+        // the Phase-04 `NsfwCameraPreviewFactory` can attach
+        // `AVCaptureVideoPreviewLayer` to the same session the analyzer is
+        // already feeding from. One session, two outputs (data + preview).
+        let publishedSession = session
+        await MainActor.run {
+            CameraPreviewRegistry.shared.set(session: publishedSession)
+        }
     }
 
     /// Tear down the capture session, release the device input, drain any
@@ -57,6 +66,13 @@ final class CameraSessionTask: NSObject {
     func stop() async {
         guard isRunning else { return }   // double-stop is a no-op (IOS-CAM-08)
         isRunning = false
+
+        // WIDGET-01 cross-phase contract — clear the published session so
+        // any active `NsfwCameraPreviewView` detaches its preview layer
+        // before we tear the session down.
+        await MainActor.run {
+            CameraPreviewRegistry.shared.clear()
+        }
 
         // 1. Stop the capture session — no more sample buffers will arrive.
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
