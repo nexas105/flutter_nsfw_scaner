@@ -96,10 +96,16 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                     }
                 }
                 // Preload / compile the model before scanning starts.
-                // Pass the same computeUnits so the preloaded engine isn't
-                // immediately discarded by the scan session.
+                // Branch on registered kind so detector-models route to
+                // detectorEngine() instead of the classifier-only engine().
                 do {
-                    _ = try await self.modelRegistry.engine(for: config.modelId, computeUnits: config.computeUnits)
+                    if self.modelRegistry.kind(for: config.modelId) == .detector {
+                        _ = try await self.modelRegistry.detectorEngine(
+                            for: config.modelId, computeUnits: config.computeUnits)
+                    } else {
+                        _ = try await self.modelRegistry.engine(
+                            for: config.modelId, computeUnits: config.computeUnits)
+                    }
                 } catch {
                     self.eventSink.emitError(code: "PRELOAD_FAILED",
                                              message: "Model preload failed: \(error.localizedDescription)")
