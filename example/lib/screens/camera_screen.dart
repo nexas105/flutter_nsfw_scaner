@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
 
 import '../main.dart';
+import '../state/app_settings.dart';
 
 /// Live camera-scan demo screen — a peer of [GalleryScreen],
 /// [PickerScreen], and [HeadlessScanScreen].
@@ -26,9 +27,9 @@ class CameraScreen extends StatefulWidget {
 
 class _CameraScreenState extends State<CameraScreen> {
   bool _running = false;
-  // ignore: unused_field — read by feature commits TEST-02/03/04 (HUD log).
+  // ignore: unused_field — read by feature commits TEST-03/04 (HUD log).
   CameraFrameResult? _lastResult;
-  // ignore: unused_field — read by feature commits TEST-02/03/04 (error tile).
+  // ignore: unused_field — read by feature commits TEST-03/04 (error tile).
   Object? _lastError;
 
   // Force a full remount of NsfwCameraView when configuration changes
@@ -38,7 +39,73 @@ class _CameraScreenState extends State<CameraScreen> {
   // new one (which calls startCameraScan).
   int _viewKey = 0;
 
-  CameraConfiguration _currentConfig() => const CameraConfiguration();
+  // Model picker state — populated lazily from
+  // NsfwDetector.instance.availableModels() (same source as the
+  // NsfwSettingsPanel in SettingsScreen / GalleryScreen).
+  List<ModelDescriptor> _models = const [];
+  String? _modelId;
+  bool _settingsHydrated = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadModels();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_settingsHydrated) return;
+    final s = AppSettingsScope.of(context);
+    _modelId = s.cameraModelId;
+    _settingsHydrated = true;
+  }
+
+  Future<void> _loadModels() async {
+    try {
+      final list = await NsfwDetector.instance.availableModels();
+      if (!mounted) return;
+      setState(() {
+        _models = list;
+        // If the persisted modelId is unknown (e.g. a model was removed
+        // between sessions), fall back to the first available.
+        final known = list.any((m) => m.id == _modelId);
+        if (!known && list.isNotEmpty) {
+          _modelId = list.first.id;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _lastError = 'availableModels failed: $e');
+    }
+  }
+
+  CameraConfiguration _currentConfig() => CameraConfiguration(
+        modelId: _modelId ?? ModelIds.openNsfw2,
+      );
+
+  Future<void> _restartIfRunning() async {
+    if (!_running) return;
+    // Briefly drop the view so its dispose() resolves (which invokes
+    // stopCameraScan) before we mount the next one. A single frame
+    // off-screen is enough for the platform side to drain.
+    setState(() => _running = false);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted) return;
+    setState(() {
+      _viewKey += 1;
+      _running = true;
+      _lastResult = null;
+    });
+  }
+
+  Future<void> _onModelChanged(String? newId) async {
+    if (newId == null || newId == _modelId) return;
+    final settings = AppSettingsScope.of(context);
+    setState(() => _modelId = newId);
+    settings.cameraModelId = newId;
+    await _restartIfRunning();
+  }
 
   void _start() {
     if (_running) return;
@@ -99,6 +166,18 @@ class _CameraScreenState extends State<CameraScreen> {
           style: t.typography.title.copyWith(fontSize: 18),
         ),
         backgroundColor: t.surface,
+        actions: [
+          if (_models.isNotEmpty)
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: t.spacing.sm),
+              child: _ModelMenu(
+                models: _models,
+                selectedId: _modelId,
+                onSelected: _onModelChanged,
+                theme: t,
+              ),
+            ),
+        ],
       ),
       body: Stack(
         children: [
@@ -219,6 +298,76 @@ class _CameraControlsBar extends StatelessWidget {
                       ),
                     ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ModelMenu extends StatelessWidget {
+  final List<ModelDescriptor> models;
+  final String? selectedId;
+  final ValueChanged<String?> onSelected;
+  final NsfwTheme theme;
+
+  const _ModelMenu({
+    required this.models,
+    required this.selectedId,
+    required this.onSelected,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = models.firstWhere(
+      (m) => m.id == selectedId,
+      orElse: () => models.first,
+    );
+    return PopupMenuButton<String>(
+      tooltip: 'Choose model',
+      onSelected: onSelected,
+      itemBuilder: (_) => [
+        for (final m in models)
+          PopupMenuItem<String>(
+            value: m.id,
+            child: Row(
+              children: [
+                Icon(
+                  m.id == selectedId
+                      ? Icons.check_rounded
+                      : Icons.radio_button_unchecked,
+                  size: 16,
+                  color: m.id == selectedId
+                      ? theme.accent
+                      : theme.onSurfaceMuted,
+                ),
+                SizedBox(width: theme.spacing.sm),
+                Flexible(child: Text(m.displayName)),
+              ],
+            ),
+          ),
+      ],
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: theme.spacing.sm,
+          vertical: theme.spacing.xs,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.bubble_chart_outlined,
+                size: 18, color: theme.onSurface),
+            SizedBox(width: theme.spacing.xs),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 140),
+              child: Text(
+                selected.displayName,
+                style: theme.typography.label,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down_rounded, size: 18),
           ],
         ),
       ),

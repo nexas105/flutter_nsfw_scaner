@@ -15,14 +15,22 @@ class AppSettings extends ChangeNotifier {
   static const _kConfig = 'nsfw_demo.config';
   static const _kFilter = 'nsfw_demo.filter';
   static const _kTab = 'nsfw_demo.lastTabIndex';
+  static const _kCameraModelId = 'nsfw_demo.cameraModelId';
 
   final SharedPreferences _prefs;
 
   ScanConfiguration _config;
   NsfwGalleryFilter _filter;
   int _lastTabIndex;
+  String? _cameraModelId;
 
-  AppSettings._(this._prefs, this._config, this._filter, this._lastTabIndex);
+  AppSettings._(
+    this._prefs,
+    this._config,
+    this._filter,
+    this._lastTabIndex,
+    this._cameraModelId,
+  );
 
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -54,12 +62,17 @@ class AppSettings extends ChangeNotifier {
     }
 
     final tab = prefs.getInt(_kTab) ?? 0;
-    return AppSettings._(prefs, cfg, filter, tab);
+    final cameraModelId = prefs.getString(_kCameraModelId);
+    return AppSettings._(prefs, cfg, filter, tab, cameraModelId);
   }
 
   ScanConfiguration get config => _config;
   NsfwGalleryFilter get filter => _filter;
   int get lastTabIndex => _lastTabIndex;
+
+  /// Persisted camera-screen model selection. `null` means "no choice
+  /// yet" — the camera screen falls back to the first available model.
+  String? get cameraModelId => _cameraModelId;
 
   set config(ScanConfiguration v) {
     if (v == _config) return;
@@ -79,6 +92,17 @@ class AppSettings extends ChangeNotifier {
     if (v == _lastTabIndex) return;
     _lastTabIndex = v;
     _prefs.setInt(_kTab, v);
+    notifyListeners();
+  }
+
+  set cameraModelId(String? v) {
+    if (v == _cameraModelId) return;
+    _cameraModelId = v;
+    if (v == null) {
+      _prefs.remove(_kCameraModelId);
+    } else {
+      _prefs.setString(_kCameraModelId, v);
+    }
     notifyListeners();
   }
 }
