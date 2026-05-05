@@ -13,6 +13,7 @@ import '../api/camera_exceptions.dart';
 import '../api/nsfw_detector.dart';
 import 'nsfw_camera_hud.dart';
 import 'nsfw_detection_overlay.dart';
+import 'theme/nsfw_design_tokens.dart';
 import 'theme/nsfw_theme.dart';
 
 typedef CameraResultCallback = void Function(CameraFrameResult result);
@@ -51,10 +52,11 @@ class NsfwCameraView extends StatefulWidget {
   /// Whether to blur the preview when NSFW is detected.
   final bool enableBlurOnNsfw;
 
-  /// Optional blur strength when [enableBlurOnNsfw] is true.
-  final double blurSigma;
+  /// Optional override for blur strength when [enableBlurOnNsfw] is true.
+  /// When null, falls back to [NsfwGalleryTheme.cameraBlurSigma].
+  final double? blurSigma;
 
-  /// Theme for the HUD overlay elements.
+  /// Theme for the HUD overlay elements, blur strength, and tint.
   final NsfwGalleryTheme? theme;
 
   const NsfwCameraView({
@@ -65,7 +67,7 @@ class NsfwCameraView extends StatefulWidget {
     this.onPermissionDenied,
     this.showHudOverlay = true,
     this.enableBlurOnNsfw = false,
-    this.blurSigma = 10.0,
+    this.blurSigma,
     this.theme,
   });
 
@@ -120,9 +122,11 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
 
   @override
   Widget build(BuildContext context) {
+    final effectiveTheme = widget.theme ?? NsfwGalleryTheme.defaults;
     final isBlurred = widget.enableBlurOnNsfw &&
         _lastResult != null &&
         _lastResult!.isNsfw;
+    final sigma = widget.blurSigma ?? effectiveTheme.cameraBlurSigma;
 
     return Stack(
       fit: StackFit.expand,
@@ -134,12 +138,23 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
         // texture copy of analysis frames.
         _buildCameraPreview(),
 
-        // Optional blur overlay
-        if (isBlurred)
-          BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: widget.blurSigma, sigmaY: widget.blurSigma),
-            child: Container(color: Colors.black.withValues(alpha: 0.2)),
-          ),
+        // WIDGET-04 — themed blur-on-NSFW with cross-fade so a single safe
+        // frame in a stream of NSFW frames doesn't strobe the user. Sigma
+        // and tint flow through the theme.
+        AnimatedSwitcher(
+          duration: NsfwAnimations.standard.normal,
+          child: isBlurred
+              ? BackdropFilter(
+                  key: const ValueKey('nsfw-blur-on'),
+                  filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+                  child: Container(
+                    color: effectiveTheme.scaffoldBackgroundColor.withValues(
+                      alpha: effectiveTheme.cameraBlurTintOpacity,
+                    ),
+                  ),
+                )
+              : const SizedBox.shrink(key: ValueKey('nsfw-blur-off')),
+        ),
 
         // WIDGET-03 — bounding-box overlay for detection mode. Sized to the
         // same rect as the camera preview, so the painter's normalised
@@ -212,8 +227,9 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
       );
     }
     // Desktop / web fallback (also reached in widget-test runners). Themed
-    // black so the surrounding HUD still has the right background.
-    return Container(color: Colors.black);
+    // background so the surrounding HUD still has the right colour.
+    final fallbackTheme = widget.theme ?? NsfwGalleryTheme.defaults;
+    return Container(color: fallbackTheme.scaffoldBackgroundColor);
   }
 
 }
