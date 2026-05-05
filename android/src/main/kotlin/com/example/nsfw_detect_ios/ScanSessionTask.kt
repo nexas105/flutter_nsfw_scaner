@@ -455,38 +455,12 @@ class ScanSessionTask(
                             }
 
                             val detections: List<BodyPartDetection> = engine.detect(bitmap)
-                            // Aggregate per-category max confidence, then sort by NSFW priority
-                            // first, confidence second. A high-conf FACE detection must not
-                            // outrank a moderate-conf BREAST_EXPOSED — pendant to iOS
-                            // NsfwClassification.fromDetections.
-                            val perCat = HashMap<String, Float>()
-                            for (d in detections) {
-                                val prev = perCat[d.aggregatedCategory] ?: 0f
-                                if (d.confidence > prev) perCat[d.aggregatedCategory] = d.confidence
-                            }
-                            // NSFW boost: any *_EXPOSED hit (genitalia, anus, breast,
-                            // buttocks) that survived NudeNet's IoU + detection-confidence
-                            // threshold counts as authoritative. Boost the aggregated NSFW
-                            // category confidence to 1.0 so isNsfw, the gallery filter, and
-                            // the upload trigger all fire reliably — per-box scores stay
-                            // intact in the detections list. Pendant to iOS.
-                            if (perCat.containsKey("explicitNudity")) perCat["explicitNudity"] = 1f
-                            if (perCat.containsKey("nudity"))         perCat["nudity"]         = 1f
-                            val categoryRank = mapOf(
-                                "explicitNudity" to 0,
-                                "nudity" to 1,
-                                "suggestive" to 2,
-                                "safe" to 3,
-                                "unknown" to 4,
-                            )
-                            val labelsMap: List<Map<String, Any>> = perCat
-                                .entries
-                                .sortedWith(
-                                    compareBy<Map.Entry<String, Float>> {
-                                        categoryRank[it.key] ?: Int.MAX_VALUE
-                                    }.thenByDescending { it.value }
-                                )
-                                .map { mapOf("category" to it.key, "confidence" to it.value.toDouble()) }
+                            // Aggregate per-category max + NSFW boost + NSFW-priority sort.
+                            // Extracted to DetectionAggregator (Phase 03 / AND-CAM-05) so
+                            // the camera pipeline doesn't carry a second copy. Pendant to
+                            // iOS' NsfwClassification.fromDetections.
+                            val labelsMap: List<Map<String, Any>> =
+                                com.example.nsfw_detect_ios.ml.DetectionAggregator.aggregate(detections)
                             val detectionsMap: List<Map<String, Any>> = detections.map { it.toMap() }
                             val scannedAt = System.currentTimeMillis()
 
