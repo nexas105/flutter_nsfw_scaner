@@ -13,15 +13,17 @@ Enterprise-grade, on-device NSFW/nudity detection for iOS and Android photo libr
 
 ## Features
 
-- **On-device ML** — CoreML + Vision + Apple Neural Engine (iOS), TensorFlow Lite (Android)
-- **Photo library scanning** — images, videos, Live Photos
-- **Progressive streaming** — results arrive as each asset is classified, not in a batch
-- **Native picker** — `pickAndScan()` opens the system photo picker; no library permission required
-- **Direct file & bytes scanning** — `scanFile(path)` / `scanBytes(bytes)` for single-asset use-cases
-- **Video frame sampling** — uniform temporal sampling with hard-threshold fast-exit
-- **Pluggable models** — ships with OpenNSFW2, swap in Falconsai, AdamCodd, or your own
-- **Ready-to-use widgets** — `NsfwGalleryView`, `NsfwResultBadge`, `NsfwScanProgressBar`
-- **Headless API** — use `NsfwDetector.instance` directly without any UI widgets
+- **On-device ML** — CoreML + Vision + Apple Neural Engine (iOS), TensorFlow Lite (Android). No network calls, no telemetry.
+- **Two scan modes** — **classification** (per-asset NSFW probabilities, OpenNSFW2 / Falconsai / AdamCodd) and **detection** (per-asset bounding boxes for 18 body-part classes, NudeNet YOLOv8m).
+- **Photo library scanning** — images, videos, Live Photos. Incremental cache so re-scans of an unchanged 200k-asset library complete in seconds.
+- **Progressive streaming** — results arrive as each asset is classified, not in a batch. Cached items replay with `result.fromCache = true`.
+- **Native picker** — `pickAndScan()` and `pickMedia()` open the system photo picker; no library permission required.
+- **Direct file & bytes scanning** — `scanFile(path)` / `scanBytes(bytes)` for single-asset use-cases.
+- **Video frame sampling** — uniform temporal sampling with hard-threshold fast-exit.
+- **Pluggable models** — ships with OpenNSFW2, swap in Falconsai, AdamCodd, or NudeNet — all hosted on the plugin's GitHub Release (`models-v1`).
+- **Controller-based state** — `NsfwScanController` (`ChangeNotifier`) holds permission, session, items, results and progress; bind multiple views to the same controller, or let `NsfwGalleryView` own one internally.
+- **Ready-to-use widgets** — `NsfwGalleryView`, `NsfwResultBadge`, `NsfwScanProgressBar`, `NsfwDetectionOverlay` (bounding-box renderer).
+- **Headless API** — use `NsfwDetector.instance` directly without any UI widgets.
 
 ---
 
@@ -41,8 +43,10 @@ Enterprise-grade, on-device NSFW/nudity detection for iOS and Android photo libr
 
 ```yaml
 dependencies:
-  nsfw_detect: ^1.2.0
+  nsfw_detect: ^2.0.0
 ```
+
+> **Migrating from 1.x?** The two breaking changes are: `PickedMedia.mediaType` is now a `MediaType` enum (was `String`) and `NsfwGalleryView` accepts an optional `controller` parameter. See [CHANGELOG](CHANGELOG.md#200) for the full diff.
 
 ### iOS setup
 
@@ -169,7 +173,12 @@ final List<PickedMedia> items = await NsfwDetector.instance.pickMedia(
 );
 
 for (final media in items) {
-  print('${media.mediaType} — ${media.localId} (${media.width}x${media.height})');
+  // 2.0.0: media.mediaType is a MediaType enum (was a String).
+  if (media.mediaType == MediaType.video) {
+    print('video clip — ${media.localId} (${media.durationMs} ms)');
+  } else {
+    print('image — ${media.localId} (${media.width}x${media.height})');
+  }
   // Classify on demand:
   final result = await NsfwDetector.instance.scanAsset(media.localId);
 }
@@ -207,6 +216,91 @@ print(result.topCategory.displayName);
 
 Both `scanFile` and `scanBytes` accept an optional `modelId` to override the active model
 for that single call.
+
+---
+
+## Detection mode — body-part bounding boxes
+
+Switch to `ScanMode.detection` to run NudeNet (YOLOv8m) instead of a binary classifier.
+Each result then carries per-asset bounding boxes for 18 body-part classes (`FEMALE_BREAST_EXPOSED`,
+`FEMALE_GENITALIA_COVERED`, `BUTTOCKS_EXPOSED`, …) on top of the existing aggregated
+`labels` / `topCategory` / `isNsfw` fields, so all your existing classification code keeps
+working.
+
+```dart
+final session = await NsfwDetector.instance.startScan(
+  const ScanConfiguration(
+    modelId: ModelIds.nudenet,
+    mode: ScanMode.detection,
+    detectionConfidenceThreshold: 0.25,  // NudeNet per-box confidence
+    iouThreshold: 0.45,                   // NMS IoU
+    confidenceThreshold: 0.7,             // gallery / isNsfw threshold
+  ),
+);
+
+session.results.listen((ScanResult result) {
+  for (final box in result.detections ?? []) {
+    print('${box.label} @ ${(box.confidence * 100).toStringAsFixed(0)}% '
+          '[${box.aggregatedCategory}] '
+          '(${box.x.toStringAsFixed(2)}, ${box.y.toStringAsFixed(2)} '
+          '${box.width.toStringAsFixed(2)}x${box.height.toStringAsFixed(2)})');
+  }
+});
+```
+
+Coordinates are normalised `[0, 1]` with origin top-left. The `aggregatedCategory` field maps
+each raw NudeNet label onto the canonical `safe / suggestive / nudity / explicitNudity`
+buckets (e.g. `FEMALE_BREAST_EXPOSED → nudity`, `FEMALE_GENITALIA_EXPOSED → explicitNudity`).
+
+**Authoritative-NSFW behaviour:** any surviving `*_EXPOSED` detection (genitalia, anus, breast,
+buttocks) boosts the aggregated `nudity` / `explicitNudity` confidence to `1.0`, so a single
+exposed-body-part hit always flips `result.isNsfw` to `true` and triggers downstream gallery
+filters and the post-scan upload — regardless of NudeNet's own per-box score. Per-box scores
+remain available on each `BodyPartDetection` for UI rendering.
+
+The model is downloaded on first use (~46 MB compressed). To pre-warm it before the first scan:
+
+```dart
+await NsfwDetector.instance.preloadModel(ModelIds.nudenet);
+```
+
+---
+
+## Controller-based state — `NsfwScanController`
+
+Hosts can hold the scan state explicitly via `NsfwScanController` (a `ChangeNotifier`).
+Multiple views can bind to the same controller, the AppBar can rebuild on result count
+changes without `setState`, and the controller survives the host widget's lifecycle
+when wrapped in an `InheritedNotifier`.
+
+```dart
+late final NsfwScanController _controller;
+
+@override
+void didChangeDependencies() {
+  super.didChangeDependencies();
+  _controller ??= NsfwScanController(
+    initialConfig: const ScanConfiguration(),
+  );
+}
+
+@override
+void dispose() {
+  _controller.dispose();
+  super.dispose();
+}
+
+@override
+Widget build(BuildContext context) {
+  return NsfwGalleryView(
+    controller: _controller,           // ← optional; widget owns one if null
+    onResultTap: (r) { ... },
+  );
+}
+```
+
+Without the parameter, `NsfwGalleryView` builds its own controller internally — drop-in
+behaviour identical to 1.x.
 
 ---
 
@@ -325,21 +419,26 @@ const NsfwGalleryTheme(
 
 ## Models
 
-The plugin ships with **OpenNSFW2** (CoreML, ~11 MB, bundled — no download needed). Two higher-accuracy ViT models are available as on-demand downloads.
+The plugin ships with **OpenNSFW2** (CoreML, ~11 MB, bundled — no download needed). Three higher-accuracy models are available as on-demand downloads from the plugin's GitHub Release `models-v1`.
 
 ### Model IDs and sources
 
-| Constant | ID string | Input | Acc / AUC | Hosting | Original |
-|---|---|---|---|---|---|
-| `ModelIds.openNsfw2` | `opennsfw2_coreml` | 224 | ~94% | Bundled in plugin | [GantMan/nsfw_model](https://github.com/GantMan/nsfw_model) |
-| `ModelIds.falconsai` | `falconsai_nsfw` | 224 | 98.0% | GitHub Release | [Falconsai/nsfw_image_detection](https://huggingface.co/Falconsai/nsfw_image_detection) |
-| `ModelIds.adamcodd` | `adamcodd_nsfw` | 384 | AUC 0.9948 | GitHub Release | [AdamCodd/vit-base-nsfw-detector](https://huggingface.co/AdamCodd/vit-base-nsfw-detector) |
+| Constant | ID string | Kind | Input | Acc / AUC | Size (zip) | Original |
+|---|---|---|---|---|---|---|
+| `ModelIds.openNsfw2` | `opennsfw2_coreml` | classifier | 224 | ~94% | bundled (~11 MB) | [GantMan/nsfw_model](https://github.com/GantMan/nsfw_model) |
+| `ModelIds.falconsai` | `falconsai_nsfw` | classifier | 224 | 98.0% | ~75 MB | [Falconsai/nsfw_image_detection](https://huggingface.co/Falconsai/nsfw_image_detection) |
+| `ModelIds.adamcodd` | `adamcodd_nsfw` | classifier | 384 | AUC 0.9948 | ~78 MB | [AdamCodd/vit-base-nsfw-detector](https://huggingface.co/AdamCodd/vit-base-nsfw-detector) |
+| `ModelIds.nudenet` | `nudenet` | **detector** | 640 | YOLOv8m, 18 classes | ~46 MB | [notAI-tech/NudeNet](https://github.com/notAI-tech/NudeNet) |
 
-**Default download URLs** point to the GitHub Release `models-v1` of the plugin repository:
+**Default download URLs** all live on the same GitHub Release tag `models-v1`:
 
 ```
-https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/FalconsaiNSFW.mlmodelc.zip
-https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/AdamCoddNSFW.mlmodelc.zip
+https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/FalconsaiNSFW.mlmodelc.zip   (iOS, ~158 MB FP16)
+https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/FalconsaiNSFW.tflite.zip    (Android, ~75 MB INT8 weight-only)
+https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/AdamCoddNSFW.mlmodelc.zip   (iOS)
+https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/AdamCoddNSFW.tflite.zip     (Android)
+https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/NudeNetDetector.mlmodelc.zip (iOS)
+https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/NudeNetDetector.tflite.zip   (Android)
 ```
 
 GitHub Releases give 2 GB per asset and unlimited bandwidth on public repos.
