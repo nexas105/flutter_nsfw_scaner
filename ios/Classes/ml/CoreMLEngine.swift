@@ -242,25 +242,19 @@ final class CoreMLEngine: MLEngine {
         return results
     }
 
-    /// Parse MultiArray output with model-specific mappings when needed.
+    /// Parse MultiArray output. All currently supported models are 2-class:
+    ///   - OpenNSFW2:   [safe, nudity]
+    ///   - Falconsai:   [normal, nsfw]   (semantic: [safe, nudity])
+    ///   - AdamCodd:    [sfw, nsfw]      (semantic: [safe, nudity])
+    ///
+    /// Falconsai/AdamCodd are converted with classifier_config (see
+    /// tools/convert_models.py), so this path is rarely hit — Vision
+    /// returns VNClassificationObservation directly. It remains for
+    /// OpenNSFW2 (raw multiarray output) and as a defensive fallback.
     private func parseMultiArrayOutput(_ array: MLMultiArray) -> [NsfwClassification.Label] {
-        if descriptor.id == ModelIds.adamcodd {
-            let labels = Self.parseAdamCoddMultiArrayOutput(array)
-            if !labels.isEmpty {
-                return labels
-            }
-        }
-        return Self.parseGenericMultiArrayOutput(array)
-    }
-
-    /// Parse MultiArray output from models like OpenNSFW2.
-    /// Expected shape: [1, 2] where [SFW_probability, NSFW_probability]
-    /// Also handles shape [1, N] for models with more categories.
-    private static func parseGenericMultiArrayOutput(_ array: MLMultiArray) -> [NsfwClassification.Label] {
         let count = array.count
 
         if count == 2 {
-            // OpenNSFW2 format: [SFW, NSFW]
             let sfwConf  = Float(truncating: array[0])
             let nsfwConf = Float(truncating: array[1])
             return [
@@ -269,18 +263,8 @@ final class CoreMLEngine: MLEngine {
             ].sorted { $0.confidence > $1.confidence }
         }
 
-        if count >= 5 {
-            // 5-class models: [safe, suggestive, nudity, explicitNudity, unknown]
-            let categories = ["safe", "suggestive", "nudity", "explicitNudity", "unknown"]
-            var labels: [NsfwClassification.Label] = []
-            for i in 0..<min(count, categories.count) {
-                let conf = Float(truncating: array[i])
-                labels.append(NsfwClassification.Label(category: categories[i], confidence: conf))
-            }
-            return labels.sorted { $0.confidence > $1.confidence }
-        }
-
-        // Fallback: treat index 0 as safe, last as nsfw
+        // Defensive fallback for unexpected output shapes — collapse to a
+        // 2-class view by treating index 0 as safe and the last as nsfw.
         if count > 0 {
             let sfwConf  = Float(truncating: array[0])
             let nsfwConf = count > 1 ? Float(truncating: array[count - 1]) : (1.0 - sfwConf)
@@ -291,30 +275,6 @@ final class CoreMLEngine: MLEngine {
         }
 
         return []
-    }
-
-    /// AdamCodd ViT (5 logits): [drawings, hentai, neutral, porn, sexy]
-    /// Collapses source labels into the plugin's canonical categories.
-    private static func parseAdamCoddMultiArrayOutput(_ array: MLMultiArray) -> [NsfwClassification.Label] {
-        guard array.count >= 5 else { return [] }
-
-        let drawings   = Float(truncating: array[0])
-        let hentai     = Float(truncating: array[1])
-        let neutral    = Float(truncating: array[2])
-        let porn       = Float(truncating: array[3])
-        let sexy       = Float(truncating: array[4])
-
-        let safe       = max(drawings, neutral)
-        let suggestive = sexy
-        let nudity     = hentai
-        let explicit   = porn
-
-        return [
-            NsfwClassification.Label(category: "safe", confidence: safe),
-            NsfwClassification.Label(category: "suggestive", confidence: suggestive),
-            NsfwClassification.Label(category: "nudity", confidence: nudity),
-            NsfwClassification.Label(category: "explicitNudity", confidence: explicit),
-        ].sorted { $0.confidence > $1.confidence }
     }
 
     // MARK: - Helpers

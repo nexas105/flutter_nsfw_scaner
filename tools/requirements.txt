@@ -1,4 +1,4 @@
-# Pinned to versions known to round-trip ViT → CoreML cleanly.
+# Pinned to versions known to round-trip ViT → CoreML and TFLite cleanly.
 # Bump deliberately; coremltools < 7.2 has known issues with FP16 ViT conversion.
 torch>=2.1,<3.0
 transformers>=4.36,<5.0
@@ -6,3 +6,11 @@ coremltools>=7.2,<9.0
 huggingface-hub>=0.20
 pillow>=10.0
 numpy>=1.24
+
+# TFLite path (Android). ai-edge-torch is Google's official PyTorch→TFLite
+# converter (2024+); pulls a heavy tensorflow dep but is the most reliable
+# route for ViT models. Fallback path uses onnx2tf if ai-edge-torch stumbles.
+ai-edge-torch>=0.2,<1.0
+onnx>=1.15
+onnx2tf>=1.20  # fallback path
+tensorflow>=2.15,<2.18

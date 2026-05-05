@@ -120,24 +120,22 @@ class TFLiteEngine(
     private fun parseOutput(raw: FloatArray): List<NsfwLabel> {
         val n = raw.size
         if (n == 2) {
-            // OpenNSFW2 / Falconsai-style: [safe, nudity].
+            // All currently supported TFLite models are 2-class:
+            //   - OpenNSFW2:   [safe, nudity]
+            //   - Falconsai:   [normal, nsfw]   (semantic: [safe, nudity])
+            //   - AdamCodd:    [sfw, nsfw]      (semantic: [safe, nudity])
+            //
+            // For Falconsai/AdamCodd, the converted .tflite has softmax baked
+            // into the graph (see tools/convert_models.py), so raw[0] and
+            // raw[1] are already probabilities in [0, 1].
             return listOf(
                 NsfwLabel("safe", raw[0]),
                 NsfwLabel("nudity", raw[1]),
             ).sortedByDescending { it.confidence }
         }
 
-        if (n >= 5 && descriptor.id == ModelIds.ADAMCODD) {
-            return parseAdamCoddOutput(raw)
-        }
-
-        if (n >= 5) {
-            // Generic 5-class layout: [safe, suggestive, nudity, explicitNudity, unknown].
-            val cats = listOf("safe", "suggestive", "nudity", "explicitNudity", "unknown")
-            return cats.indices.map { NsfwLabel(cats[it], raw[it]) }
-                .sortedByDescending { it.confidence }
-        }
-
+        // Defensive fallback for unexpected output shapes — collapse to a
+        // 2-class view by treating raw[0] as safe and the last logit as nsfw.
         if (n > 0) {
             val safe = raw[0]
             val nsfw = if (n > 1) raw[n - 1] else (1f - safe)
@@ -148,31 +146,6 @@ class TFLiteEngine(
         }
 
         return emptyList()
-    }
-
-    /**
-     * AdamCodd ViT (5 logits): [drawings, hentai, neutral, porn, sexy].
-     * Collapses source labels onto the plugin's canonical categories — identical
-     * to Swift's `parseAdamCoddMultiArrayOutput`.
-     */
-    private fun parseAdamCoddOutput(raw: FloatArray): List<NsfwLabel> {
-        val drawings = raw[0]
-        val hentai = raw[1]
-        val neutral = raw[2]
-        val porn = raw[3]
-        val sexy = raw[4]
-
-        val safe = maxOf(drawings, neutral)
-        val suggestive = sexy
-        val nudity = hentai
-        val explicit = porn
-
-        return listOf(
-            NsfwLabel("safe", safe),
-            NsfwLabel("suggestive", suggestive),
-            NsfwLabel("nudity", nudity),
-            NsfwLabel("explicitNudity", explicit),
-        ).sortedByDescending { it.confidence }
     }
 
     // MARK: - Asset loading

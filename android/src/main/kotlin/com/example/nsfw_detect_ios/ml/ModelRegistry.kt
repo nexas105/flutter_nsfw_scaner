@@ -150,12 +150,16 @@ class ModelRegistry private constructor(appContext: Context) {
         )
         register(openNsfw2) { TFLiteEngine(appContext, it) }
 
-        // ── Downloadable (.tflite.zip variants — user must host) ────────
-        val falconsaiDefault = "https://supabasekong-l5if8m9qmfamak7llac4ob26.tjl-it.de/storage/v1/object/public/assets/models/FalconsaiNSFW.tflite.zip"
+        // ── Downloadable (.tflite.zip on GitHub Release) ────────────────
+        // The TFLite artefacts in models-v1 have ViT normalisation (2x - 1)
+        // and softmax baked into the graph (see tools/convert_models.py),
+        // so TFLiteEngine passes raw [0, 1] floats and reads [0, 1] probs
+        // directly — symmetric to iOS via Vision + ClassifierConfig.
+        val falconsaiDefault = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/FalconsaiNSFW.tflite.zip"
         val falconsai = ModelDescriptorNative(
             id = ModelIds.FALCONSAI,
             displayName = "Falconsai ViT NSFW",
-            description = "High-accuracy ViT classifier (98%). ~151 MB download.",
+            description = "High-accuracy ViT classifier (98%). ~45 MB download.",
             version = "1.0",
             bundleResourceName = "FalconsaiNSFW",
             metadata = mapOf(
@@ -164,24 +168,24 @@ class ModelRegistry private constructor(appContext: Context) {
                 "framework" to "TFLite",
             ),
             downloadUrl = resolveDownloadUrl(ModelIds.FALCONSAI, falconsaiDefault),
-            downloadSizeBytes = 151_000_000L,
+            downloadSizeBytes = 45_000_000L,
         )
         register(falconsai) { TFLiteEngine(appContext, it) }
 
-        val adamcoddDefault = "https://supabasekong-l5if8m9qmfamak7llac4ob26.tjl-it.de/storage/v1/object/public/assets/models/AdamCoddNSFW.tflite.zip"
+        val adamcoddDefault = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/AdamCoddNSFW.tflite.zip"
         val adamcodd = ModelDescriptorNative(
             id = ModelIds.ADAMCODD,
             displayName = "AdamCodd ViT NSFW",
-            description = "Highest-accuracy ViT-384 detector (AUC 0.9948). ~151 MB download.",
+            description = "Highest-accuracy ViT-384 detector (AUC 0.9948). ~45 MB download.",
             version = "1.0",
             bundleResourceName = "AdamCoddNSFW",
             metadata = mapOf(
                 "inputSize" to 384,
-                "outputSize" to 5,
+                "outputSize" to 2,
                 "framework" to "TFLite",
             ),
             downloadUrl = resolveDownloadUrl(ModelIds.ADAMCODD, adamcoddDefault),
-            downloadSizeBytes = 151_000_000L,
+            downloadSizeBytes = 45_000_000L,
         )
         register(adamcodd) { TFLiteEngine(appContext, it) }
     }
