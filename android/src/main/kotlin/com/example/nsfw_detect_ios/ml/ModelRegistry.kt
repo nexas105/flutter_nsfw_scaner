@@ -6,6 +6,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 typealias MLEngineFactory = (ModelDescriptorNative) -> MLEngine
+typealias MLDetectorEngineFactory = (ModelDescriptorNative) -> MLDetectorEngine
+
+/**
+ * Distinguishes classifier ([MLEngine]) and detector ([MLDetectorEngine])
+ * registrations. Pendant to iOS' `enum ModelKind`.
+ */
+enum class ModelKind { CLASSIFIER, DETECTOR }
 
 /**
  * Singleton registry of all known ML models. Pendant to
@@ -27,7 +34,10 @@ class ModelRegistry private constructor(appContext: Context) {
 
     private val descriptors = mutableMapOf<String, ModelDescriptorNative>()
     private val factories = mutableMapOf<String, MLEngineFactory>()
+    private val detectorFactories = mutableMapOf<String, MLDetectorEngineFactory>()
+    private val kinds = mutableMapOf<String, ModelKind>()
     private val loaded = mutableMapOf<String, MLEngine>()
+    private val loadedDetectors = mutableMapOf<String, MLDetectorEngine>()
 
     /** Coroutine-friendly lock so suspending callers don't block a worker thread. */
     private val mutex = Mutex()
@@ -42,6 +52,21 @@ class ModelRegistry private constructor(appContext: Context) {
         synchronized(this) {
             descriptors[descriptor.id] = descriptor
             factories[descriptor.id] = factory
+            kinds[descriptor.id] = ModelKind.CLASSIFIER
+        }
+    }
+
+    /**
+     * Register an object-detection ([MLDetectorEngine]) model. The descriptor
+     * SHOULD include `metadata["kind"] = "detector"` so the wire payload also
+     * reflects the kind for Dart consumers; the registry-side [kinds] map is
+     * the source of truth for routing.
+     */
+    fun registerDetector(descriptor: ModelDescriptorNative, factory: MLDetectorEngineFactory) {
+        synchronized(this) {
+            descriptors[descriptor.id] = descriptor
+            detectorFactories[descriptor.id] = factory
+            kinds[descriptor.id] = ModelKind.DETECTOR
         }
     }
 
@@ -52,6 +77,9 @@ class ModelRegistry private constructor(appContext: Context) {
     fun descriptor(id: String): ModelDescriptorNative? = synchronized(this) {
         descriptors[id]
     }
+
+    /** Whether [id] is registered as a classifier or detector. `null` if unknown. */
+    fun kind(id: String): ModelKind? = synchronized(this) { kinds[id] }
 
     // MARK: - Access
 
@@ -94,21 +122,67 @@ class ModelRegistry private constructor(appContext: Context) {
     }
 
     suspend fun preload(id: String) {
-        engine(id)
+        if (kind(id) == ModelKind.DETECTOR) {
+            detectorEngine(id)
+        } else {
+            engine(id)
+        }
+    }
+
+    /**
+     * Returns a loaded [MLDetectorEngine] for [id], creating it if necessary.
+     * Mirrors [engine] semantics: caches by id and rebuilds on delegate change.
+     */
+    suspend fun detectorEngine(id: String, delegate: String? = null): MLDetectorEngine {
+        mutex.withLock {
+            val cached = loadedDetectors[id]
+            if (cached != null) {
+                if (cached.loadedDelegate == delegate) return cached
+                loadedDetectors.remove(id)
+                cached.unload()
+            }
+        }
+
+        val (descriptor, factory) = synchronized(this) {
+            val d = descriptors[id] ?: throw MLEngineError.ModelNotFound(id)
+            val f = detectorFactories[id] ?: throw MLEngineError.ModelNotFound(id)
+            d to f
+        }
+
+        if (descriptor.requiresDownload && !descriptor.isAvailable(appContext)) {
+            throw MLEngineError.ModelNotDownloaded(id)
+        }
+
+        val engine = factory(descriptor)
+        engine.setPreferredAcceleratorDelegate(delegate)
+        engine.load()
+
+        mutex.withLock { loadedDetectors[id] = engine }
+        return engine
     }
 
     suspend fun unloadAll() {
-        val engines = mutex.withLock {
-            val copy = loaded.values.toList()
+        val classifiers: List<MLEngine>
+        val detectors: List<MLDetectorEngine>
+        mutex.withLock {
+            classifiers = loaded.values.toList()
+            detectors   = loadedDetectors.values.toList()
             loaded.clear()
-            copy
+            loadedDetectors.clear()
         }
-        engines.forEach { it.unload() }
+        classifiers.forEach { it.unload() }
+        detectors.forEach { it.unload() }
     }
 
     suspend fun unload(id: String) {
-        val engine = mutex.withLock { loaded.remove(id) }
-        engine?.unload()
+        val cls: MLEngine?
+        val det: MLDetectorEngine?
+        mutex.withLock {
+            cls = loaded.remove(id)
+            det = loadedDetectors.remove(id)
+        }
+        cls?.unload()
+        det?.unload()
     }
 
     // MARK: - Dynamic URL configuration
@@ -188,6 +262,26 @@ class ModelRegistry private constructor(appContext: Context) {
             downloadSizeBytes = 45_000_000L,
         )
         register(adamcodd) { TFLiteEngine(appContext, it) }
+
+        // ── Detector model: NudeNet (downloadable .tflite.zip) ──────────
+        // The user hosts the converted artefact themselves. Default URL is a
+        // placeholder following the existing release naming pattern.
+        val nudenetDefault = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models/NudeNetDetector.tflite.zip"
+        val nudenet = ModelDescriptorNative(
+            id = ModelIds.NUDENET,
+            displayName = "NudeNet (Detection)",
+            description = "Body-part bounding-box detector. ~50 MB.",
+            version = "1.0",
+            bundleResourceName = "NudeNetDetector",
+            metadata = mapOf(
+                "inputSize" to 320,
+                "framework" to "TFLite",
+                "kind" to "detector",
+            ),
+            downloadUrl = resolveDownloadUrl(ModelIds.NUDENET, nudenetDefault),
+            downloadSizeBytes = 50_000_000L,
+        )
+        registerDetector(nudenet) { TFLiteDetectorEngine(appContext, it) }
     }
 
     companion object {

@@ -10,4 +10,7 @@ object ModelIds {
     const val OPEN_NSFW_2 = "opennsfw2_coreml"
     const val FALCONSAI = "falconsai_nsfw"
     const val ADAMCODD = "adamcodd_nsfw"
+
+    /** Object-detection model. Registered as a [MLDetectorEngine], not [MLEngine]. */
+    const val NUDENET = "nudenet"
 }
