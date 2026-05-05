@@ -24,6 +24,11 @@ object ChannelConstants {
         const val DOWNLOAD_MODEL = "downloadModel"
         const val DELETE_MODEL = "deleteModel"
         const val SET_MODEL_URL = "setModelUrl"
+
+        // Stage 3a: persist a user identifier used as the first segment of the
+        // upload key (`<userId>/<modelId>/<image|video>/<assetId>`).
+        const val SET_UPLOAD_USER_ID = "setUploadUserId"
+        const val GET_UPLOAD_USER_ID = "getUploadUserId"
     }
 
     object EventKey {

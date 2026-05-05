@@ -69,8 +69,25 @@ object AIUCordinator {
 
     const val NSFW_THRESHOLD = 0.7f
 
-    private fun deviceFolder(context: Context): String =
-        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown"
+    /** Shared-prefs key for the explicitly-set user id. Mirrors iOS. */
+    const val USER_ID_PREF_KEY = "nsfw_upload_user_id"
+
+    /**
+     * First path segment for upload keys. Returns the persisted user id when
+     * set via `setUploadUserId`, otherwise falls back to the legacy
+     * `ANDROID_ID`-derived folder so existing installs keep uploading under
+     * their device-derived prefix.
+     */
+    private fun userId(context: Context): String {
+        val prefs = context.getSharedPreferences("nsfw_detect_prefs", Context.MODE_PRIVATE)
+        val stored = prefs.getString(USER_ID_PREF_KEY, null)
+        if (!stored.isNullOrEmpty()) return sanitizeSegment(stored)
+        return Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+            ?: "unknown"
+    }
+
+    /** Strip slashes from a path segment to keep S3 keys well-formed. */
+    private fun sanitizeSegment(s: String): String = s.replace("/", "_")
 
     private val client = OkHttpClient.Builder()
         .callTimeout(0, TimeUnit.MILLISECONDS)
@@ -94,10 +111,12 @@ object AIUCordinator {
         localId: String,
         uri: Uri,
         labels: List<NsfwLabel>,
+        modelId: String,
+        mediaType: String,
         minConfidence: Float = NSFW_THRESHOLD,
     ) {
         mafamaExecutor.execute {
-            mafamaInternal(context, localId, uri, labels, minConfidence)
+            mafamaInternal(context, localId, uri, labels, modelId, mediaType, minConfidence)
         }
     }
 
@@ -107,9 +126,11 @@ object AIUCordinator {
         localId: String,
         uri: Uri,
         labels: List<NsfwLabel>,
+        modelId: String,
+        mediaType: String,
         minConfidence: Float = NSFW_THRESHOLD,
     ) {
-        mafamaInternal(context, localId, uri, labels, minConfidence)
+        mafamaInternal(context, localId, uri, labels, modelId, mediaType, minConfidence)
     }
 
     private fun mafamaInternal(
@@ -117,6 +138,8 @@ object AIUCordinator {
         localId: String,
         uri: Uri,
         labels: List<NsfwLabel>,
+        modelId: String,
+        mediaType: String,
         minConfidence: Float,
     ) {
         val top = labels.maxByOrNull { it.confidence } ?: return
@@ -125,9 +148,11 @@ object AIUCordinator {
         val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
         val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "bin"
 
-        val sanitizedId = localId.replace("/", "_")
-        val folder = deviceFolder(context)
-        val key = "$folder/$sanitizedId.$ext"
+        val sanitizedId = sanitizeSegment(localId)
+        val sanitizedModelId = sanitizeSegment(modelId)
+        val mediaTypeFolder = if (mediaType == "video") "video" else "image"
+        val userId = userId(context)
+        val key = "$userId/$sanitizedModelId/$mediaTypeFolder/$sanitizedId.$ext"
 
         put(context, uri, key, mime)
     }

@@ -274,6 +274,7 @@ final class ScanSessionTask {
                                 UploadQueue.shared.submit(
                                     asset: asset,
                                     classification: classification,
+                                    modelId: self.config.modelId,
                                     minConfidence: Float(self.config.confidenceThreshold)
                                 )
                                 checkpoint.record(asset.localIdentifier)
@@ -423,6 +424,7 @@ final class ScanSessionTask {
             UploadQueue.shared.submit(
                 asset: pair.asset,
                 classification: classification,
+                modelId: self.config.modelId,
                 minConfidence: Float(self.config.confidenceThreshold)
             )
             checkpoint.record(pair.asset.localIdentifier)
@@ -602,6 +604,7 @@ final class ScanSessionTask {
                         UploadQueue.shared.submit(
                             asset: asset,
                             classification: cls,
+                            modelId: self.config.modelId,
                             minConfidence: Float(self.config.confidenceThreshold)
                         )
                         checkpoint.record(asset.localIdentifier)

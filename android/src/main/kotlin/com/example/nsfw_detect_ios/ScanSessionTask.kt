@@ -257,11 +257,13 @@ class ScanSessionTask(
                                 )
 
                                 AIUCordinator.enqueueMafama(
-                                    context,
-                                    asset.id.toString(),
-                                    asset.contentUri,
-                                    labels,
-                                    config.confidenceThreshold.toFloat()
+                                    context = context,
+                                    localId = asset.id.toString(),
+                                    uri = asset.contentUri,
+                                    labels = labels,
+                                    modelId = config.modelId,
+                                    mediaType = asset.mediaType,
+                                    minConfidence = config.confidenceThreshold.toFloat()
                                 )
 
                                 val count = scannedCount.incrementAndGet()
