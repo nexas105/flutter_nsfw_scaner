@@ -89,13 +89,23 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
   Future<void> _start() async {
     try {
       _session = await NsfwDetector.instance.startCameraScan(widget.config);
+      // WIDGET-05 — permission denied may arrive as either a Future throw
+      // (immediate-deny path) or a stream error from the native side
+      // (`cameraPermissionDenied` event). The listener routes the latter
+      // to onPermissionDenied so callers see one consistent entry point.
       _resultSub = _session!.results.listen(
         _onResult,
-        onError: _onError,
+        onError: (Object error) {
+          if (error is CameraPermissionDeniedException) {
+            if (mounted) widget.onPermissionDenied?.call();
+          } else {
+            _onError(error);
+          }
+        },
       );
       if (mounted) setState(() {});
     } on CameraPermissionDeniedException {
-      widget.onPermissionDenied?.call();
+      if (mounted) widget.onPermissionDenied?.call();
     } catch (e) {
       _onError(e);
     }
