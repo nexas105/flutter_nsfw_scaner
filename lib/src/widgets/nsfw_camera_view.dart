@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../api/camera_configuration.dart';
 import '../api/camera_frame_result.dart';
@@ -123,8 +126,12 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // TODO(platform-view): Replace with UiKitView/AndroidView for native camera preview.
-        Container(color: Colors.black),
+        // WIDGET-01 — native camera preview via PlatformView. iOS hosts an
+        // AVCaptureVideoPreviewLayer; Android hosts a CameraX PreviewView.
+        // Both attach to the same capture session the analyzer is feeding,
+        // via the native-side CameraPreviewRegistry. No Flutter-side
+        // texture copy of analysis frames.
+        _buildCameraPreview(),
 
         // Optional blur overlay
         if (isBlurred)
@@ -138,6 +145,43 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
           _buildHudOverlay(),
       ],
     );
+  }
+
+  /// Native camera preview via PlatformView. iOS uses [UiKitView] hosting an
+  /// `AVCaptureVideoPreviewLayer`, Android uses [AndroidView] hosting a
+  /// CameraX `PreviewView`. Both are wired natively to the same capture
+  /// session the analyzer is reading from (see [CameraPreviewRegistry] on
+  /// each platform). On unsupported platforms (desktop unit tests, web) we
+  /// fall back to a themed black container.
+  Widget _buildCameraPreview() {
+    const viewType = 'nsfw_detect_ios/camera_preview';
+    // Phase 01 didn't add `lensDirection` to CameraConfiguration; default
+    // to `back` here so the native side reads a consistent value. When the
+    // Dart type gains the field, swap this to `widget.config.lensDirection.name`.
+    final creationParams = <String, dynamic>{
+      'lensDirection': 'back',
+      'resolution': widget.config.resolution.wireValue,
+    };
+
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return UiKitView(
+        viewType: viewType,
+        creationParams: creationParams,
+        creationParamsCodec: const StandardMessageCodec(),
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+      );
+    }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return AndroidView(
+        viewType: viewType,
+        creationParams: creationParams,
+        creationParamsCodec: const StandardMessageCodec(),
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+      );
+    }
+    // Desktop / web fallback (also reached in widget-test runners). Themed
+    // black so the surrounding HUD still has the right background.
+    return Container(color: Colors.black);
   }
 
   Widget _buildHudOverlay() {
