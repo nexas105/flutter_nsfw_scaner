@@ -65,7 +65,6 @@ class MockNsfwPlatform extends NsfwPlatformInterface
       'scannedAt': DateTime.now().millisecondsSinceEpoch,
       'labels': [
         {'category': 'safe', 'confidence': 0.95},
-        {'category': 'nudity', 'confidence': 0.03},
       ],
     };
   }
@@ -172,6 +171,27 @@ void main() {
       }, confidenceThreshold: 0.7);
       expect(result.labels.first.category, NsfwCategory.nudity);
       expect(result.labels.last.category, NsfwCategory.safe);
+    });
+
+    test('topCategory prioritises NSFW categories over confidence (v2.0 sort)',
+        () {
+      final result = ScanResult.fromMap(const {
+        'localId': 'asset-1',
+        'mediaType': 'image',
+        'status': 'completed',
+        'scannedAt': 0,
+        'labels': [
+          {'category': 'safe', 'confidence': 0.95},
+          {'category': 'nudity', 'confidence': 0.03},
+        ],
+      }, confidenceThreshold: 0.7);
+
+      expect(result.topCategory, NsfwCategory.nudity,
+          reason: 'NSFW categories outrank safe regardless of confidence — '
+              'see commit 882ba2a');
+      expect(result.topConfidence, closeTo(0.03, 1e-9));
+      // isNsfw still respects threshold — 0.03 below default 0.7 stays false.
+      expect(result.isNsfw, false);
     });
   });
 
