@@ -11,7 +11,7 @@ import '../api/camera_frame_result.dart';
 import '../api/camera_scan_session.dart';
 import '../api/camera_exceptions.dart';
 import '../api/nsfw_detector.dart';
-import 'nsfw_result_badge.dart';
+import 'nsfw_camera_hud.dart';
 import 'theme/nsfw_theme.dart';
 
 typedef CameraResultCallback = void Function(CameraFrameResult result);
@@ -140,9 +140,13 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
             child: Container(color: Colors.black.withValues(alpha: 0.2)),
           ),
 
-        // HUD overlay
+        // HUD overlay — extracted into NsfwCameraHud (WIDGET-02) so it
+        // can be widget-tested in isolation.
         if (widget.showHudOverlay && _lastResult != null)
-          _buildHudOverlay(),
+          NsfwCameraHud(
+            result: _lastResult,
+            theme: widget.theme ?? NsfwGalleryTheme.defaults,
+          ),
       ],
     );
   }
@@ -184,35 +188,4 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
     return Container(color: Colors.black);
   }
 
-  Widget _buildHudOverlay() {
-    final result = _lastResult!;
-    final effectiveTheme = widget.theme ?? NsfwGalleryTheme.defaults;
-
-    return Positioned(
-      bottom: 16,
-      left: 16,
-      right: 16,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Confidence bar
-          LinearProgressIndicator(
-            value: result.topConfidence,
-            backgroundColor: effectiveTheme.safeColor.withValues(alpha: 0.3),
-            valueColor: AlwaysStoppedAnimation<Color>(
-              result.isNsfw ? effectiveTheme.nsfwColor : effectiveTheme.safeColor,
-            ),
-            minHeight: 4,
-          ),
-          const SizedBox(height: 4),
-          // Category badge
-          NsfwResultBadge(
-            result: null, // null = scanning animation
-            style: BadgeStyle.compact,
-            theme: effectiveTheme,
-          ),
-        ],
-      ),
-    );
-  }
 }
