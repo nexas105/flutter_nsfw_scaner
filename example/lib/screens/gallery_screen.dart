@@ -22,7 +22,11 @@ class _GalleryScreenState extends State<GalleryScreen> {
   /// it; the AppBar listens to the same controller via AnimatedBuilder so
   /// the live NSFW count can re-render without the screen having to mirror
   /// it back through setState.
-  late final NsfwScanController _scanController;
+  ///
+  /// Constructed lazily in [didChangeDependencies] because `AppSettingsScope`
+  /// is an InheritedWidget — `of(context)` is illegal inside [initState].
+  NsfwScanController? _scanController;
+  bool _controllerInitialized = false;
 
   int _nsfwFoundCount = 0;
   int _selectionCount = 0;
@@ -30,19 +34,20 @@ class _GalleryScreenState extends State<GalleryScreen> {
   final Set<String> _hiddenIds = {};
 
   @override
-  void initState() {
-    super.initState();
-    final settings = AppSettingsScope.of(context);
-    _scanController =
-        NsfwScanController(initialConfig: settings.config);
-    // Keep _nsfwFoundCount derived from the controller's results without
-    // needing setState explicitly — AnimatedBuilder rebuilds the AppBar.
-    _scanController.addListener(_recomputeNsfwCount);
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_controllerInitialized) {
+      final settings = AppSettingsScope.of(context);
+      _scanController = NsfwScanController(initialConfig: settings.config);
+      _scanController!.addListener(_recomputeNsfwCount);
+      _controllerInitialized = true;
+    }
   }
 
   void _recomputeNsfwCount() {
-    final next =
-        _scanController.results.values.where((r) => r.isNsfw).length;
+    final c = _scanController;
+    if (c == null) return;
+    final next = c.results.values.where((r) => r.isNsfw).length;
     if (next != _nsfwFoundCount) {
       setState(() => _nsfwFoundCount = next);
     }
@@ -50,8 +55,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
 
   @override
   void dispose() {
-    _scanController.removeListener(_recomputeNsfwCount);
-    _scanController.dispose();
+    _scanController?.removeListener(_recomputeNsfwCount);
+    _scanController?.dispose();
     super.dispose();
   }
 
@@ -83,7 +88,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
     );
     if (newConfig != null) {
       settings.config = newConfig;
-      _scanController.updateConfig(newConfig);
+      _scanController?.updateConfig(newConfig);
     }
   }
 
@@ -148,6 +153,11 @@ class _GalleryScreenState extends State<GalleryScreen> {
   Widget build(BuildContext context) {
     final settings = AppSettingsScope.of(context);
     final t = appNsfwTheme;
+    final controller = _scanController;
+    if (controller == null) {
+      // didChangeDependencies hasn't run yet — first frame after initState.
+      return const Scaffold(body: SizedBox.shrink());
+    }
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -181,7 +191,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
               ],
       ),
       body: NsfwGalleryView(
-        controller: _scanController,
+        controller: controller,
         theme: t.gallery,
         designTheme: t,
         crossAxisCount: 3,
