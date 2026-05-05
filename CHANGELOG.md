@@ -1,3 +1,9 @@
+## 2.0.1
+
+- Doc cleanup. No code changes from 2.0.0.
+
+---
+
 ## 2.0.0
 
 ### Breaking changes

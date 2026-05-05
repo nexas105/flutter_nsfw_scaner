@@ -1,9 +1,8 @@
 name: nsfw_detect
 description: >-
   On-device NSFW/nudity detection for iOS and Android photo libraries.
-  CoreML + Vision on iOS, TensorFlow Lite on Android. Progressive result
-  streaming, body part detection, and ready-to-use gallery widgets.
-version: 2.0.0
+
+version: 2.0.1
 homepage: https://pub.dev/packages/nsfw_detect
 
 topics:
