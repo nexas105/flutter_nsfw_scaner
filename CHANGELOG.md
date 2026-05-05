@@ -1,3 +1,104 @@
+## 2.1.0 (unreleased)
+
+> v2.1.0 ships a live-camera detection pipeline alongside the existing photo-library scan. Demo-app integration + integration tests are still in progress; everything else listed here is on `main` and ready to use.
+
+### New — Live camera scan pipeline
+
+- **`NsfwDetector.startCameraScan(CameraConfiguration?)` / `stopCameraScan()`** — single-session live detection. Returns a `CameraScanSession` whose `results` is a broadcast `Stream<CameraFrameResult>`. Concurrent sessions throw a `StateError`.
+- **`CameraConfiguration`** — `modelId`, `confidenceThreshold`, `mode` (classification or detection), `fps` (1–30, default 2), `resolution` (`low` / `medium` / `high`), `detectionConfidenceThreshold`, `iouThreshold`, `iosComputeUnits`, `androidDelegate`. Same model surface as the photo-library API.
+- **`CameraFrameResult`** — per-frame value type with `frameTimestamp`, sorted `labels`, optional `detections` (NudeNet boxes), tolerant `fromMap` parsing. `topCategory` / `topConfidence` / `isNsfw` mirror `ScanResult`.
+- **`CameraPermissionDeniedException`, `CameraErrorException`** — surfaced as stream errors on `CameraScanSession.results` (not as null per-frame results).
+
+### iOS native — AVCaptureSession + CoreML
+
+- `ios/Classes/camera/CameraSessionTask.swift`, `CameraFrameProcessor.swift`, `CameraConfiguration.swift`, `permissions/CameraPermission.swift`.
+- AVCaptureSession running at configurable FPS, frames thrown into the existing `MLEngine.classify(pixelBuffer:)` and `MLDetectorEngine.detect(pixelBuffer:)` paths — no duplicate inference code. Detection mode reuses NudeNet with NMS.
+- Camera-permission flow via `AVCaptureDevice.authorizationStatus` / `requestAccess(for: .video)`.
+- Lifecycle: `start`, `stop`, `restart` are graceful — no buffer leaks, CVBufferPool reuse.
+- Events multiplexed onto the existing `nsfw_detect_ios/scan_events` `EventChannel` with `type` ∈ {`cameraFrameResult`, `cameraPermissionDenied`, `cameraError`} — no new channels.
+
+### Android native — CameraX + TFLite
+
+- `android/.../camera/CameraSessionTask.kt`, `CameraFrameAnalyzer.kt`, `FpsThrottle.kt`, `ImageProxyConverter.kt`, `CameraSessionConfig.kt`, `CameraPermission.kt`, `PluginLifecycleOwner.kt`.
+- CameraX `ImageAnalysis` at the configured FPS, `ImageProxy → Bitmap → TFLite` reusing the existing `TFLiteEngine` and detector path. `ImageProxy.close()` in `finally` across all five analyzer branches.
+- `DetectionAggregator` extracted from `ScanSessionTask.runDetectionScan` so the same body-part aggregation runs identically for library and camera frames (snapshot-compared — wire shape byte-identical).
+- CameraX 1.3.4 (the last 1.3.x line) keeps `minSdkVersion 21` and stock `compileOptions`.
+
+### Flutter — `NsfwCameraView`
+
+- New widget: native preview via `UiKitView` (iOS) / `AndroidView` (Android) + HUD stack on top.
+  - iOS PlatformView factory `nsfw_detect_ios/camera_preview` attaches `AVCaptureVideoPreviewLayer` (`resizeAspectFill`).
+  - Android PlatformView wraps a `PreviewView` (`FILL_CENTER`); pulls in `androidx.camera:camera-view:1.3.4`.
+- New `NsfwCameraHud` widget — confidence bar + category label + NSFW badge. Reuses `NsfwResultBadge` via a private `ScanResult` adapter (no duplicated badge code).
+- Detection mode draws bounding boxes via the existing `NsfwDetectionOverlay` (it was already `Size`-agnostic).
+- Optional **blur on NSFW** — `BackdropFilter` + `ImageFilter.blur` wrapped in `AnimatedSwitcher` so the blur fades in/out instead of strobing on borderline frames. Configurable `blurSigma` and `enableBlurOnNsfw`.
+- Lifecycle bound to `initState` / `dispose`.
+- `NsfwGalleryTheme` extended additively with four camera-only fields: `cameraBlurSigma`, `cameraBlurTintOpacity`, `cameraConfidenceBarHeight`, `cameraHudBackgroundOpacity`. Existing `NsfwGalleryTheme(...)` callers keep working unchanged.
+
+### New — `NsfwPermissionsView`
+
+- Reusable widget that surfaces every permission the plugin needs (photo library + camera) with status, an explainer, and a Request / Open Settings action button. Auto-refreshes when the app returns from system Settings (`WidgetsBindingObserver`).
+- Plugin stays dependency-free — the "Open Settings" deep-link is delegated to the host app via the `onOpenSettings` callback. Example app pulls in `app_settings: ^5.1.1` to wire it.
+- Wired into the example app's `SettingsScreen` above `NsfwSettingsPanel`.
+- Themed via `NsfwTheme` semantic tokens (`success` / `accent` / `danger`), `Semantics`-wrapped for screen readers.
+- New types in `lib/src/api/permissions/permission_kind.dart`: `PermissionKind` (`photoLibrary`, `camera`), `PermissionStatus` (`authorized`, `limited`, `denied`, `permanentlyDenied`, `restricted`, `notDetermined`), `PhotoLibraryPermissionStatusMapping` extension.
+
+### Platform-interface additions
+
+- `NsfwPlatformInterface.startCameraScan(CameraConfiguration)` / `stopCameraScan()` — abstract; every platform must implement. Wired in `NsfwMethodChannel`.
+- `NsfwPlatformInterface.checkCameraPermission()` / `requestCameraPermission()` — non-abstract with `UnimplementedError` defaults so test mocks need only stub what they exercise. `NsfwMethodChannel` re-maps `MissingPluginException → UnimplementedError`; `NsfwDetector.checkCameraPermission()` / `requestCameraPermission()` catch and degrade gracefully to `PermissionStatus.notDetermined` on platforms without the native handler yet wired.
+
+### Fixes
+
+- **Concurrent-task crash in `ImageAnalyzer` (iOS).** `pixelBufferPool` was a `lazy var`; concurrent first-frame Tasks racing on the lazy initialisation produced a partially-written pointer, manifesting as `EXC_BAD_ACCESS` at `+0x18` inside `CVPixelBufferPool::createPixelBuffer` on cooperative-queue threads. Eager-init in `init()` instead — pool depends only on `inputSize`, no behaviour or perf change.
+- **`scanAsset returns result` test regression.** Pre-existing failure on `main` from before v2.1.0: the mock fixture mixed `safe=0.95` with `nudity=0.03`, but `ScanResult.topCategory` has been NSFW-priority-sorted since v2.0 (commit `882ba2a`). Reduced the fixture to a single unambiguous label and added an explicit test that locks in the priority-sort contract.
+
+### Example app
+
+- `example/ios/Runner/Info.plist` — adds `NSCameraUsageDescription`. iOS killed the app on `AVCaptureDevice.requestAccess` without it.
+- `example/android/app/src/main/AndroidManifest.xml` — adds `android.permission.CAMERA` + two optional `<uses-feature>` entries (`camera` + `camera.autofocus` with `required="false"`) so the Play Store doesn't filter the listing on cameraless devices.
+- `example/lib/screens/settings_screen.dart` embeds `NsfwPermissionsView`; depends on `app_settings: ^5.1.1`.
+
+### Tests
+
+- 86 → 116 plugin unit + widget tests (`+30`). Camera HUD widget tests (Phase 4), `NsfwPermissionsView` tests covering all six `PermissionStatus` variants + lifecycle resume + UnimplementedError fallback, and the explicit NSFW-priority sort test.
+
+### Migration
+
+```dart
+// New: live camera scan
+final session = await NsfwDetector.instance.startCameraScan(
+  const CameraConfiguration(fps: 2, mode: ScanMode.detection),
+);
+session.results.listen((CameraFrameResult r) {
+  if (r.isNsfw) print('NSFW @ ${r.frameTimestamp}: ${r.topCategory}');
+});
+// Or drop in the widget — it manages the session itself:
+NsfwCameraView(
+  config: const CameraConfiguration(fps: 2),
+  enableBlurOnNsfw: true,
+  showHudOverlay: true,
+);
+
+// New: permissions widget
+NsfwPermissionsView(
+  theme: appNsfwTheme,
+  onOpenSettings: AppSettings.openAppSettings, // host-app dep
+);
+```
+
+iOS callers must add to `Info.plist`:
+```xml
+<key>NSCameraUsageDescription</key>
+<string>Live NSFW detection on the camera feed.</string>
+```
+Android callers must add to `AndroidManifest.xml`:
+```xml
+<uses-permission android:name="android.permission.CAMERA"/>
+```
+
+---
+
 ## 2.0.1
 
 - Doc cleanup. No code changes from 2.0.0.
