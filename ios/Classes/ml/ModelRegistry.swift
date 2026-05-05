@@ -230,20 +230,20 @@ final class ModelRegistry {
         // placeholder following the same `models/<Name>.mlmodelc.zip` pattern
         // as the other downloadable models. Override at runtime via
         // `setModelDownloadUrl`.
-        let nudenetDefaultUrl = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models/NudeNetDetector.mlmodelc.zip"
+        let nudenetDefaultUrl = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/NudeNetDetector.mlmodelc.zip"
         let nudenet = ModelDescriptorNative(
             id:                 ModelIds.nudenet,
             displayName:        "NudeNet (Detection)",
-            description:        "Body-part bounding-box detector. ~50 MB.",
+            description:        "Body-part bounding-box detector (YOLOv8m, 640). ~46 MB download.",
             version:            "1.0",
             bundleResourceName: "NudeNetDetector",
             metadata: [
-                "inputSize": 320,
+                "inputSize": 640,
                 "framework": "CoreML",
                 "kind":      "detector",
             ],
             downloadUrl:        UserDefaults.standard.string(forKey: "nsfw_model_url_\(ModelIds.nudenet)") ?? nudenetDefaultUrl,
-            downloadSizeBytes:  50_000_000
+            downloadSizeBytes:  48_000_000
         )
         register(detectorDescriptor: nudenet) { CoreMLDetectorEngine(descriptor: $0) }
     }

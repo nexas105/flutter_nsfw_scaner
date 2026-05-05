@@ -266,20 +266,20 @@ class ModelRegistry private constructor(appContext: Context) {
         // ── Detector model: NudeNet (downloadable .tflite.zip) ──────────
         // The user hosts the converted artefact themselves. Default URL is a
         // placeholder following the existing release naming pattern.
-        val nudenetDefault = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models/NudeNetDetector.tflite.zip"
+        val nudenetDefault = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/NudeNetDetector.tflite.zip"
         val nudenet = ModelDescriptorNative(
             id = ModelIds.NUDENET,
             displayName = "NudeNet (Detection)",
-            description = "Body-part bounding-box detector. ~50 MB.",
+            description = "Body-part bounding-box detector (YOLOv8m, 640). ~46 MB download.",
             version = "1.0",
             bundleResourceName = "NudeNetDetector",
             metadata = mapOf(
-                "inputSize" to 320,
+                "inputSize" to 640,
                 "framework" to "TFLite",
                 "kind" to "detector",
             ),
             downloadUrl = resolveDownloadUrl(ModelIds.NUDENET, nudenetDefault),
-            downloadSizeBytes = 50_000_000L,
+            downloadSizeBytes = 48_000_000L,
         )
         registerDetector(nudenet) { TFLiteDetectorEngine(appContext, it) }
     }
