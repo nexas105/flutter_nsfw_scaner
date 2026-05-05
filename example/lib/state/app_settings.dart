@@ -26,6 +26,9 @@ class AppSettings extends ChangeNotifier {
   String? _cameraModelId;
   ScanMode _cameraMode;
 
+  // Session-scoped only — see `cameraBlurOnNsfw` setter doc below.
+  bool _cameraBlurOnNsfw = false;
+
   AppSettings._(
     this._prefs,
     this._config,
@@ -83,6 +86,15 @@ class AppSettings extends ChangeNotifier {
   /// Defaults to [ScanMode.classification] on first run.
   ScanMode get cameraMode => _cameraMode;
 
+  /// Whether the camera screen blurs the preview when the current frame
+  /// is NSFW. **Session-scoped only — not persisted to disk** (per
+  /// TEST-04). Survives navigation between tabs, resets to `false` on
+  /// cold start. Implementation deliberately diverges from the
+  /// disk-backed `_kConfig` / `_kFilter` / `_kTab` / `_kCameraModelId`
+  /// / `_kCameraMode` keys: the setter does not call any
+  /// `SharedPreferences` method.
+  bool get cameraBlurOnNsfw => _cameraBlurOnNsfw;
+
   set config(ScanConfiguration v) {
     if (v == _config) return;
     _config = v;
@@ -119,6 +131,13 @@ class AppSettings extends ChangeNotifier {
     if (v == _cameraMode) return;
     _cameraMode = v;
     _prefs.setString(_kCameraMode, v.wireValue);
+    notifyListeners();
+  }
+
+  /// Session-scoped — intentionally NOT persisted (see field doc).
+  set cameraBlurOnNsfw(bool v) {
+    if (v == _cameraBlurOnNsfw) return;
+    _cameraBlurOnNsfw = v;
     notifyListeners();
   }
 }
