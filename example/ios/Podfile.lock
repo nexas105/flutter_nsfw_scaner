@@ -1,0 +1,35 @@
+PODS:
+  - Flutter (1.0.0)
+  - integration_test (0.0.1):
+    - Flutter
+  - nsfw_detect (1.2.4):
+    - Flutter
+  - photo_manager (3.9.0):
+    - Flutter
+    - FlutterMacOS
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - integration_test (from `.symlinks/plugins/integration_test/ios`)
+  - nsfw_detect (from `.symlinks/plugins/nsfw_detect/ios`)
+  - photo_manager (from `.symlinks/plugins/photo_manager/darwin`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  integration_test:
+    :path: ".symlinks/plugins/integration_test/ios"
+  nsfw_detect:
+    :path: ".symlinks/plugins/nsfw_detect/ios"
+  photo_manager:
+    :path: ".symlinks/plugins/photo_manager/darwin"
+
+SPEC CHECKSUMS:
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
+  nsfw_detect: 2d4264fc6c51fbe6d24dc81148673bbf28c1a8af
+  photo_manager: 25fd77df14f4f0ba5ef99e2c61814dde77e2bceb
+
+PODFILE CHECKSUM: bd29822c3d5baf6b44b726f00ea3293a19339ef2
+
+COCOAPODS: 1.16.2

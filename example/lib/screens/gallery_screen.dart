@@ -1,0 +1,183 @@
+import 'package:flutter/material.dart';
+import 'package:nsfw_detect/nsfw_detect.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import '../main.dart';
+import '../state/app_settings.dart';
+import 'settings_screen.dart';
+import 'detail_screen.dart';
+
+class GalleryScreen extends StatefulWidget {
+  const GalleryScreen({super.key});
+
+  @override
+  State<GalleryScreen> createState() => _GalleryScreenState();
+}
+
+class _GalleryScreenState extends State<GalleryScreen> {
+  int _nsfwFoundCount = 0;
+  int _selectionCount = 0;
+  // Demo-only: locally-tracked "hidden" set, illustrates the bulk-action API.
+  final Set<String> _hiddenIds = {};
+
+  void _onResultTap(ScanResult result) {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => DetailScreen(result: result)),
+    );
+  }
+
+  void _showSummarySheet(ScanSummary summary) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => NsfwScanSummarySheet(
+        summary: summary,
+        theme: appNsfwTheme,
+        onShare: (text) =>
+            Share.share(text, subject: 'NSFW Scan Report'),
+      ),
+    );
+  }
+
+  Future<void> _openSettings() async {
+    final settings = AppSettingsScope.of(context);
+    final newConfig = await Navigator.of(context).push<ScanConfiguration>(
+      MaterialPageRoute(
+          builder: (_) => SettingsScreen(currentConfig: settings.config)),
+    );
+    if (newConfig != null) settings.config = newConfig;
+  }
+
+  void _shareBulkReport(List<ScanResult> selected) {
+    if (selected.isEmpty) return;
+    final nsfw = selected.where((r) => r.isNsfw).length;
+    final lines = StringBuffer()
+      ..writeln('NSFW Selection Report')
+      ..writeln('${selected.length} selected, $nsfw NSFW')
+      ..writeln('---');
+    for (final r in selected.take(20)) {
+      lines.writeln(
+          '${r.item.localIdentifier}: ${r.topCategory.displayName} '
+          '${(r.topConfidence * 100).toStringAsFixed(1)}%');
+    }
+    if (selected.length > 20) {
+      lines.writeln('… and ${selected.length - 20} more');
+    }
+    Share.share(
+      lines.toString().trimRight(),
+      subject: 'NSFW Selection Report',
+    );
+  }
+
+  void _hideSelected(List<ScanResult> selected) {
+    setState(() => _hiddenIds.addAll(selected.map((r) => r.item.localIdentifier)));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Hidden ${selected.length} item(s) (demo only).'),
+        backgroundColor: appNsfwTheme.surface,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = AppSettingsScope.of(context);
+    final t = appNsfwTheme;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          _selectionCount > 0
+              ? '$_selectionCount selected'
+              : 'Library Scan',
+          style: t.typography.title.copyWith(fontSize: 18),
+        ),
+        actions: _selectionCount > 0
+            ? null
+            : [
+                if (_nsfwFoundCount > 0)
+                  Padding(
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                    child: Chip(
+                      label: Text('$_nsfwFoundCount NSFW',
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white)),
+                      backgroundColor: t.gallery.nsfwColor,
+                      padding: EdgeInsets.zero,
+                      labelPadding:
+                          const EdgeInsets.symmetric(horizontal: 8),
+                    ),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.tune_rounded),
+                  onPressed: _openSettings,
+                  tooltip: 'Settings',
+                ),
+              ],
+      ),
+      body: NsfwGalleryView(
+        initialConfig: settings.config,
+        theme: t.gallery,
+        designTheme: t,
+        crossAxisCount: 3,
+        badgeStyle: BadgeStyle.compact,
+        blurNsfwTiles: false,
+        onResultTap: _onResultTap,
+        onScanComplete: (summary) {
+          setState(() => _nsfwFoundCount = summary.nsfwCount);
+          _showSummarySheet(summary);
+        },
+        thumbnailBuilder: (context, item) => _AssetThumbnail(item: item),
+        showFilterBar: true,
+        showSearchField: true,
+        filter: settings.filter,
+        onFilterChanged: (f) => settings.filter = f,
+        enableSelection: true,
+        onSelectionChanged: (sel) =>
+            setState(() => _selectionCount = sel.length),
+        bulkActions: [
+          NsfwBulkAction(
+            label: 'Share',
+            icon: Icons.share_rounded,
+            onInvoke: _shareBulkReport,
+          ),
+          NsfwBulkAction(
+            label: 'Hide',
+            icon: Icons.visibility_off_outlined,
+            tint: t.danger,
+            onInvoke: _hideSelected,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AssetThumbnail extends StatelessWidget {
+  final MediaItem item;
+  const _AssetThumbnail({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final typeInt = item.type == MediaType.video ? 2 : 1;
+    final entity = AssetEntity(
+      id: item.localIdentifier,
+      typeInt: typeInt,
+      width: item.width ?? 300,
+      height: item.height ?? 300,
+    );
+    return AssetEntityImage(
+      entity,
+      isOriginal: false,
+      thumbnailSize: const ThumbnailSize.square(300),
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => Container(
+        color: appNsfwTheme.surfaceVariant,
+        child: Icon(Icons.broken_image_outlined,
+            color: appNsfwTheme.onSurfaceMuted),
+      ),
+    );
+  }
+}

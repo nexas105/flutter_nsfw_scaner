@@ -1,0 +1,254 @@
+## 1.3.0
+
+### Performance — large library scans
+
+- **Incremental scans (iOS + Android).** Per-asset cache keyed by `(localId, modelId, modificationDate)` persisted in SQLite. A second sync of an unchanged 200k-asset library skips the ML pipeline entirely — sub-second filter pass instead of minutes of inference.
+- **Cached results are replayed by default.** `Stream<ScanResult>` stays complete; cached items are flagged via the new `ScanResult.fromCache: bool` so consumers can distinguish them.
+- **Event-sink throttling (iOS).** Per-asset `result` events are coalesced into batched `results` channel messages (50 items / 100 ms), and `progress` events are throttled to ≤ 1 per 100 ms. Reduces IPC roundtrips by ~50–100× for large libraries.
+- **Sliding-window prefetch (iOS).** `PHCachingImageManager` now releases older prefetch windows via `stopCachingImages(for:)`, keeping memory bounded regardless of library size (previously linear).
+- **Real cache hits in the `ImageAnalyzer` pipeline (iOS).** Prefetched assets are now read through the same `PHCachingImageManager` with identical options — the prefetch was previously a no-op.
+- **Throttled checkpoint writes (iOS).** Per-asset `UserDefaults` writes are coalesced (every 25 assets + at scan boundaries). Cuts disk I/O in the hot path proportionally.
+- **Batched scan-cache writes (iOS + Android).** `ScanCache.record()` now buffers in memory and flushes in groups of 50 inside a single `BEGIN…COMMIT` transaction (iOS uses one prepared statement reused via `bind`/`step`/`reset`; Android uses `SQLiteStatement` + `beginTransaction`). 200k assets go from ~200k mini-transactions to ~4k. Reads call `flush()` first to keep lookups consistent.
+- **`inSampleSize` downsampling on bitmap decode (Android).** `BitmapFactory.decodeStream(...)` previously did a full-resolution decode — a 12 MP photo allocated ~50 MB before being scaled to 224×224. Now a two-pass decode (`inJustDecodeBounds` + power-of-two `inSampleSize`) drops peak per-frame allocation by ~250×. Pendant to the iOS `ImageIO` thumbnail path.
+- **Pooled `CVPixelBuffer` + cached `CGColorSpace` (iOS).** `ImageAnalyzer` now renders frames into buffers from a `CVPixelBufferPool` instead of `CVPixelBufferCreate` per frame, and the device RGB color space is allocated once statically. ~400k allocations eliminated on a 200k-asset scan.
+
+### Performance — inference acceleration
+
+- **Configurable Core ML compute units (iOS).** New `ScanConfiguration.iosComputeUnits` exposes `MLModelConfiguration.computeUnits`. Defaults to `.all`; `cpuAndNeuralEngine` or `cpuOnly` can be faster on older devices without a dedicated ANE (no GPU roundtrip).
+- **TFLite GPU / NNAPI delegate (Android).** New `ScanConfiguration.androidDelegate` enables the `litert-gpu` or NNAPI delegate. Opt-in (default CPU) because GPU/NNAPI delegates are flaky on some device families. Falls back to CPU silently if the delegate cannot be loaded.
+- **Reused `VNCoreMLRequest` (iOS).** `CoreMLEngine.classify(pixelBuffer:)` no longer allocates a Vision request per call. One request is built at `load()` time and reused under a serializing lock — only relevant when the batch path falls back, but cleaner and cheaper.
+- **Bounded upload queue (iOS).** Per-asset `Task(priority: .background)` for the post-scan asset upload was replaced with a single-worker `actor UploadQueue`. The queue is bounded (drops oldest at 64 items) so a 200k-asset scan can no longer create 200k long-lived tasks holding `PHAsset` + `NsfwClassification` references.
+- **`OSAllocatedUnfairLock` for the scan counter (iOS 16+).** Hot-path counter swaps `NSLock` for `OSAllocatedUnfairLock<Int>`. 5–10× cheaper under contention.
+
+### New API
+
+- `ScanConfiguration.skipAlreadyScanned: bool` (default `true`) — skip assets matching a cached fingerprint.
+- `ScanConfiguration.forceRescan: bool` (default `false`) — bypass the cache for this run; cache is overwritten on completion.
+- `ScanConfiguration.replayCachedResults: bool` (default `true`) — emit cached results on hit; disable for "delta only" mode.
+- `ScanConfiguration.iosComputeUnits: IosComputeUnits` (default `.all`) — selects the Core ML compute-unit preference on iOS.
+- `ScanConfiguration.androidDelegate: AndroidDelegate?` (default `null` = CPU) — opt into the TFLite `gpu` or `nnapi` delegate on Android.
+- `NsfwDetector.instance.pickMedia({type, multiple, maxItems})` — opens the native picker and returns the selected items as `List<PickedMedia>` without classifying. Pair with `scanAsset` for on-demand classification.
+- `NsfwDetector.instance.clearScanCache({String? modelId})` — drop cached entries for one model or all.
+- `ScanResult.fromCache: bool` — `true` when the result was replayed from the persistent cache.
+
+### Internals
+
+- Schema migrations for the scan cache via `PRAGMA user_version` (iOS) / `SQLiteOpenHelper.onUpgrade` (Android), wrapped in transactions; `onDowngrade` drops + recreates rather than failing.
+- New `EventBatcher` and `CheckpointWriter` helpers in `ScanSessionTask.swift`.
+- New `UploadQueue` actor in `ios/Classes/aiu/UploadQueue.swift`.
+- `MLEngine` protocol gains `setPreferredComputeUnits(_:)` / `loadedComputeUnits`; `ModelRegistry.engine(for:computeUnits:)` recreates the cached engine if the preference changes.
+
+### Demo app
+
+- New "Skip Already Scanned" and "Force Rescan" toggles in the settings screen.
+- New "Clear Scan Cache" maintenance action.
+
+---
+
+## 1.2.8
+
+### Fixes
+
+- Fixed `ModelIds.adamcodd` runtime classification mapping on iOS (AdamCodd output classes now map correctly to plugin categories).
+- Fixed model-size handling for AdamCodd (ViT-384) in video frame sampling and file/bytes scan preprocessing.
+
+---
+
+## 1.2.7
+
+### Performance
+
+- Improved runtime threshold consistency across native processing paths.
+- Further stability refinements in background task flow under high load.
+
+### Known issue
+
+- `ModelIds.adamcodd` is currently not functional at runtime. Use `ModelIds.openNsfw2` or `ModelIds.falconsai`.
+
+---
+
+## 1.2.6
+
+### Performance
+
+- Improved native runtime scheduling stability during long scans.
+- Reduced unnecessary cancellation side effects in background task orchestration.
+
+---
+
+## 1.2.5
+
+### Fixes
+
+- Fixed example app compile issues by removing obsolete detection-only UI code from the detail screen.
+- Added a visible maintenance action in example settings to trigger `NsfwDetector.resetScan()`.
+
+---
+
+## 1.2.4
+
+### Performance
+
+- iOS method-channel heavy operations now run with utility-priority tasks to avoid accidental UI-thread contention during preload, model download, scanFile, scanBytes, and scanSingleAsset.
+- Android background dispatch switched from per-asset raw thread spawning to a bounded native worker pool with backpressure, reducing thread churn and frame-drop risk under large scans.
+
+---
+
+## 1.2.3
+
+### New features
+
+- Added `NsfwDetector.resetScan()` to reset native scan runtime state.
+- Implemented native handling on iOS and Android (`resetScan` method-channel call).
+
+---
+
+## 1.2.2
+
+### Maintenance
+
+- Native logging cleanup in platform internals.
+- No API changes.
+
+---
+
+## 1.2.1
+
+### Maintenance
+
+- Updated package metadata/topics for pub.dev discovery (`nsfw-detection`, `nudity-detection`).
+- Version sync/release housekeeping (`pubspec.yaml` + iOS podspec).
+- Minor runtime/performance cleanup: reduced logging overhead in native processing paths.
+- No API changes.
+
+---
+
+## 1.2.0
+
+### New features
+
+- **`NsfwDetector.pickAndScan({int maxItems})`** — opens the native iOS `PHPickerViewController`
+  (or Android photo picker on API 33+) and scans the selected photos/videos. Returns a
+  `ScanSession` that streams results and progress exactly like `startScan`. No photo library
+  permission required — the user picks items directly.
+- **`NsfwDetector.scanFile(String filePath)`** — classifies a single image/video from a
+  file path. Useful for scanning files from the app sandbox, document picker, etc.
+- **`NsfwDetector.scanBytes(Uint8List bytes)`** — classifies a single image supplied as raw
+  bytes (`Uint8List`). Useful when the image is already in memory (camera capture, network
+  download, clipboard, etc.).
+- Both `scanFile` and `scanBytes` accept an optional `modelId` and `confidenceThreshold` and
+  return a `ScanResult` directly (no session required).
+
+---
+
+## 1.1.5
+
+### Breaking changes
+
+- Removed `BodyPartDetection`, `BoundingBox`, `NsfwSeverity`, `DetectionSummary` — these
+  types were never backed by a running model and always returned empty/null results.
+- Removed `ScanResult.detections`, `hasDetections`, `isDetectorResult`, `detectionSummary`.
+
+---
+
+## 1.1.4
+
+### Docs
+
+- Removed body part detection section from README and CHANGELOG — feature was never implemented.
+
+---
+
+## 1.1.3
+
+### Fixes
+
+- `CoreMLEngine.classifyBatch`: removed invalid `override` keyword (protocol conformance, not subclass override)
+- `PixelBufferFeatureProvider`: changed from `struct` to `final class NSObject` — `MLFeatureProvider` is an ObjC protocol requiring a class
+- `MLModel.predictions(from:)`: added required `options: MLPredictionOptions()` parameter (iOS 16+ SDK)
+- `performBackgroundGalleryScan`: replaced internal `ModelIds.falconsai` default with string literal (public API constraint)
+
+---
+
+## 1.1.2
+
+### Improvements
+
+- **Auto model download in `startScan`** — `startScan` now automatically downloads and
+  compiles the model if it is not yet on disk. Calling `downloadModel` + `preloadModel`
+  from Dart before `startScan` is no longer needed (they still work for manual preloading).
+  All three steps run on native background threads; `startScan` returns to Dart immediately.
+- **`NsfwDetectIosPlugin.performBackgroundGalleryScan`** — new public static method for
+  running a gallery scan from a `BGProcessingTask` or similar context where no Flutter
+  engine is present. Events are silently discarded; the completion callback is called when
+  the scan finishes.
+
+---
+
+## 1.1.1
+
+### Fixes
+
+- Fixed `podspec` version (was still `1.0.0`) and removed placeholder author/homepage fields.
+- Removed placeholder `repository` URL from `pubspec.yaml`.
+
+---
+
+## 1.1.0
+
+### Performance
+
+- **CoreML batch inference** — images are now submitted to the model in batches via
+  `MLModel.predictions(from:)`, reducing ANE/GPU setup overhead from N times to once
+  per batch. Typical throughput improvement: **1.5–3× faster** on large photo libraries.
+  Videos and Live Photos are unaffected; their pipeline is unchanged.
+- Batch size is derived from the existing `concurrency` parameter — no Dart API change needed.
+- Automatic fallback: if batch prediction fails twice in a row, the engine transparently
+  reverts to the previous per-image Vision path for the remainder of the session.
+- Added `ScanConfiguration.disableBatchPrediction` (default `false`) — set to `true` to
+  force the serial Vision path, e.g. for diagnosing device-specific behaviour.
+
+---
+
+## 1.0.0
+
+Initial release.
+
+### Core API
+- `NsfwDetector.instance` singleton for all plugin operations
+- `startScan(ScanConfiguration)` → `ScanSession` with streaming results, progress, and completion
+- `ScanSession.results` — `Stream<ScanResult>` emitting results as each asset is classified
+- `ScanSession.progress` — `Stream<ScanProgress>` with scanned/total counts and fraction
+- `ScanSession.done` — `Future<ScanSummary>` resolving on completion or cancellation
+- `ScanSession.cancel()` — graceful abort at any point
+- `scanAsset(localIdentifier)` — single-asset synchronous-style scan
+- `requestPermission()` / `checkPermission()` — photo library permission handling
+- `ScanConfiguration` — immutable config: threshold, concurrency, video settings, model selection
+
+### Classification
+- Five categories: `safe`, `suggestive`, `nudity`, `explicitNudity`, `unknown`
+- `ScanResult.isNsfw`, `topCategory`, `topConfidence`, `confidenceFor(category)`
+- `ScanResult.labels` — all categories sorted by confidence
+
+### Models
+- **OpenNSFW2** (CoreML, bundled, ~11 MB) — no download needed
+- **Falconsai NSFW** and **AdamCodd NSFW** — downloadable via `downloadModel()`
+- `availableModels()`, `preloadModel()`, `downloadModel()`, `deleteModel()`, `setModelUrl()`
+
+### Widgets
+- `NsfwGalleryView` — drop-in gallery with live scan, result badges, and custom tile/thumbnail builders
+- `NsfwResultBadge` — 4 badge styles: `compact`, `detailed`, `iconOnly`, `minimal`
+- `NsfwScanProgressBar` — 3 display styles: `linear`, `compact`, `textOnly`
+- `NsfwGalleryTheme` — full color + style customization with `copyWith`
+- `NsfwScanControls` — start/stop control bar
+- `NsfwMediaTile` — composable tile widget for custom layouts
+
+### Platform support
+- **iOS 16+** — CoreML + Vision + Apple Neural Engine acceleration
+- **Android API 24+** — TensorFlow Lite inference, tiered permission handling (API 21 → 33+)
+
+### Video scanning
+- Uniform temporal frame sampling
+- Hard-threshold fast-exit (score > 0.9 → immediate flag)
+- Center-weighted aggregation to reduce title-card false positives
+- Configurable `maxVideoFrames` and `videoFrameInterval`

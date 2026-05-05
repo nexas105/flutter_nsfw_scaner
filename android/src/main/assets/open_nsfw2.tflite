@@ -1,0 +1,13 @@
+PLACEHOLDER: Replace this file with the real open_nsfw2 TFLite model.
+
+Source options:
+  1. Download from HuggingFace: search "open_nsfw2 tflite" — the converted
+     Yahoo OpenNSFW2 model expects input [1,224,224,3] float32 (values 0-1,
+     RGB order) and outputs [1,2] float32 (index 0 = SFW, index 1 = NSFW).
+  2. Convert from ONNX using tf2onnx + tflite converter or onnx-tf.
+
+Place the real .tflite file at:
+  android/src/main/assets/open_nsfw2.tflite
+
+The build system will bundle it without compression (aaptOptions noCompress "tflite").
+TFLiteEngine.kt loads it via context.assets.open("open_nsfw2.tflite").

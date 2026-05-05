@@ -1,0 +1,37 @@
+name: nsfw_detect
+description: >-
+  On-device NSFW/nudity detection for iOS and Android photo libraries.
+  CoreML + Vision on iOS, TensorFlow Lite on Android. Progressive result
+  streaming, body part detection, and ready-to-use gallery widgets.
+version: 1.2.8
+homepage: https://pub.dev/packages/nsfw_detect
+
+topics:
+  - image-recognition
+  - machine-learning
+  - content-moderation
+  - nsfw-detection
+  - nudity-detection
+
+environment:
+  sdk: ^3.4.0
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        pluginClass: NsfwDetectIosPlugin
+      android:
+        package: com.example.nsfw_detect_ios
+        pluginClass: NsfwDetectPlugin

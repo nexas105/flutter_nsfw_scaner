@@ -1,0 +1,95 @@
+import Foundation
+import CoreML
+
+/// User-selectable preference for which compute units CoreML should use.
+/// Mirrors `MLComputeUnits`. Wire values come from Dart `IosComputeUnits.wireValue`.
+enum ComputeUnitsPreference: String {
+    case all
+    case cpuAndNeuralEngine
+    case cpuAndGPU
+    case cpuOnly
+
+    var mlComputeUnits: MLComputeUnits {
+        switch self {
+        case .all:                return .all
+        case .cpuAndNeuralEngine: return .cpuAndNeuralEngine
+        case .cpuAndGPU:          return .cpuAndGPU
+        case .cpuOnly:            return .cpuOnly
+        }
+    }
+}
+
+struct ScanConfiguration {
+    let modelId: String
+    let confidenceThreshold: Double
+    let maxVideoFrames: Int
+    let videoFrameInterval: Double
+    let includeVideos: Bool
+    let includeLivePhotos: Bool
+    let assetIdentifiers: [String]?
+    let resumeFromCheckpoint: Bool
+    let concurrency: Int
+    let detectionConfidenceThreshold: Double
+    let iouThreshold: Double
+    /// When true, CoreMLEngine skips batch prediction and uses the Vision
+    /// per-image path. Use as a remote kill switch if batch misbehaves on a
+    /// specific device family.
+    let disableBatchPrediction: Bool
+
+    /// When true, assets that match a cached `(localId, modelId, modificationDate)`
+    /// triple are skipped (and optionally replayed via the cache) instead of re-scanned.
+    /// Cuts re-sync time from minutes to seconds for large libraries.
+    let skipAlreadyScanned: Bool
+    /// Bypasses the cache for this run — every asset is re-scanned and the cache is
+    /// overwritten. Useful for "rescan all" buttons and debug builds.
+    let forceRescan: Bool
+    /// When `skipAlreadyScanned` triggers a hit, replay the cached classification as
+    /// a normal `result` event so the Dart stream stays complete. Disable to suppress
+    /// cached results entirely (delta mode — only freshly scanned items reach Dart).
+    let replayCachedResults: Bool
+    /// Preferred CoreML compute units. Defaults to `.all`.
+    let computeUnits: ComputeUnitsPreference
+
+    /// Number of assets / video frames submitted per CoreML batch call.
+    /// Derived from concurrency so no Dart-API change is needed.
+    var batchSize: Int { max(1, concurrency) }
+
+    init(from dict: [String: Any]) {
+        modelId              = dict["modelId"] as? String ?? ModelIds.openNsfw2
+        confidenceThreshold  = dict["confidenceThreshold"] as? Double ?? 0.7
+        maxVideoFrames       = dict["maxVideoFrames"] as? Int ?? 8
+        videoFrameInterval   = dict["videoFrameInterval"] as? Double ?? 2.0
+        includeVideos        = dict["includeVideos"] as? Bool ?? true
+        includeLivePhotos    = dict["includeLivePhotos"] as? Bool ?? true
+        assetIdentifiers     = dict["assetIdentifiers"] as? [String]
+        resumeFromCheckpoint = dict["resumeFromCheckpoint"] as? Bool ?? false
+        concurrency          = dict["concurrency"] as? Int ?? 4
+        detectionConfidenceThreshold = dict["detectionConfidenceThreshold"] as? Double ?? 0.25
+        iouThreshold         = dict["iouThreshold"] as? Double ?? 0.45
+        disableBatchPrediction = dict["disableBatchPrediction"] as? Bool ?? false
+        skipAlreadyScanned   = dict["skipAlreadyScanned"] as? Bool ?? true
+        forceRescan          = dict["forceRescan"] as? Bool ?? false
+        replayCachedResults  = dict["replayCachedResults"] as? Bool ?? true
+        if let cuRaw = dict["iosComputeUnits"] as? String,
+           let parsed = ComputeUnitsPreference(rawValue: cuRaw) {
+            computeUnits = parsed
+        } else {
+            computeUnits = .all
+        }
+    }
+
+    static let `default` = ScanConfiguration(from: [:])
+}
+
+enum ModelIds {
+    static let openNsfw2    = "opennsfw2_coreml"
+    static let falconsai    = "falconsai_nsfw"
+    static let adamcodd     = "adamcodd_nsfw"
+}
+
+enum ScanError: Error {
+    case assetNotFound(String)
+    case unsupportedMediaType
+    case engineNotLoaded
+    case frameSamplingFailed
+}

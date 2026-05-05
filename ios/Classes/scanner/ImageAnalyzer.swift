@@ -1,0 +1,255 @@
+import Foundation
+import Photos
+import CoreImage
+import UIKit
+import ImageIO
+
+/// Fetches a PHAsset image and converts it to a CVPixelBuffer for ML inference.
+///
+/// Two paths:
+///  - When given a `PHCachingImageManager`, uses `requestImage(targetSize:contentMode:)`
+///    so that prefetched assets actually hit the cache. Options must match the ones
+///    passed to `startCachingImages` exactly, or Photos treats the request as a miss.
+///  - Otherwise, falls back to `requestImageDataAndOrientation` + ImageIO thumbnailing,
+///    which avoids a full-resolution decode for one-shot scans.
+final class ImageAnalyzer {
+
+    private let inputSize: Int
+    private let targetSize: CGSize
+    private let imageManager: PHImageManager
+
+    /// Color space is immutable — share one across the whole process instead of
+    /// rebuilding it for every CGContext.
+    fileprivate static let sharedDeviceRGB: CGColorSpace = CGColorSpaceCreateDeviceRGB()
+
+    /// Reuses CVPixelBuffer-backed IOSurfaces across frames. Lazy because the
+    /// pool is tied to `inputSize` × `inputSize` × BGRA — built once on first use.
+    /// `nil` if pool creation fails; we then fall back to per-frame CVPixelBufferCreate.
+    private lazy var pixelBufferPool: CVPixelBufferPool? = makePixelBufferPool()
+
+    init(inputSize: Int = 224, imageManager: PHImageManager = PHImageManager.default()) {
+        self.inputSize = inputSize
+        self.targetSize = CGSize(width: inputSize, height: inputSize)
+        self.imageManager = imageManager
+    }
+
+    private func makePixelBufferPool() -> CVPixelBufferPool? {
+        let pixelBufferAttrs: [CFString: Any] = [
+            kCVPixelBufferPixelFormatTypeKey:              kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey:                        inputSize,
+            kCVPixelBufferHeightKey:                       inputSize,
+            kCVPixelBufferIOSurfacePropertiesKey:          [:] as [String: Any],
+            kCVPixelBufferCGImageCompatibilityKey:         true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+        ]
+        let poolAttrs: [CFString: Any] = [
+            kCVPixelBufferPoolMinimumBufferCountKey: 4,
+        ]
+        var pool: CVPixelBufferPool?
+        let status = CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            poolAttrs as CFDictionary,
+            pixelBufferAttrs as CFDictionary,
+            &pool
+        )
+        return status == kCVReturnSuccess ? pool : nil
+    }
+
+    private func renderToPooledBuffer(_ cgImage: CGImage) -> CVPixelBuffer? {
+        var buffer: CVPixelBuffer?
+        if let pool = pixelBufferPool {
+            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer)
+        }
+        // Fallback to one-shot allocation if the pool is unavailable.
+        if buffer == nil {
+            return cgImage.toPixelBuffer(size: targetSize)
+        }
+        guard let pixelBuffer = buffer else { return nil }
+
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+        guard let ctx = CGContext(
+            data:              CVPixelBufferGetBaseAddress(pixelBuffer),
+            width:             inputSize,
+            height:            inputSize,
+            bitsPerComponent:  8,
+            bytesPerRow:       CVPixelBufferGetBytesPerRow(pixelBuffer),
+            space:             ImageAnalyzer.sharedDeviceRGB,
+            bitmapInfo:        CGBitmapInfo.byteOrder32Little.rawValue |
+                               CGImageAlphaInfo.premultipliedFirst.rawValue
+        ) else { return nil }
+
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: inputSize, height: inputSize))
+        return pixelBuffer
+    }
+
+    /// Shared request options. Prefetcher and analyzer MUST use identical settings,
+    /// otherwise PHCachingImageManager treats the request as a cache miss.
+    static func makeRequestOptions() -> PHImageRequestOptions {
+        let opts = PHImageRequestOptions()
+        opts.isNetworkAccessAllowed = true
+        opts.isSynchronous = false
+        opts.deliveryMode = .fastFormat
+        opts.resizeMode = .fast
+        return opts
+    }
+
+    func pixelBuffer(for asset: PHAsset) async throws -> CVPixelBuffer {
+        let cgImage = try await fetchCGImage(for: asset)
+        guard let buffer = renderToPooledBuffer(cgImage) else {
+            throw ScanError.frameSamplingFailed
+        }
+        return buffer
+    }
+
+    private func fetchCGImage(for asset: PHAsset) async throws -> CGImage {
+        // Caching path — only meaningful if imageManager is a PHCachingImageManager
+        // that has already started caching this asset at the same targetSize/contentMode/options.
+        if imageManager is PHCachingImageManager {
+            return try await fetchViaImageManager(asset: asset)
+        }
+        return try await fetchViaImageData(asset: asset)
+    }
+
+    private func fetchViaImageManager(asset: PHAsset) async throws -> CGImage {
+        try await withCheckedThrowingContinuation { continuation in
+            var hasResumed = false
+            let resumeOnce: (Result<CGImage, Error>) -> Void = { result in
+                guard !hasResumed else { return }
+                hasResumed = true
+                switch result {
+                case .success(let img): continuation.resume(returning: img)
+                case .failure(let err): continuation.resume(throwing: err)
+                }
+            }
+
+            let opts = ImageAnalyzer.makeRequestOptions()
+            imageManager.requestImage(
+                for: asset,
+                targetSize: targetSize,
+                contentMode: .aspectFill,
+                options: opts
+            ) { image, info in
+                if let error = info?[PHImageErrorKey] as? Error {
+                    resumeOnce(.failure(error))
+                    return
+                }
+                if let cancelled = info?[PHImageCancelledKey] as? Bool, cancelled {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
+                    return
+                }
+                // Skip degraded preview frames — wait for the final image.
+                if let degraded = info?[PHImageResultIsDegradedKey] as? Bool, degraded {
+                    return
+                }
+                guard let img = image, let cg = img.cgImage else {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
+                    return
+                }
+                resumeOnce(.success(cg))
+            }
+        }
+    }
+
+    private func fetchViaImageData(asset: PHAsset) async throws -> CGImage {
+        try await withCheckedThrowingContinuation { continuation in
+            let opts = PHImageRequestOptions()
+            opts.isNetworkAccessAllowed = true
+            opts.isSynchronous = false
+            opts.deliveryMode = .fastFormat
+
+            var hasResumed = false
+            let resumeOnce: (Result<CGImage, Error>) -> Void = { result in
+                guard !hasResumed else { return }
+                hasResumed = true
+                switch result {
+                case .success(let img): continuation.resume(returning: img)
+                case .failure(let err): continuation.resume(throwing: err)
+                }
+            }
+
+            PHImageManager.default().requestImageDataAndOrientation(
+                for: asset,
+                options: opts
+            ) { data, _, _, info in
+                if let error = info?[PHImageErrorKey] as? Error {
+                    resumeOnce(.failure(error))
+                    return
+                }
+                if let cancelled = info?[PHImageCancelledKey] as? Bool, cancelled {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
+                    return
+                }
+                guard let data = data else {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
+                    return
+                }
+
+                // Use ImageIO to create a downscaled thumbnail directly from compressed data.
+                // This is MUCH faster than decoding full resolution then scaling.
+                guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
+                    return
+                }
+
+                let maxPixel = Int(max(self.targetSize.width, self.targetSize.height))
+                let thumbnailOptions: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                ]
+
+                if let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) {
+                    resumeOnce(.success(thumbnail))
+                } else if let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                    resumeOnce(.success(cgImage))
+                } else {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
+                }
+            }
+        }
+    }
+}
+
+extension CGImage {
+    /// Renders the CGImage into a CVPixelBuffer at the given size.
+    /// Uses BGRA pixel format — the native format for Vision/CoreML on iOS.
+    func toPixelBuffer(size: CGSize) -> CVPixelBuffer? {
+        let width  = Int(size.width)
+        let height = Int(size.height)
+
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey:         true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey:          [:] as [String: Any],
+        ]
+        var pixelBuffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA,
+            attrs as CFDictionary,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else { return nil }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let ctx = CGContext(
+            data:              CVPixelBufferGetBaseAddress(buffer),
+            width:             width,
+            height:            height,
+            bitsPerComponent:  8,
+            bytesPerRow:       CVPixelBufferGetBytesPerRow(buffer),
+            space:             ImageAnalyzer.sharedDeviceRGB,
+            bitmapInfo:        CGBitmapInfo.byteOrder32Little.rawValue |
+                               CGImageAlphaInfo.premultipliedFirst.rawValue
+        ) else { return nil }
+
+        ctx.draw(self, in: CGRect(origin: .zero, size: size))
+        return buffer
+    }
+}

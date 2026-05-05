@@ -1,0 +1,20 @@
+# Dev-only planning & tooling — not part of the published package
+.planning/
+scripts/
+tools/
+models_cache/
+
+# Python virtualenvs / caches (tools/convert_models.py)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS & editor artefacts
+.DS_Store
+*.swp
+
+# Build outputs
+build/
+.dart_tool/

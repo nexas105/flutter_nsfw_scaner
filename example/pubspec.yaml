@@ -1,0 +1,27 @@
+name: nsfw_detect_ios_example
+description: Demonstrates the nsfw_detect_ios plugin — gallery view, headless API, and detail screen.
+publish_to: 'none'
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  nsfw_detect:
+    path: ../
+  cupertino_icons: ^1.0.8
+  photo_manager: ^3.6.3
+  photo_manager_image_provider: ^2.2.0
+  shared_preferences: ^2.3.0
+  share_plus: ^10.1.0
+
+dev_dependencies:
+  integration_test:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
