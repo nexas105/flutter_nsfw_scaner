@@ -56,10 +56,16 @@ class ModelDescriptor {
         'isDownloaded': isDownloaded,
       };
 
+  /// True when this descriptor advertises itself as an object-detection
+  /// model (e.g. NudeNet) via `metadata["kind"] == "detector"`. Defaults to
+  /// false so classifier models keep working unchanged.
+  bool get isDetector => metadata['kind'] == 'detector';
+
   // Built-in model IDs
   static const String openNsfw2 = 'opennsfw2_coreml';
   static const String falconsai = 'falconsai_nsfw';
   static const String adamcodd = 'adamcodd_nsfw';
+  static const String nudenet = 'nudenet';
 
   @override
   bool operator ==(Object other) => identical(this, other) || other is ModelDescriptor && id == other.id;
