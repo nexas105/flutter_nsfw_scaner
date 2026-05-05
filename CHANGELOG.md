@@ -1,5 +1,28 @@
 ## 1.3.0
 
+### Object detection — body-part bounding boxes
+
+- **NudeNet detector (iOS + Android).** New detection mode runs a YOLOv8-based 18-class body-part detector and emits bounding boxes per asset (e.g. `FEMALE_BREAST_EXPOSED`, `FEMALE_GENITALIA_COVERED`, …). Hosted as a downloadable model — `~46 MB` `.mlmodelc.zip` (CoreML, with NMS pipeline producing `VNRecognizedObjectObservation`) / `.tflite.zip` (TFLite raw YOLO; Kotlin runs class-aware NMS at IoU 0.45). `inputSize` 640 for accuracy.
+- **`MLDetectorEngine` protocol (iOS + Android).** First-class peer to `MLEngine` so the registry can hold both classifier and detector kinds. `kind(for: id)` distinguishes the two; `detectorEngine(for:)` / `engine(for:)` route to the correct factory.
+- **Detection-mode scan pipeline.** When `ScanConfiguration.mode == "detection"` (or the chosen `modelId` is registered as a detector), `ScanSessionTask` routes pixel buffers through `detect(...)` and aggregates per-category max confidence into `result.labels` so the existing `topCategory` / `isNsfw` semantics keep working — extra raw boxes are stashed on `result.detections`.
+- **NSFW priority sort.** Detection aggregation now sorts categories by NSFW priority (`explicitNudity → nudity → suggestive → safe → unknown`) before confidence. A high-confidence `FACE_FEMALE` no longer outranks a moderate-confidence `FEMALE_BREAST_EXPOSED` — any `*_EXPOSED` hit at or above the detection threshold flips the result to NSFW.
+- **`NsfwDetectionOverlay` widget.** Drop-in overlay that renders detection boxes + labels + confidence on top of any image tile. Categories colour-coded via the existing theme tokens.
+- **`ScanCache` schema v2.** New `detections_json` column persists raw bounding boxes per cached entry; cache hits replay both labels and detections. Migrations are wrapped in transactions; downgrade drops + recreates.
+
+### Models
+
+- **`models-v1` GitHub Release** consolidates all on-device artefacts as a single source of truth (Falconsai, AdamCodd, OpenNSFW2, NudeNetDetector). Defaults in both registries point there.
+- **Falconsai + AdamCodd Android.** TFLite parity. ViT normalisation `(2x − 1)` and softmax baked into the graph so Kotlin passes raw `[0, 1]` floats and reads `[0, 1]` probabilities directly — symmetric to iOS via `classifier_config`. INT8 weight-only post-quantisation gets the artefacts to ~75 MB without measurable accuracy loss.
+- **Reproducible conversion.** New `tools/convert_models.py` (CoreML), `tools/convert_tflite.py` (TFLite, runs in a separate venv to avoid the LLVM CLI clash between `tensorflow` and `jax`), and `tools/convert_nudenet.py` (ultralytics YOLO export → both formats). Each script is idempotent and gates download-then-convert from the upstream HuggingFace / GitHub source.
+
+### Fixes
+
+- **`PHPhotosError 3303` fallback (iOS).** When `PHCachingImageManager` refuses an asset (limited library, iCloud-only without network, cache edge cases), the analyzer retries via `PHImageManager.default()` + `requestImageDataAndOrientation`. Recovers most assets that previously surfaced as opaque "pixelBuffer unavailable".
+- **Detector preload (iOS).** `preloadModel` and the implicit preload inside `startScan` both went through the classifier-only `engine(for:)` factory map and 404'd every detector model. Routes now branch on `kind(for: id)`.
+- **Softmax for ViT classifiers (iOS).** Falconsai / AdamCodd CoreML models emit raw logits via `classifier_config`. Vision passes those through as `confidence`, producing values like `nudity=357%, safe=−240%`. `CoreMLEngine` now applies a numerically-stable softmax client-side, so confidences land back in `[0, 1]` and the gallery's default `0..1` filter shows the NSFW hits.
+- **Surfaced video skip reasons.** "Skipped" status now carries the underlying cause (zero-duration AVAsset, empty sample times, etc.) in `result.errorMessage` instead of disappearing silently.
+- **Surfaced pixel-buffer errors.** Error from the per-asset image fetch is captured per-asset and propagated to `result.errorMessage` instead of being swallowed by `try?`.
+
 ### Performance — large library scans
 
 - **Incremental scans (iOS + Android).** Per-asset cache keyed by `(localId, modelId, modificationDate)` persisted in SQLite. A second sync of an unchanged 200k-asset library skips the ML pipeline entirely — sub-second filter pass instead of minutes of inference.
