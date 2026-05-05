@@ -60,12 +60,42 @@ class ScanResult {
   double confidenceFor(NsfwCategory category) =>
       labels.where((l) => l.category == category).firstOrNull?.confidence ?? 0.0;
 
+  /// Priority order used in [ScanResult.fromMap] to break confidence ties so
+  /// `topCategory` always surfaces NSFW over SFW when both are present.
+  /// Lower value = higher priority. Mirrors the native-side sort in
+  /// `NsfwClassification.fromDetections` (iOS) and `ScanSessionTask.kt`
+  /// detection aggregation (Android).
+  static int _categoryRank(NsfwCategory c) {
+    switch (c) {
+      case NsfwCategory.explicitNudity:
+        return 0;
+      case NsfwCategory.nudity:
+        return 1;
+      case NsfwCategory.suggestive:
+        return 2;
+      case NsfwCategory.safe:
+        return 3;
+      case NsfwCategory.unknown:
+        return 4;
+    }
+  }
+
   factory ScanResult.fromMap(Map<dynamic, dynamic> map, {double confidenceThreshold = 0.7}) {
     final rawLabels = (map['labels'] as List<dynamic>?) ?? [];
+    // Sort by NSFW priority FIRST, then confidence within each tier — a
+    // detection result with both `BELLY_EXPOSED` (safe, 100%) and
+    // `FEMALE_BREAST_EXPOSED` (nudity, 100%) must surface as topCategory =
+    // nudity, not topCategory = safe (which is what a pure-confidence sort
+    // would yield on a tie).
     final labels = rawLabels
         .map((l) => NsfwLabel.fromMap(l as Map<dynamic, dynamic>))
         .toList()
-      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+      ..sort((a, b) {
+        final ra = _categoryRank(a.category);
+        final rb = _categoryRank(b.category);
+        if (ra != rb) return ra.compareTo(rb);
+        return b.confidence.compareTo(a.confidence);
+      });
 
     final rawDetections = map['detections'];
     List<BodyPartDetection>? detections;
