@@ -107,9 +107,29 @@ final class ImageAnalyzer {
         // Caching path — only meaningful if imageManager is a PHCachingImageManager
         // that has already started caching this asset at the same targetSize/contentMode/options.
         if imageManager is PHCachingImageManager {
-            return try await fetchViaImageManager(asset: asset)
+            do {
+                return try await fetchViaImageManager(asset: asset)
+            } catch let nsErr as NSError where Self.isPHResourceUnavailable(nsErr) {
+                // PHCachingImageManager refuses some assets in limited-library
+                // / iCloud-only scenarios with PHPhotosError 3303
+                // (invalidResource). PHImageManager.default() with explicit
+                // requestImageDataAndOrientation often succeeds where the
+                // cache path fails — try that as a second-chance.
+                NSLog("[NSFW] CachingManager failed (3303), retrying via PHImageManager.default(): %@",
+                      asset.localIdentifier)
+                return try await fetchViaImageData(asset: asset)
+            }
         }
         return try await fetchViaImageData(asset: asset)
+    }
+
+    /// `PHPhotosErrorDomain` 3303 = `PHPhotosErrorInvalidResource`.
+    /// Apple uses the same code for "asset not in granted limited library",
+    /// "iCloud-only and no network", and a handful of cache-edge-cases —
+    /// all of which the data-based fetch (PHImageManager.default()) can
+    /// usually still recover.
+    private static func isPHResourceUnavailable(_ err: NSError) -> Bool {
+        return err.domain == "PHPhotosErrorDomain" && err.code == 3303
     }
 
     private func fetchViaImageManager(asset: PHAsset) async throws -> CGImage {
