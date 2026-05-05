@@ -464,6 +464,14 @@ class ScanSessionTask(
                                 val prev = perCat[d.aggregatedCategory] ?: 0f
                                 if (d.confidence > prev) perCat[d.aggregatedCategory] = d.confidence
                             }
+                            // NSFW boost: any *_EXPOSED hit (genitalia, anus, breast,
+                            // buttocks) that survived NudeNet's IoU + detection-confidence
+                            // threshold counts as authoritative. Boost the aggregated NSFW
+                            // category confidence to 1.0 so isNsfw, the gallery filter, and
+                            // the upload trigger all fire reliably — per-box scores stay
+                            // intact in the detections list. Pendant to iOS.
+                            if (perCat.containsKey("explicitNudity")) perCat["explicitNudity"] = 1f
+                            if (perCat.containsKey("nudity"))         perCat["nudity"]         = 1f
                             val categoryRank = mapOf(
                                 "explicitNudity" to 0,
                                 "nudity" to 1,

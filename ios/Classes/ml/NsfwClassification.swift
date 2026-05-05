@@ -72,6 +72,14 @@ struct NsfwClassification {
             }
         }
 
+        // NSFW boost: any `*_EXPOSED` hit (genitalia, anus, breast, buttocks)
+        // that survived NudeNet's IoU + detection-confidence threshold counts
+        // as authoritative. Boost the aggregated NSFW category confidence to
+        // 1.0 so `isNsfw`, the gallery filter, and the post-scan upload all
+        // fire reliably — without losing the per-box scores in `detections`.
+        if perCategory["explicitNudity"] != nil { perCategory["explicitNudity"] = 1.0 }
+        if perCategory["nudity"]         != nil { perCategory["nudity"]         = 1.0 }
+
         // Sort by NSFW priority FIRST, then by confidence within each tier.
         // A high-confidence FACE_FEMALE (category "safe") must NOT outrank a
         // moderate-confidence FEMALE_BREAST_EXPOSED (category "nudity") when
