@@ -31,6 +31,17 @@ final class ScanSessionTask {
     private func runScan() async {
         do {
             NSLog("[NSFW] Starting scan with model: %@", config.modelId)
+
+            // Branch on detector kind. Detection-mode runs through a parallel
+            // pipeline that emits NudeNet-style bounding boxes; classification
+            // mode keeps the existing batch-classifier path untouched.
+            let kind = ModelRegistry.shared.kind(for: config.modelId)
+            let isDetectionMode = (config.mode == "detection") || (kind == .detector)
+            if isDetectionMode {
+                try await runDetectionScan()
+                return
+            }
+
             let engine     = try await ModelRegistry.shared.engine(for: config.modelId, computeUnits: config.computeUnits)
             engine.configure(
                 detectionConfidence: Float(config.detectionConfidenceThreshold),
@@ -446,6 +457,203 @@ final class ScanSessionTask {
                   let conf = dict["confidence"] as? Double else { return nil }
             return NsfwClassification.Label(category: cat, confidence: Float(conf))
         }
+    }
+
+    // MARK: - Detection-mode scan (NudeNet bounding-box pipeline)
+
+    /// Detection-mode parallel of `runScan()`. Reuses the same checkpoint /
+    /// progress / cache / event-batcher plumbing but routes pixel buffers
+    /// through `MLDetectorEngine.detect(...)` and converts the boxes into a
+    /// classifier-shaped `NsfwClassification` so the rest of the pipeline
+    /// (UploadQueue, EventBatcher, ScanCache) keeps working unchanged.
+    ///
+    /// Videos are not supported in detection mode in Phase B — we run the
+    /// detector on the first sampled frame and report that. (The hard-coded
+    /// per-frame detector can grow into proper aggregation in a later phase.)
+    private func runDetectionScan() async throws {
+        NSLog("[NSFW] Starting DETECTION scan with model: %@", config.modelId)
+        let engine = try await ModelRegistry.shared.detectorEngine(
+            for: config.modelId, computeUnits: config.computeUnits
+        )
+        engine.setMinConfidence(Float(config.detectionConfidenceThreshold))
+        let inputSize  = engine.descriptor.metadata["inputSize"] as? Int ?? 320
+        let sampler    = VideoFrameSampler()
+
+        let cachingManager = PHCachingImageManager()
+        cachingManager.allowsCachingHighQualityImages = false
+        let analyzer = ImageAnalyzer(inputSize: inputSize, imageManager: cachingManager)
+
+        let fetchOptions = PHFetchOptions()
+        fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        if !config.includeVideos {
+            fetchOptions.predicate = NSPredicate(
+                format: "mediaType == %d",
+                PHAssetMediaType.image.rawValue
+            )
+        }
+        let fetchResult: PHFetchResult<PHAsset>
+        if let ids = config.assetIdentifiers {
+            fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: fetchOptions)
+        } else {
+            fetchResult = PHAsset.fetchAssets(with: fetchOptions)
+        }
+
+        let total   = fetchResult.count
+        let scanned = Counter()
+        let batcher = EventBatcher(sink: eventSink, intervalMs: 100, maxBatch: 50)
+        let checkpointKey = "nsfw_scan_checkpoint"
+        let checkpoint    = CheckpointWriter(key: checkpointKey, everyN: 25)
+
+        let cacheActive  = config.skipAlreadyScanned && !config.forceRescan
+        let cacheModelId = config.modelId
+        let fingerprints: [String: Int64] = {
+            guard cacheActive else { return [:] }
+            ScanCache.shared.openIfNeeded()
+            return ScanCache.shared.loadFingerprints(modelId: cacheModelId)
+        }()
+
+        let maxConcurrent = max(1, config.concurrency)
+
+        await withTaskGroup(of: Void.self) { group in
+            var queued = 0
+            for index in 0..<total {
+                guard !Task.isCancelled else { break }
+                let asset = fetchResult.object(at: index)
+
+                // Cache hit short-circuit. Detection results live in the
+                // detections_json column added in schema v2; classifier
+                // labels_json may be empty for detection-only entries, so
+                // we replay both.
+                if cacheActive,
+                   let cachedMod = fingerprints[asset.localIdentifier],
+                   cachedMod == Self.modificationMs(asset) {
+                    if config.replayCachedResults,
+                       let rec = ScanCache.shared.cachedRecord(
+                           localIdentifier: asset.localIdentifier,
+                           modelId: cacheModelId,
+                           modificationDateMs: cachedMod) {
+                        let labels = Self.decodeLabels(rec.labelsJson)
+                        let detections = Self.decodeDetections(rec.detectionsJson)
+                        let cls = NsfwClassification(labels: labels, detections: detections)
+                        var map = eventSink.buildResultMap(asset: asset, classification: cls)
+                        map["fromCache"] = true
+                        map[ChannelConstants.EventKey.scannedAt] = rec.scannedAtMs
+                        batcher.recordResult(map)
+                    }
+                    let s = scanned.increment()
+                    batcher.recordProgress(eventSink.buildProgressMap(
+                        scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                    continue
+                }
+
+                if asset.mediaSubtypes.contains(.photoLive) && !config.includeLivePhotos {
+                    let s = scanned.increment()
+                    batcher.recordProgress(eventSink.buildProgressMap(
+                        scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                    continue
+                }
+
+                if queued >= maxConcurrent {
+                    await group.next()
+                    queued -= 1
+                }
+                queued += 1
+                group.addTask { [weak self] in
+                    guard let self = self else { return }
+                    do {
+                        let buffer: CVPixelBuffer
+                        if asset.mediaType == .video {
+                            let frames = try await sampler.sample(asset: asset, config: self.config, inputSize: inputSize)
+                            guard let first = frames.first else {
+                                batcher.recordResult(self.eventSink.buildResultMap(
+                                    asset: asset, classification: .unknown, status: "skipped"))
+                                let s = scanned.increment()
+                                batcher.recordProgress(self.eventSink.buildProgressMap(
+                                    scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                                return
+                            }
+                            buffer = first
+                        } else {
+                            buffer = try await analyzer.pixelBuffer(for: asset)
+                        }
+                        let raw = try await engine.detect(pixelBuffer: buffer)
+                        let cls = NsfwClassification.fromDetections(raw)
+
+                        let scannedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+                        batcher.recordResult(self.eventSink.buildResultMap(
+                            asset: asset, classification: cls))
+                        UploadQueue.shared.submit(
+                            asset: asset,
+                            classification: cls,
+                            minConfidence: Float(self.config.confidenceThreshold)
+                        )
+                        checkpoint.record(asset.localIdentifier)
+                        ScanCache.shared.record(
+                            localIdentifier: asset.localIdentifier,
+                            modelId: self.config.modelId,
+                            modificationDateMs: Self.modificationMs(asset),
+                            scannedAtMs: scannedAtMs,
+                            labelsJson: Self.encodeLabels(cls.labels),
+                            detectionsJson: Self.encodeDetections(cls.detections)
+                        )
+                    } catch {
+                        let msg = "\(error)"
+                        NSLog("[NSFW] Detection FAILED: %@ — %@", asset.localIdentifier, msg)
+                        batcher.recordResult(self.eventSink.buildResultMap(
+                            asset: asset, classification: .unknown,
+                            status: "failed", errorMessage: msg))
+                    }
+                    let s = scanned.increment()
+                    batcher.recordProgress(self.eventSink.buildProgressMap(
+                        scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                }
+            }
+            await group.waitForAll()
+        }
+
+        let finalCount = scanned.value
+        batcher.recordProgress(eventSink.buildProgressMap(
+            scanned: finalCount, total: total, isComplete: !Task.isCancelled), force: true)
+        if Task.isCancelled {
+            checkpoint.flush()
+        } else {
+            checkpoint.clear()
+        }
+        batcher.flush()
+        ScanCache.shared.flush()
+    }
+
+    fileprivate static func encodeDetections(_ detections: [NsfwClassification.BodyPartDetection]?) -> String? {
+        guard let detections = detections, !detections.isEmpty else { return nil }
+        let arr: [[String: Any]] = detections.map { $0.toDictionary() }
+        if let data = try? JSONSerialization.data(withJSONObject: arr),
+           let str  = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return nil
+    }
+
+    fileprivate static func decodeDetections(_ json: String?) -> [NsfwClassification.BodyPartDetection]? {
+        guard let json = json,
+              let data = json.data(using: .utf8),
+              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            return nil
+        }
+        let result: [NsfwClassification.BodyPartDetection] = arr.compactMap { dict in
+            let label = (dict["label"] as? String) ?? (dict["className"] as? String) ?? ""
+            guard let conf = dict["confidence"] as? Double else { return nil }
+            let category = (dict["aggregatedCategory"] as? String) ?? (dict["category"] as? String) ?? "unknown"
+            let box = (dict["box"] as? [String: Any]) ?? dict
+            let x = (box["x"] as? Double) ?? 0
+            let y = (box["y"] as? Double) ?? 0
+            let w = (box["width"] as? Double) ?? 0
+            let h = (box["height"] as? Double) ?? 0
+            return NsfwClassification.BodyPartDetection(
+                className: label, category: category, confidence: Float(conf),
+                x: Float(x), y: Float(y), width: Float(w), height: Float(h)
+            )
+        }
+        return result.isEmpty ? nil : result
     }
 
     // MARK: - Video frame classification

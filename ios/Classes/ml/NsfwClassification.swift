@@ -6,25 +6,32 @@ struct NsfwClassification {
         let confidence: Float
     }
 
-    /// Raw body part detection from object detection models.
+    /// Raw body part detection from object detection models. Wire shape is
+    /// kept in lock-step with Dart `BodyPartDetection.fromMap`:
+    /// `{ label, confidence, aggregatedCategory, box: {x, y, width, height} }`.
+    /// Origin is top-left, all coordinates normalised to `[0, 1]`.
     struct BodyPartDetection {
-        let className: String    // e.g. "FEMALE_BREAST_EXPOSED"
-        let category: String     // "safe" | "nudity" | "explicitNudity" | "suggestive"
+        /// Raw class name from the detector (e.g. `FEMALE_BREAST_EXPOSED`).
+        let className: String
+        /// Canonical bucket — `safe | suggestive | nudity | explicitNudity | unknown`.
+        let category: String
         let confidence: Float
-        let x: Float             // bounding box center x (normalized 0-1 or raw pixels)
-        let y: Float
+        let x: Float        // top-left x, normalized [0, 1]
+        let y: Float        // top-left y, normalized [0, 1]
         let width: Float
         let height: Float
 
         func toDictionary() -> [String: Any] {
-            [
-                "className": className,
-                "category": category,
-                "confidence": Double(confidence),
-                "x": Double(x),
-                "y": Double(y),
-                "width": Double(width),
-                "height": Double(height),
+            return [
+                "label":              className,
+                "confidence":         Double(confidence),
+                "aggregatedCategory": category,
+                "box": [
+                    "x":      Double(x),
+                    "y":      Double(y),
+                    "width":  Double(width),
+                    "height": Double(height),
+                ] as [String: Any],
             ]
         }
     }
@@ -48,6 +55,41 @@ struct NsfwClassification {
 
     static let unknown = NsfwClassification(labels: [Label(category: "unknown", confidence: 1.0)], detections: nil)
     static let empty   = NsfwClassification(labels: [], detections: nil)
+
+    /// Build an `NsfwClassification` from a list of detector boxes. Aggregates
+    /// per-category confidence as `max(confidence)` across all boxes that map
+    /// to the same `aggregatedCategory`, sorted descending. The resulting
+    /// `labels` keep the existing `topCategory` / `topConfidence` semantics
+    /// working for detection runs; the original boxes are stashed on
+    /// `detections` for UI consumption.
+    static func fromDetections(_ raw: [BodyPartDetectionNative]) -> NsfwClassification {
+        if raw.isEmpty { return .empty }
+        var perCategory: [String: Float] = [:]
+        for det in raw {
+            let prev = perCategory[det.aggregatedCategory] ?? 0
+            if det.confidence > prev {
+                perCategory[det.aggregatedCategory] = det.confidence
+            }
+        }
+        let labels = perCategory
+            .map { Label(category: $0.key, confidence: $0.value) }
+            .sorted { $0.confidence > $1.confidence }
+
+        // Map the native detection type onto the inner BodyPartDetection
+        // wire-shape used by ScanEventSink.buildResultMap.
+        let detections: [BodyPartDetection] = raw.map { d in
+            BodyPartDetection(
+                className:  d.label,
+                category:   d.aggregatedCategory,
+                confidence: d.confidence,
+                x:          d.x,
+                y:          d.y,
+                width:      d.width,
+                height:     d.height
+            )
+        }
+        return NsfwClassification(labels: labels, detections: detections)
+    }
 
     /// Maps a Vision classification identifier to our canonical category name.
     static func canonicalCategory(_ identifier: String) -> String {
