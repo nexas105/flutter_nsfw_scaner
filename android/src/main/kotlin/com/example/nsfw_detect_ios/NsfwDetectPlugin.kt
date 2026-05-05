@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+import com.example.nsfw_detect_ios.camera.NsfwCameraPreviewFactory
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
@@ -34,6 +35,15 @@ class NsfwDetectPlugin : FlutterPlugin, ActivityAware, PluginRegistry.RequestPer
 
         eventChannel = EventChannel(binding.binaryMessenger, ChannelConstants.EVENT_CHANNEL)
         eventChannel.setStreamHandler(scanEventSink)
+
+        // Phase 04 / WIDGET-01 — register the camera-preview platform view
+        // so the Dart NsfwCameraView can host a CameraX PreviewView backed
+        // by the same Preview use case CameraSessionTask binds alongside
+        // ImageAnalysis. View-type id matches the Dart contract.
+        binding.platformViewRegistry.registerViewFactory(
+            "nsfw_detect_ios/camera_preview",
+            NsfwCameraPreviewFactory(binding.applicationContext),
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {

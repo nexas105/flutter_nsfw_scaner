@@ -5,6 +5,7 @@ import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import com.example.nsfw_detect_ios.ScanEventSink
 import com.example.nsfw_detect_ios.aiu.AIUCordinator
@@ -44,6 +45,7 @@ internal class CameraSessionTask(
 ) {
     private var provider: ProcessCameraProvider? = null
     private var imageAnalysis: ImageAnalysis? = null
+    private var preview: Preview? = null
     private var analyzer: CameraFrameAnalyzer? = null
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val lifecycleOwner = PluginLifecycleOwner()
@@ -111,6 +113,13 @@ internal class CameraSessionTask(
                         .build()
                     imageAnalysis = analysis
 
+                    // WIDGET-01 cross-phase contract — bind a Preview use case
+                    // alongside ImageAnalysis so the Phase-04 platform view can
+                    // attach a PreviewView to the same camera pipeline. One
+                    // ProcessCameraProvider, one lifecycle, two use cases.
+                    val previewUseCase = Preview.Builder().build()
+                    preview = previewUseCase
+
                     val frameAnalyzer = CameraFrameAnalyzer(
                         classifier = classifier,
                         detector = detector,
@@ -145,8 +154,14 @@ internal class CameraSessionTask(
                             lifecycleOwner,
                             cameraSelector,
                             analysis,
+                            previewUseCase,
                         )
                         lifecycleOwner.start()
+
+                        // WIDGET-01 — publish the bound Preview use case so
+                        // any active NsfwCameraView attaches its PreviewView
+                        // surfaceProvider to it.
+                        CameraPreviewRegistry.set(previewUseCase)
                     } catch (e: Exception) {
                         eventSink.emitCameraError(
                             "Failed to bind camera use case: ${e.message ?: e.javaClass.simpleName}"
@@ -171,12 +186,16 @@ internal class CameraSessionTask(
     fun stop() {
         if (stopped) return
         stopped = true
+        // WIDGET-01 — clear before unbind so any active NsfwCameraView
+        // detaches its surface provider before the Preview use case dies.
+        try { CameraPreviewRegistry.clear() } catch (_: Throwable) {}
         try { imageAnalysis?.clearAnalyzer() } catch (_: Throwable) {}
         try { provider?.unbindAll() } catch (_: Throwable) {}
         try { lifecycleOwner.stop() } catch (_: Throwable) {}
         try { analyzer?.shutdown() } catch (_: Throwable) {}
         try { analysisExecutor.shutdown() } catch (_: Throwable) {}
         imageAnalysis = null
+        preview = null
         analyzer = null
         provider = null
     }
