@@ -2,6 +2,13 @@
 
 Demonstrates the main workflows of the [`nsfw_detect`](https://pub.dev/packages/nsfw_detect) Flutter plugin.
 
+For setup before running the app, see the package guides:
+
+- [Getting started](../doc/getting-started.md)
+- [Permissions](../doc/permissions.md)
+- [Configuration](../doc/configuration.md)
+- [Troubleshooting](../doc/troubleshooting.md)
+
 ## Screens
 
 ### Gallery (tab 1)
@@ -12,6 +19,8 @@ Full photo-library scan powered by `NsfwGalleryView`.
 - Tap any tile to open the Detail screen
 - NSFW counter chip in the app bar updates on scan completion
 - Settings screen: model picker, confidence threshold slider, video frame options
+
+Related guides: [library scanning](../doc/library-scanning.md), [models](../doc/models.md), and [configuration](../doc/configuration.md).
 
 ### Headless (tab 2)
 
@@ -42,6 +51,8 @@ final summary = await session.done;
 
 Displays a colour-coded event log (info / NSFW / safe / error) and a live progress bar.
 
+Related guides: [media precheck](../doc/media-precheck.md), [picker workflows](../doc/picker-workflows.md), and [privacy and limitations](../doc/privacy-and-limitations.md).
+
 ### Detail screen
 
 Opened by tapping a tile in the Gallery screen.
@@ -51,6 +62,8 @@ Opened by tapping a tile in the Gallery screen.
 - Classification breakdown — confidence bar per category
 - Body part detection list with severity chips and per-detection confidence bars
 - Asset metadata (type, resolution, creation date, scan timestamp)
+
+For camera-specific workflows, see [camera scanning](../doc/camera-scanning.md).
 
 ## Running
 

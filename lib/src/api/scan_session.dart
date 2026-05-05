@@ -7,6 +7,16 @@ import 'scan_summary.dart';
 import 'scan_configuration.dart';
 import '../platform/nsfw_platform_interface.dart';
 
+/// Running photo-library or picker scan.
+///
+/// A session is created by `NsfwDetector.startScan` or
+/// `NsfwDetector.pickAndScan`. It exposes result and progress streams while
+/// native on-device classification is in flight, and completes [done] with a
+/// [ScanSummary] when the scan finishes or is cancelled.
+///
+/// Listen to [results] before relying on all item-level output. Results are
+/// probabilistic model scores, and a scan may include cached results depending
+/// on [ScanConfiguration].
 class ScanSession {
   final ScanConfiguration _config;
   final NsfwPlatformInterface _platform;
@@ -51,17 +61,31 @@ class ScanSession {
     return session;
   }
 
+  /// Stream of item-level scan results.
+  ///
+  /// The stream closes when the session finishes. Errors from the native scan
+  /// are forwarded to listeners.
   Stream<ScanResult> get results => _resultsController.stream;
+
+  /// Stream of aggregate progress updates for this session.
   Stream<ScanProgress> get progress => _progressController.stream;
+
+  /// Completes with the final scan summary.
   Future<ScanSummary> get done => _summaryCompleter.future;
+
+  /// Whether native scanning is still active.
   bool get isRunning => _isRunning;
+
+  /// Whether this session was explicitly cancelled.
   bool get isCancelled => _isCancelled;
 
   Future<void> _beginPicker(int maxItems) async {
     _isRunning = true;
     _startTime = DateTime.now();
     _eventSub = _platform.scanEventStream.listen(
-      _handleEvent, onError: _handleError, onDone: _handleDone,
+      _handleEvent,
+      onError: _handleError,
+      onDone: _handleDone,
     );
     await _platform.startPickAndScan(_config, maxItems);
   }
@@ -124,7 +148,8 @@ class ScanSession {
   void _ingestResult(Map<dynamic, dynamic> event) {
     if (kDebugMode) {
       final labels = (event['labels'] as List<dynamic>?)
-          ?.map((l) => '${l['category']}=${((l['confidence'] as num) * 100).toStringAsFixed(1)}%')
+          ?.map((l) =>
+              '${l['category']}=${((l['confidence'] as num) * 100).toStringAsFixed(1)}%')
           .join(', ');
       final detCount = (event['detections'] as List<dynamic>?)?.length ?? 0;
       dev.log(
@@ -144,7 +169,8 @@ class ScanSession {
         }
       }
     }
-    final result = ScanResult.fromMap(event, confidenceThreshold: _config.confidenceThreshold);
+    final result = ScanResult.fromMap(event,
+        confidenceThreshold: _config.confidenceThreshold);
     if (result.status == ScanStatus.failed) {
       _failedCount++;
       if (kDebugMode) {
@@ -172,8 +198,9 @@ class ScanSession {
 
   void _finish({required bool cancelled}) {
     _isRunning = false;
-    final elapsed =
-        _startTime != null ? DateTime.now().difference(_startTime!) : Duration.zero;
+    final elapsed = _startTime != null
+        ? DateTime.now().difference(_startTime!)
+        : Duration.zero;
 
     final summary = ScanSummary(
       totalScanned: _totalCount,
@@ -190,6 +217,7 @@ class ScanSession {
     _progressController.close();
   }
 
+  /// Cancels the session and completes [done] with `wasCancelled` set.
   Future<void> cancel() async {
     if (!_isRunning) return;
     _isCancelled = true;

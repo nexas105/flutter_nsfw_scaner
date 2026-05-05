@@ -16,17 +16,20 @@ enum CameraResolution {
 /// Configuration for a live camera scan session.
 ///
 /// Reuses [ScanMode] and [ModelIds] from the library-scan API so the same
-/// models (classification + NudeNet detection) work in camera mode.
+/// models (classification + NudeNet detection) work in camera mode. Camera
+/// frames are processed on device by the native implementation, but frame
+/// labels are still probabilistic model outputs and should be interpreted with
+/// product-specific thresholds and user controls.
 @immutable
 class CameraConfiguration {
   /// Model to run per frame. Default: [ModelIds.openNsfw2].
   final String modelId;
 
-  /// NSFW confidence threshold used for [CameraFrameResult.isNsfw].
+  /// NSFW confidence threshold used for `CameraFrameResult.isNsfw`.
   final double confidenceThreshold;
 
   /// Classification vs detection mode.
-  /// Detection mode populates [CameraFrameResult.detections].
+  /// Detection mode populates `CameraFrameResult.detections`.
   final ScanMode mode;
 
   /// Target frames-per-second for inference.
@@ -63,8 +66,11 @@ class CameraConfiguration {
     this.iouThreshold = 0.45,
     this.iosComputeUnits = IosComputeUnits.all,
     this.androidDelegate,
-  })  : assert(fps >= 1 && fps <= 30, 'fps must be between 1 and 30');
+  }) : assert(fps >= 1 && fps <= 30, 'fps must be between 1 and 30');
 
+  /// Returns a copy with selected fields replaced.
+  ///
+  /// Passing null leaves the existing value unchanged.
   CameraConfiguration copyWith({
     String? modelId,
     double? confidenceThreshold,
@@ -78,8 +84,7 @@ class CameraConfiguration {
   }) =>
       CameraConfiguration(
         modelId: modelId ?? this.modelId,
-        confidenceThreshold:
-            confidenceThreshold ?? this.confidenceThreshold,
+        confidenceThreshold: confidenceThreshold ?? this.confidenceThreshold,
         mode: mode ?? this.mode,
         fps: fps ?? this.fps,
         resolution: resolution ?? this.resolution,
@@ -90,6 +95,8 @@ class CameraConfiguration {
         androidDelegate: androidDelegate ?? this.androidDelegate,
       );
 
+  /// Converts this configuration into the method-channel payload expected by
+  /// the native camera scanner.
   Map<String, dynamic> toChannelMap() => {
         'modelId': modelId,
         'confidenceThreshold': confidenceThreshold,
@@ -99,7 +106,8 @@ class CameraConfiguration {
         'detectionConfidenceThreshold': detectionConfidenceThreshold,
         'iouThreshold': iouThreshold,
         'iosComputeUnits': iosComputeUnits.wireValue,
-        if (androidDelegate != null) 'androidDelegate': androidDelegate!.wireValue,
+        if (androidDelegate != null)
+          'androidDelegate': androidDelegate!.wireValue,
       };
 
   @override

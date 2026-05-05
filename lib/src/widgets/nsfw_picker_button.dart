@@ -10,7 +10,7 @@ import 'theme/nsfw_theme.dart';
 /// [onSession]. The button shows a small loading indicator while the picker
 /// is open and the scan is starting.
 ///
-/// For a "pick only" flow without classification, see [pickMediaOnly] / use
+/// For a "pick only" flow without classification, use
 /// [NsfwDetector.pickMedia] directly.
 class NsfwPickerButton extends StatefulWidget {
   final String label;
@@ -71,7 +71,8 @@ class _NsfwPickerButtonState extends State<NsfwPickerButton> {
           ? const SizedBox(
               width: 16,
               height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.white),
             )
           : Icon(widget.icon),
       label: Text(widget.label),

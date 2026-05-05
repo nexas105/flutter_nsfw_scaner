@@ -16,7 +16,12 @@ import 'nsfw_selection_toolbar.dart';
 import 'nsfw_skeleton_tile.dart';
 import 'theme/nsfw_theme.dart';
 
-/// Pre-built gallery widget that consumes a [NsfwScanController].
+/// Pre-built photo-library scan UI backed by a [NsfwScanController].
+///
+/// The widget handles permission probing, scan controls, progress display,
+/// filtering, search, optional selection, and result tiles. It does not fetch
+/// real thumbnails by itself; provide [thumbnailBuilder] when the host app
+/// wants to render photo-library previews.
 ///
 /// When [controller] is null (the default — backwards-compatible behaviour),
 /// the widget creates and owns an internal [NsfwScanController] for the
@@ -27,6 +32,9 @@ import 'theme/nsfw_theme.dart';
 /// Filter / search / selection state remain in the widget — those are
 /// view-level concerns. Hosts that want to lift them up are expected to
 /// drive the [filter] / [onFilterChanged] / [onSelectionChanged] hooks.
+///
+/// Scan labels are probabilistic. The optional blur and badge UI are
+/// presentation choices, not a promise that all sensitive content is detected.
 class NsfwGalleryView extends StatefulWidget {
   /// Optional external controller. If null the widget creates its own.
   final NsfwScanController? controller;
@@ -38,6 +46,7 @@ class NsfwGalleryView extends StatefulWidget {
   final NsfwGalleryTheme theme;
   final NsfwTheme? designTheme;
   final NsfwMediaTileBuilder? tileBuilder;
+
   /// Optional builder for thumbnail images. Called per-item during grid
   /// rendering. When set, the returned widget replaces the default grey
   /// placeholder inside [NsfwMediaTile]. Use this to inject real photo
@@ -382,7 +391,8 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
     final results = _controller.results;
     if (items.isEmpty) {
       if (isScanning) {
-        return NsfwSkeletonGrid(theme: t, crossAxisCount: widget.crossAxisCount);
+        return NsfwSkeletonGrid(
+            theme: t, crossAxisCount: widget.crossAxisCount);
       }
       return widget.emptyStateWidget ?? _defaultEmpty(t);
     }
@@ -551,7 +561,8 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
         t,
         icon: Icons.no_photography_outlined,
         headline: 'Photo access denied',
-        subtitle: 'Allow access in Settings → Privacy → Photos to start a scan.',
+        subtitle:
+            'Allow access in Settings → Privacy → Photos to start a scan.',
         iconColor: t.danger,
       );
 }

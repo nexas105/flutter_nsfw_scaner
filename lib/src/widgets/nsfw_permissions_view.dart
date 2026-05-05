@@ -15,8 +15,11 @@ typedef PermissionChangedCallback = void Function(
   PermissionStatus status,
 );
 
-/// Reusable widget that surfaces every permission [NsfwDetector] needs and
-/// lets the user re-request the ones that are missing.
+/// Reusable permission panel for NSFW scanning features.
+///
+/// Surfaces the photo-library and camera permissions [NsfwDetector] uses, then
+/// lets the user request missing grants. It is useful as a setup screen before
+/// showing `NsfwGalleryView` or `NsfwCameraView`.
 ///
 /// Polls live status via [NsfwDetector.checkPermission] and
 /// [NsfwDetector.checkCameraPermission]. If the camera-permission native
@@ -189,8 +192,8 @@ class _NsfwPermissionsViewState extends State<NsfwPermissionsView>
   Widget _buildRow(PermissionKind kind, NsfwTheme theme) {
     final status = _statuses[kind] ?? PermissionStatus.notDetermined;
     final busy = _busy.contains(kind);
-    final title = widget.labelBuilder?.call(kind, status, context) ??
-        kind.defaultLabel;
+    final title =
+        widget.labelBuilder?.call(kind, status, context) ?? kind.defaultLabel;
 
     return Semantics(
       label: '$title: ${_statusLabel(status)}',
@@ -295,6 +298,7 @@ String _statusLabel(PermissionStatus s) => switch (s) {
 Color _statusColor(PermissionStatus s, NsfwTheme t) => switch (s) {
       PermissionStatus.authorized || PermissionStatus.limited => t.success,
       PermissionStatus.denied || PermissionStatus.notDetermined => t.accent,
-      PermissionStatus.permanentlyDenied || PermissionStatus.restricted =>
+      PermissionStatus.permanentlyDenied ||
+      PermissionStatus.restricted =>
         t.danger,
     };

@@ -12,6 +12,17 @@ import 'permissions/permission_kind.dart';
 import '../platform/nsfw_platform_interface.dart';
 import '../platform/nsfw_method_channel.dart';
 
+/// Main entry point for on-device NSFW scanning.
+///
+/// Use [NsfwDetector.instance] to request permissions, inspect available
+/// models, scan the photo library, classify individual files or byte buffers,
+/// and start live camera scanning. Classification runs through the platform
+/// implementation and is intended to keep media processing on the device; do
+/// not treat the resulting labels as proof that content is safe or unsafe.
+///
+/// Results are probabilistic model outputs. Tune thresholds for your product,
+/// provide appropriate user controls, and expect false positives and false
+/// negatives.
 class NsfwDetector {
   NsfwDetector._() {
     // Auto-register the method channel implementation on first access
@@ -58,9 +69,13 @@ class NsfwDetector {
     return controller.stream;
   }
 
-  // Permission
+  /// Requests access to the user's photo library.
+  ///
+  /// A limited-library grant may still allow scanning of selected assets.
   Future<PhotoLibraryPermissionStatus> requestPermission() =>
       _platform.requestPermission();
+
+  /// Returns the current photo-library permission status without prompting.
   Future<PhotoLibraryPermissionStatus> checkPermission() =>
       _platform.checkPermission();
 
@@ -88,20 +103,36 @@ class NsfwDetector {
     }
   }
 
-  // Models
+  /// Returns the NSFW models registered by the native platform side.
   Future<List<ModelDescriptor>> availableModels() =>
       _platform.availableModels();
+
+  /// Downloads or loads [modelId] ahead of a scan when the platform supports
+  /// explicit preloading.
   Future<void> preloadModel(String modelId) => _platform.preloadModel(modelId);
 
-  // Start a full library scan
+  /// Starts a photo-library scan using [config].
+  ///
+  /// The returned [ScanSession] streams [ScanResult] values and progress. Media
+  /// is classified on the device through the native implementation; results are
+  /// confidence scores rather than guarantees.
   Future<ScanSession> startScan(ScanConfiguration config) =>
       ScanSession.start(config: config, platform: _platform);
+
+  /// Clears native scan state for the current library scan.
   Future<void> resetScan() => _platform.resetScan();
 
-  // Model download
+  /// Downloads a model by [modelId].
+  ///
+  /// Listen to [downloadProgress] for progress events when the platform emits
+  /// them. Returns whether the platform reports the download as successful.
   Future<bool> downloadModel(String modelId, {String? url}) =>
       _platform.downloadModel(modelId, url: url);
+
+  /// Deletes the locally stored copy of [modelId], if present.
   Future<void> deleteModel(String modelId) => _platform.deleteModel(modelId);
+
+  /// Overrides the download URL used for [modelId].
   Future<void> setModelUrl(String modelId, String url) =>
       _platform.setModelUrl(modelId, url);
 
@@ -122,7 +153,8 @@ class NsfwDetector {
   ///
   /// Throws [StateError] if a camera session is already running.
   /// Results stream via [CameraScanSession.results].
-  Future<CameraScanSession> startCameraScan([CameraConfiguration? config]) async {
+  Future<CameraScanSession> startCameraScan(
+      [CameraConfiguration? config]) async {
     if (_cameraSession != null && _cameraSession!.isRunning) {
       throw StateError('A camera scan is already running.');
     }
@@ -141,7 +173,10 @@ class NsfwDetector {
     }
   }
 
-  // Scan a single asset by its PHAsset local identifier
+  /// Scans a single photo-library asset by local identifier.
+  ///
+  /// [confidenceThreshold] is copied into the returned [ScanResult] and affects
+  /// convenience getters such as `isNsfw`; the raw labels remain available.
   Future<ScanResult> scanAsset(
     String localIdentifier, {
     String? modelId,
@@ -166,6 +201,10 @@ class NsfwDetector {
       );
 
   /// Scans an image from a local file path.
+  ///
+  /// The image is classified by the platform implementation. The returned
+  /// [ScanResult] contains probabilistic labels sorted by NSFW priority and
+  /// confidence.
   Future<ScanResult> scanFile(
     String filePath, {
     String? modelId,
@@ -197,6 +236,9 @@ class NsfwDetector {
   }
 
   /// Scans an image from raw bytes (JPEG, PNG, etc.).
+  ///
+  /// Use this for images already loaded by your app. Keep byte buffers small
+  /// enough for the target devices.
   Future<ScanResult> scanBytes(
     Uint8List bytes, {
     String? modelId,

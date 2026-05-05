@@ -3,9 +3,16 @@ import 'body_part_detection.dart';
 import 'media_item.dart';
 import 'nsfw_label.dart';
 
+/// Terminal status for scanning a single media item.
 enum ScanStatus {
+  /// The item was classified and may contain labels or detections.
   completed,
+
+  /// The native scanner could not classify the item.
   failed,
+
+  /// The item was intentionally skipped, often because of configuration,
+  /// permissions, or cached state.
   skipped;
 
   static ScanStatus fromString(String s) => switch (s) {
@@ -16,14 +23,37 @@ enum ScanStatus {
       };
 }
 
+/// Classification or detection result for one photo-library asset, file, or
+/// byte-buffer scan.
+///
+/// [labels] contain probabilistic model confidences sorted so NSFW categories
+/// take priority over safe categories when scores tie. [isNsfw] is a
+/// convenience interpretation based on [topCategory], [topConfidence], and
+/// [confidenceThreshold]; callers should still review raw labels and tune
+/// thresholds for their use case.
+///
+/// A result may come from the on-device cache when [fromCache] is true. The
+/// plugin does not imply that cached or fresh labels are perfectly accurate.
 @immutable
 class ScanResult {
+  /// Media item that produced this result.
   final MediaItem item;
+
+  /// Whether classification completed, failed, or was skipped.
   final ScanStatus status;
+
+  /// Model labels sorted by NSFW priority and confidence.
   final List<NsfwLabel> labels;
+
+  /// Platform error message when [status] is [ScanStatus.failed].
   final String? errorMessage;
+
+  /// Time the result was emitted or reconstructed.
   final DateTime scannedAt;
+
+  /// Threshold used by [isNsfw].
   final double confidenceThreshold;
+
   /// True when this result was replayed from the persistent scan cache rather
   /// than freshly classified. Subsequent scans of the same library reuse cached
   /// entries when the asset's modificationDate and modelId still match.
@@ -47,18 +77,28 @@ class ScanResult {
     this.detections,
   });
 
-  NsfwCategory get topCategory => labels.isNotEmpty ? labels.first.category : NsfwCategory.unknown;
+  /// Highest-priority category reported for this item.
+  NsfwCategory get topCategory =>
+      labels.isNotEmpty ? labels.first.category : NsfwCategory.unknown;
+
+  /// Confidence score for [topCategory].
   double get topConfidence => labels.isNotEmpty ? labels.first.confidence : 0.0;
 
+  /// Whether this item crosses [confidenceThreshold] for an NSFW category.
   bool get isNsfw =>
       status == ScanStatus.completed &&
       topCategory.isNsfw &&
       topConfidence >= confidenceThreshold;
 
+  /// Whether the item completed classification and did not cross the NSFW
+  /// threshold.
   bool get isSafe => status == ScanStatus.completed && !isNsfw;
 
+  /// Returns the confidence for [category], or zero when the category is not
+  /// present in [labels].
   double confidenceFor(NsfwCategory category) =>
-      labels.where((l) => l.category == category).firstOrNull?.confidence ?? 0.0;
+      labels.where((l) => l.category == category).firstOrNull?.confidence ??
+      0.0;
 
   /// Priority order used in [ScanResult.fromMap] to break confidence ties so
   /// `topCategory` always surfaces NSFW over SFW when both are present.
@@ -80,7 +120,11 @@ class ScanResult {
     }
   }
 
-  factory ScanResult.fromMap(Map<dynamic, dynamic> map, {double confidenceThreshold = 0.7}) {
+  /// Parses a method-channel result emitted by the native scanner.
+  factory ScanResult.fromMap(
+    Map<dynamic, dynamic> map, {
+    double confidenceThreshold = 0.7,
+  }) {
     final rawLabels = (map['labels'] as List<dynamic>?) ?? [];
     // Sort by NSFW priority FIRST, then confidence within each tier — a
     // detection result with both `BELLY_EXPOSED` (safe, 100%) and

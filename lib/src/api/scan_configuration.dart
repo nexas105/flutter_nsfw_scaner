@@ -2,19 +2,57 @@ import 'package:flutter/foundation.dart';
 
 import 'scan_mode.dart';
 
+/// Immutable options for a photo-library NSFW scan.
+///
+/// A configuration selects the model, scan mode, media types, thresholds, and
+/// native performance hints used by `NsfwDetector.startScan` and picker-based
+/// scans. Classification and detection thresholds influence convenience
+/// decisions such as `ScanResult.isNsfw`; they do not make the model output
+/// deterministic or authoritative.
+///
+/// The default values favor broad library coverage with on-device processing,
+/// cache reuse, and conservative throughput. Increase concurrency and delegate
+/// settings only after testing on the device families you support.
 @immutable
 class ScanConfiguration {
+  /// Native model identifier to use for this scan.
   final String modelId;
+
+  /// Minimum top-label confidence required for `ScanResult.isNsfw`.
   final double confidenceThreshold;
+
+  /// Maximum number of frames sampled from each video asset.
   final int maxVideoFrames;
+
+  /// Target spacing, in seconds, between sampled video frames.
   final double videoFrameInterval;
+
+  /// Whether video assets are included in the library scan.
   final bool includeVideos;
+
+  /// Whether Live Photos are included when the platform exposes them.
   final bool includeLivePhotos;
+
+  /// Optional fixed set of photo-library asset identifiers to scan.
+  ///
+  /// Leave null to scan the library subset implied by the permission grant and
+  /// media-type flags.
   final List<String>? assetIdentifiers;
+
+  /// Whether the native scanner should resume from its last checkpoint.
   final bool resumeFromCheckpoint;
+
+  /// Maximum number of assets the native implementation may classify in
+  /// parallel.
   final int concurrency;
+
+  /// Per-box confidence threshold used by detection models.
   final double detectionConfidenceThreshold;
+
+  /// Intersection-over-union threshold used for non-maximum suppression in
+  /// detection mode.
   final double iouThreshold;
+
   /// Kill switch for CoreML batch prediction. Set to `true` to revert to the
   /// serial per-image Vision path. Useful for diagnosing device-specific issues.
   final bool disableBatchPrediction;
@@ -70,6 +108,9 @@ class ScanConfiguration {
     this.mode = ScanMode.classification,
   });
 
+  /// Returns a copy with selected fields replaced.
+  ///
+  /// Passing null leaves the existing value unchanged.
   ScanConfiguration copyWith({
     String? modelId,
     double? confidenceThreshold,
@@ -113,6 +154,8 @@ class ScanConfiguration {
         mode: mode ?? this.mode,
       );
 
+  /// Converts this configuration into the method-channel payload expected by
+  /// the native implementations.
   Map<String, dynamic> toChannelMap() => {
         'modelId': modelId,
         'confidenceThreshold': confidenceThreshold,
@@ -130,7 +173,8 @@ class ScanConfiguration {
         'forceRescan': forceRescan,
         'replayCachedResults': replayCachedResults,
         'iosComputeUnits': iosComputeUnits.wireValue,
-        if (androidDelegate != null) 'androidDelegate': androidDelegate!.wireValue,
+        if (androidDelegate != null)
+          'androidDelegate': androidDelegate!.wireValue,
         'mode': mode.wireValue,
       };
 
@@ -190,27 +234,25 @@ class ScanConfiguration {
 
     return ScanConfiguration(
       modelId: json['modelId'] as String? ?? defaults.modelId,
-      confidenceThreshold:
-          (json['confidenceThreshold'] as num?)?.toDouble() ??
-              defaults.confidenceThreshold,
+      confidenceThreshold: (json['confidenceThreshold'] as num?)?.toDouble() ??
+          defaults.confidenceThreshold,
       maxVideoFrames:
           (json['maxVideoFrames'] as num?)?.toInt() ?? defaults.maxVideoFrames,
-      videoFrameInterval:
-          (json['videoFrameInterval'] as num?)?.toDouble() ??
-              defaults.videoFrameInterval,
+      videoFrameInterval: (json['videoFrameInterval'] as num?)?.toDouble() ??
+          defaults.videoFrameInterval,
       includeVideos: json['includeVideos'] as bool? ?? defaults.includeVideos,
       includeLivePhotos:
           json['includeLivePhotos'] as bool? ?? defaults.includeLivePhotos,
       assetIdentifiers: parseAssetIds(),
-      resumeFromCheckpoint:
-          json['resumeFromCheckpoint'] as bool? ?? defaults.resumeFromCheckpoint,
+      resumeFromCheckpoint: json['resumeFromCheckpoint'] as bool? ??
+          defaults.resumeFromCheckpoint,
       concurrency:
           (json['concurrency'] as num?)?.toInt() ?? defaults.concurrency,
       detectionConfidenceThreshold:
           (json['detectionConfidenceThreshold'] as num?)?.toDouble() ??
               defaults.detectionConfidenceThreshold,
-      iouThreshold: (json['iouThreshold'] as num?)?.toDouble() ??
-          defaults.iouThreshold,
+      iouThreshold:
+          (json['iouThreshold'] as num?)?.toDouble() ?? defaults.iouThreshold,
       disableBatchPrediction: json['disableBatchPrediction'] as bool? ??
           defaults.disableBatchPrediction,
       skipAlreadyScanned:
@@ -256,9 +298,7 @@ class ScanConfiguration {
         videoFrameInterval,
         includeVideos,
         includeLivePhotos,
-        assetIdentifiers == null
-            ? null
-            : Object.hashAll(assetIdentifiers!),
+        assetIdentifiers == null ? null : Object.hashAll(assetIdentifiers!),
         resumeFromCheckpoint,
         concurrency,
         detectionConfidenceThreshold,
@@ -276,8 +316,13 @@ class ScanConfiguration {
 }
 
 abstract class ModelIds {
+  /// Default OpenNSFW2 classifier model.
   static const String openNsfw2 = 'opennsfw2_coreml';
+
+  /// FalconsAI NSFW classifier model.
   static const String falconsai = 'falconsai_nsfw';
+
+  /// AdamCodd NSFW classifier model.
   static const String adamcodd = 'adamcodd_nsfw';
 }
 

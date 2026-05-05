@@ -19,10 +19,16 @@ import 'theme/nsfw_theme.dart';
 typedef CameraResultCallback = void Function(CameraFrameResult result);
 typedef CameraErrorCallback = void Function(Object error);
 
-/// Live camera preview with on-device NSFW classification overlay.
+/// Live camera preview with an on-device NSFW classification overlay.
 ///
 /// Manages its own [CameraScanSession] bound to `initState`/`dispose`.
-/// The native camera preview is provided via platform view (TBD).
+/// The native camera preview is provided via platform view, while this widget
+/// subscribes to classified frame results and renders optional HUD, blur, and
+/// detection-box overlays.
+///
+/// Camera results are probabilistic per-frame signals. Treat [onResult] values
+/// as moderation hints rather than proof that the visible scene is safe or
+/// unsafe.
 ///
 /// Example:
 /// ```dart
@@ -153,9 +159,8 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
 
   Widget _buildStack() {
     final effectiveTheme = widget.theme ?? NsfwGalleryTheme.defaults;
-    final isBlurred = widget.enableBlurOnNsfw &&
-        _lastResult != null &&
-        _lastResult!.isNsfw;
+    final isBlurred =
+        widget.enableBlurOnNsfw && _lastResult != null && _lastResult!.isNsfw;
     final sigma = widget.blurSigma ?? effectiveTheme.cameraBlurSigma;
 
     return Stack(
@@ -261,5 +266,4 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
     final fallbackTheme = widget.theme ?? NsfwGalleryTheme.defaults;
     return Container(color: fallbackTheme.scaffoldBackgroundColor);
   }
-
 }

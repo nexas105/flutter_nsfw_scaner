@@ -10,13 +10,18 @@ import 'scan_progress.dart';
 import 'scan_result.dart';
 import 'scan_session.dart';
 
-/// State holder for an interactive NSFW scan flow.
+/// State holder for an interactive photo-library NSFW scan flow.
 ///
 /// Wraps the imperative [NsfwDetector] surface (permission, scan lifecycle,
 /// streamed results) into a [ChangeNotifier] that's safe to consume from a
 /// Flutter widget. Hosts that want full control over the scan UI can build
-/// their own widgets on top of this controller; the bundled [NsfwGalleryView]
+/// their own widgets on top of this controller; the bundled `NsfwGalleryView`
 /// uses it internally.
+///
+/// The controller owns UI state and stream subscriptions only; classification
+/// still happens through [NsfwDetector] and the native on-device scanner.
+/// Exposed results are probabilistic and should be reviewed with the same
+/// threshold and false-positive expectations as raw [ScanResult] values.
 ///
 /// Lifecycle
 /// ---------

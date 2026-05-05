@@ -1,3 +1,8 @@
+/// Privacy-friendly, on-device NSFW detection for Flutter apps.
+///
+/// Import this library to access the headless scan APIs, configuration types,
+/// result models, permission helpers, and ready-to-use widgets exposed by the
+/// package.
 library nsfw_detect;
 
 export 'src/api/nsfw_detector.dart';

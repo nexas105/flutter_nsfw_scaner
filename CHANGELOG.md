@@ -1,6 +1,8 @@
 ## 2.1.1 - 2026-05-05
 
 - Refresh pub.dev presentation with a clearer privacy-first README, shorter quickstarts, use cases, setup guidance, FAQ, and neutral visual-asset suggestions.
+- Add versioned `doc/` guides for getting started, permissions, media prechecks, picker workflows, library scanning, camera scanning, configuration, models, privacy, limitations, and troubleshooting.
+- Expand Dartdoc coverage for the main detector APIs, scan and camera configuration, result types, sessions, controller lifecycle, and core widgets.
 - Improve package metadata with repository, issue tracker, documentation, platform declarations, and search-friendly topics.
 - Add GitHub issue and pull request templates for bug reports, feature requests, documentation issues, and contribution review.
 - Exclude local agent/editor files from the published archive via `.pubignore`.

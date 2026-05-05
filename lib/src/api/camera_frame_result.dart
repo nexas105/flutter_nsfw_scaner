@@ -6,9 +6,13 @@ import 'scan_result.dart';
 
 /// Classification result for a single camera frame.
 ///
-/// Mirrors [ScanResult] but is scoped to live inference — no [ScanStatus],
-/// no [fromCache], no error message. Camera errors surface via
-/// [CameraScanSession] stream errors instead.
+/// Mirrors [ScanResult] but is scoped to live inference. It has no
+/// [ScanStatus], cache marker, or error message. Camera errors surface via
+/// `CameraScanSession` stream errors instead.
+///
+/// Labels and detections are on-device, probabilistic model outputs for one
+/// frame. Use [confidenceThreshold] and the raw confidences as signals, not as
+/// a guarantee about the scene.
 @immutable
 class CameraFrameResult {
   /// When this frame was captured.
@@ -35,15 +39,15 @@ class CameraFrameResult {
       labels.isNotEmpty ? labels.first.category : NsfwCategory.unknown;
 
   /// Confidence of the top category.
-  double get topConfidence =>
-      labels.isNotEmpty ? labels.first.confidence : 0.0;
+  double get topConfidence => labels.isNotEmpty ? labels.first.confidence : 0.0;
 
   /// Whether this frame is classified as NSFW.
   bool get isNsfw => topCategory.isNsfw && topConfidence >= confidenceThreshold;
 
   /// Confidence for a specific category.
   double confidenceFor(NsfwCategory category) =>
-      labels.where((l) => l.category == category).firstOrNull?.confidence ?? 0.0;
+      labels.where((l) => l.category == category).firstOrNull?.confidence ??
+      0.0;
 
   /// Returns a copy of this frame with [detections] cleared. Used by
   /// `NsfwCameraView` (Phase 04 / WIDGET-06) on orientation change to drop
@@ -87,9 +91,8 @@ class CameraFrameResult {
     }
 
     final ts = map['frameTimestamp'];
-    final frameTimestamp = ts is int
-        ? DateTime.fromMillisecondsSinceEpoch(ts)
-        : DateTime.now();
+    final frameTimestamp =
+        ts is int ? DateTime.fromMillisecondsSinceEpoch(ts) : DateTime.now();
 
     return CameraFrameResult(
       frameTimestamp: frameTimestamp,
