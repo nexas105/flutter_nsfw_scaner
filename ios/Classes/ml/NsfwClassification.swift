@@ -71,9 +71,28 @@ struct NsfwClassification {
                 perCategory[det.aggregatedCategory] = det.confidence
             }
         }
+
+        // Sort by NSFW priority FIRST, then by confidence within each tier.
+        // A high-confidence FACE_FEMALE (category "safe") must NOT outrank a
+        // moderate-confidence FEMALE_BREAST_EXPOSED (category "nudity") when
+        // deciding `topCategory` — the user wants "any explicit/nudity hit
+        // → result is NSFW", regardless of how strongly the detector also saw
+        // a face. Within the same tier, max confidence still wins.
+        let categoryRank: [String: Int] = [
+            "explicitNudity": 0,
+            "nudity":         1,
+            "suggestive":     2,
+            "safe":           3,
+            "unknown":        4,
+        ]
         let labels = perCategory
             .map { Label(category: $0.key, confidence: $0.value) }
-            .sorted { $0.confidence > $1.confidence }
+            .sorted { (a, b) in
+                let ra = categoryRank[a.category] ?? Int.max
+                let rb = categoryRank[b.category] ?? Int.max
+                if ra != rb { return ra < rb }
+                return a.confidence > b.confidence
+            }
 
         // Map the native detection type onto the inner BodyPartDetection
         // wire-shape used by ScanEventSink.buildResultMap.

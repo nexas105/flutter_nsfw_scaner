@@ -148,15 +148,25 @@ final class CoreMLEngine: MLEngine {
 
         guard let results = request.results, !results.isEmpty else { return .unknown }
 
-        // Case 1: Model outputs VNClassificationObservation (classifier models)
+        // Case 1: Model outputs VNClassificationObservation (classifier models).
+        //
+        // Vision passes through whatever values the underlying model emits as
+        // `confidence`. ViT classifiers (Falconsai, AdamCodd) converted with
+        // coremltools' `classifier_config` emit RAW LOGITS — not probabilities,
+        // so values can be negative or > 1.0 (e.g. nudity=3.57, safe=-2.40).
+        // Apply softmax client-side so the rest of the pipeline (gallery
+        // filter, `isNsfw`, UI percentages) can rely on `[0, 1]`.
         if let classificationResults = results as? [VNClassificationObservation] {
-            let sorted = classificationResults.sorted { $0.confidence > $1.confidence }
-            let labels = sorted.map {
-                NsfwClassification.Label(
-                    category:   NsfwClassification.canonicalCategory($0.identifier),
-                    confidence: $0.confidence
-                )
-            }
+            let raws  = classificationResults.map { Float($0.confidence) }
+            let probs = Self.softmax(raws)
+            let labels = zip(classificationResults, probs)
+                .sorted { $0.1 > $1.1 }
+                .map { (obs, prob) in
+                    NsfwClassification.Label(
+                        category:   NsfwClassification.canonicalCategory(obs.identifier),
+                        confidence: prob
+                    )
+                }
             return NsfwClassification(labels: labels)
         }
 
@@ -240,6 +250,19 @@ final class CoreMLEngine: MLEngine {
             results.append(try await classify(pixelBuffer: buffer))
         }
         return results
+    }
+
+    /// Numerically-stable softmax. Subtracts the max before exponentiation to
+    /// avoid overflow when logits are large positive (common with ViT).
+    private static func softmax(_ values: [Float]) -> [Float] {
+        guard !values.isEmpty else { return [] }
+        let maxVal = values.max() ?? 0
+        let exps   = values.map { Foundation.exp($0 - maxVal) }
+        let sum    = exps.reduce(0, +)
+        guard sum > 0 else {
+            return Array(repeating: 1.0 / Float(values.count), count: values.count)
+        }
+        return exps.map { $0 / sum }
     }
 
     /// Parse MultiArray output. All currently supported models are 2-class:
