@@ -50,6 +50,11 @@ struct ScanConfiguration {
     /// Preferred CoreML compute units. Defaults to `.all`.
     let computeUnits: ComputeUnitsPreference
 
+    /// Native scan mode. `"classification"` (default) routes through
+    /// `MLEngine`; `"detection"` routes through `MLDetectorEngine`. Wire value
+    /// originates from Dart `ScanMode.wireValue`.
+    let mode: String
+
     /// Number of assets / video frames submitted per CoreML batch call.
     /// Derived from concurrency so no Dart-API change is needed.
     var batchSize: Int { max(1, concurrency) }
@@ -76,6 +81,7 @@ struct ScanConfiguration {
         } else {
             computeUnits = .all
         }
+        mode = (dict["mode"] as? String) ?? "classification"
     }
 
     static let `default` = ScanConfiguration(from: [:])
@@ -85,6 +91,9 @@ enum ModelIds {
     static let openNsfw2    = "opennsfw2_coreml"
     static let falconsai    = "falconsai_nsfw"
     static let adamcodd     = "adamcodd_nsfw"
+    /// Object-detection model — body-part bounding boxes, NudeNet-style.
+    /// Registered as a `MLDetectorEngine`, not `MLEngine`.
+    static let nudenet      = "nudenet"
 }
 
 enum ScanError: Error {

@@ -1,6 +1,15 @@
 import Foundation
 
-typealias MLEngineFactory = (ModelDescriptorNative) -> MLEngine
+typealias MLEngineFactory          = (ModelDescriptorNative) -> MLEngine
+typealias MLDetectorEngineFactory  = (ModelDescriptorNative) -> MLDetectorEngine
+
+/// Distinguishes classifier (`MLEngine`) and detector (`MLDetectorEngine`)
+/// registrations. Persisted in `descriptor.metadata["kind"]` as well, but the
+/// registry-side enum is the source of truth for routing.
+enum ModelKind: String {
+    case classifier
+    case detector
+}
 
 /// Singleton registry of all available ML models.
 /// Models are lazily loaded and cached until explicitly unloaded.
@@ -11,7 +20,10 @@ final class ModelRegistry {
 
     private var descriptors: [String: ModelDescriptorNative] = [:]
     private var factories:   [String: MLEngineFactory]       = [:]
+    private var detectorFactories: [String: MLDetectorEngineFactory] = [:]
+    private var kinds:       [String: ModelKind]             = [:]
     private var loaded:      [String: MLEngine]              = [:]
+    private var loadedDetectors: [String: MLDetectorEngine]  = [:]
     private let lock = NSLock()
 
     // MARK: - Registration
@@ -23,6 +35,21 @@ final class ModelRegistry {
         lock.lock(); defer { lock.unlock() }
         descriptors[descriptor.id] = descriptor
         factories[descriptor.id]   = factory
+        kinds[descriptor.id]       = .classifier
+    }
+
+    /// Register an object-detection (`MLDetectorEngine`) model. The descriptor
+    /// SHOULD include `metadata["kind"] = "detector"` so the wire payload also
+    /// reflects the kind for Dart consumers, but the registry is the source of
+    /// truth and consults `kinds[id]` first.
+    func register(
+        detectorDescriptor descriptor: ModelDescriptorNative,
+        factory: @escaping MLDetectorEngineFactory
+    ) {
+        lock.lock(); defer { lock.unlock() }
+        descriptors[descriptor.id]       = descriptor
+        detectorFactories[descriptor.id] = factory
+        kinds[descriptor.id]             = .detector
     }
 
     func allDescriptors() -> [ModelDescriptorNative] {
@@ -33,6 +60,13 @@ final class ModelRegistry {
     func descriptor(for id: String) -> ModelDescriptorNative? {
         lock.lock(); defer { lock.unlock() }
         return descriptors[id]
+    }
+
+    /// Returns whether `id` is registered as a classifier or detector model.
+    /// `nil` if the id is unknown.
+    func kind(for id: String) -> ModelKind? {
+        lock.lock(); defer { lock.unlock() }
+        return kinds[id]
     }
 
     // MARK: - Access
@@ -82,23 +116,70 @@ final class ModelRegistry {
     }
 
     func preload(_ id: String) async throws {
-        _ = try await engine(for: id)
+        if kind(for: id) == .detector {
+            _ = try await detectorEngine(for: id, computeUnits: .all)
+        } else {
+            _ = try await engine(for: id)
+        }
+    }
+
+    /// Variant of `engine(for:)` for detector-kind models. Mirrors the
+    /// classifier path: cache by id, evict on compute-units mismatch, refuse
+    /// to instantiate for an undownloaded model.
+    func detectorEngine(for id: String, computeUnits: ComputeUnitsPreference = .all) async throws -> MLDetectorEngine {
+        lock.lock()
+        if let cached = loadedDetectors[id] {
+            if cached.loadedComputeUnits == computeUnits {
+                lock.unlock()
+                return cached
+            }
+            loadedDetectors.removeValue(forKey: id)
+            lock.unlock()
+            cached.unload()
+            lock.lock()
+        }
+
+        guard let factory    = detectorFactories[id],
+              let descriptor = descriptors[id] else {
+            lock.unlock()
+            throw MLEngineError.modelNotFound(id)
+        }
+        lock.unlock()
+
+        if descriptor.requiresDownload && !descriptor.isAvailable {
+            throw MLEngineError.modelNotDownloaded(id)
+        }
+
+        let engine = factory(descriptor)
+        engine.setPreferredComputeUnits(computeUnits)
+        try await engine.load()
+
+        lock.lock()
+        loadedDetectors[id] = engine
+        lock.unlock()
+
+        return engine
     }
 
     func unloadAll() {
         lock.lock()
-        let engines = Array(loaded.values)
+        let classifiers = Array(loaded.values)
+        let detectors   = Array(loadedDetectors.values)
         loaded.removeAll()
+        loadedDetectors.removeAll()
         lock.unlock()
-        engines.forEach { $0.unload() }
+        classifiers.forEach { $0.unload() }
+        detectors.forEach   { $0.unload() }
     }
 
     /// Unload a specific model to free memory (e.g. before loading a different one)
     func unload(_ id: String) {
         lock.lock()
-        let engine = loaded.removeValue(forKey: id)
+        let cls = loaded.removeValue(forKey: id)
+        let det = loadedDetectors.removeValue(forKey: id)
         lock.unlock()
-        engine?.unload()
+        cls?.unload()
+        det?.unload()
     }
 
     // MARK: - Built-in models
@@ -143,6 +224,28 @@ final class ModelRegistry {
             downloadSizeBytes:  151_000_000
         )
         register(descriptor: adamcodd) { CoreMLEngine(descriptor: $0) }
+
+        // ── Detector model: NudeNet (downloadable) ──────────────────
+        // The user hosts the converted artefact themselves. Default URL is a
+        // placeholder following the same `models/<Name>.mlmodelc.zip` pattern
+        // as the other downloadable models. Override at runtime via
+        // `setModelDownloadUrl`.
+        let nudenetDefaultUrl = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models/NudeNetDetector.mlmodelc.zip"
+        let nudenet = ModelDescriptorNative(
+            id:                 ModelIds.nudenet,
+            displayName:        "NudeNet (Detection)",
+            description:        "Body-part bounding-box detector. ~50 MB.",
+            version:            "1.0",
+            bundleResourceName: "NudeNetDetector",
+            metadata: [
+                "inputSize": 320,
+                "framework": "CoreML",
+                "kind":      "detector",
+            ],
+            downloadUrl:        UserDefaults.standard.string(forKey: "nsfw_model_url_\(ModelIds.nudenet)") ?? nudenetDefaultUrl,
+            downloadSizeBytes:  50_000_000
+        )
+        register(detectorDescriptor: nudenet) { CoreMLDetectorEngine(descriptor: $0) }
     }
 
     // MARK: - Dynamic URL configuration
