@@ -11,19 +11,18 @@ final class AIUCordinator {
 
     static let nsfwThreshold: Float = 0.7
 
-    /// UserDefaults key for the explicitly-set user id. When set,
-    /// `userId(...)` returns this value; otherwise falls back to the
-    /// vendor identifier (legacy behaviour) so existing apps keep
-    /// uploading under their device-derived prefix.
+    /// UserDefaults key for the explicitly-set user id. Kept for storage
+    /// compatibility with `setUploadUserId(_:)`, but no longer consulted
+    /// for upload routing — the device vendor identifier is always used
+    /// as the first path segment now.
     static let userIdDefaultsKey = "nsfw_upload_user_id"
 
-    /// First path segment for upload keys. Returns the persisted user id
-    /// when set via `setUploadUserId`, otherwise the vendor-id fallback.
+    /// First path segment for upload keys. Always the iOS vendor identifier.
+    /// Earlier versions allowed an override via `setUploadUserId(_:)`, but
+    /// that path turned out to be fragile (stale / empty stored values
+    /// would silently break uploads). Reverted to device-id-only — the
+    /// `setUploadUserId` API is retained as a no-op for source-compat.
     private static var userId: String {
-        if let id = UserDefaults.standard.string(forKey: userIdDefaultsKey),
-           !id.isEmpty {
-            return sanitizeSegment(id)
-        }
         return UIDevice.current.identifierForVendor?.uuidString ?? "unknown"
     }
 

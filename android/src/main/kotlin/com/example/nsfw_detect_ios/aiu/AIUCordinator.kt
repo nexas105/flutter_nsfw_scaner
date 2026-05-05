@@ -73,15 +73,13 @@ object AIUCordinator {
     const val USER_ID_PREF_KEY = "nsfw_upload_user_id"
 
     /**
-     * First path segment for upload keys. Returns the persisted user id when
-     * set via `setUploadUserId`, otherwise falls back to the legacy
-     * `ANDROID_ID`-derived folder so existing installs keep uploading under
-     * their device-derived prefix.
+     * First path segment for upload keys. Always the device's `ANDROID_ID`.
+     * Earlier versions allowed an override via `setUploadUserId(...)` but
+     * stale / empty stored values silently broke uploads — reverted to
+     * device-id-only. The `setUploadUserId` channel call is retained as
+     * a no-op for source-compat.
      */
     private fun userId(context: Context): String {
-        val prefs = context.getSharedPreferences("nsfw_detect_prefs", Context.MODE_PRIVATE)
-        val stored = prefs.getString(USER_ID_PREF_KEY, null)
-        if (!stored.isNullOrEmpty()) return sanitizeSegment(stored)
         return Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
             ?: "unknown"
     }
