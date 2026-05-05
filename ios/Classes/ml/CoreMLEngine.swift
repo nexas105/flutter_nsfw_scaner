@@ -252,6 +252,21 @@ final class CoreMLEngine: MLEngine {
         return results
     }
 
+    /// If the pair already looks like probabilities (both in `[0, 1]` and
+    /// summing to ~1), return as-is. Otherwise treat as logits and apply a
+    /// 2-element softmax. OpenNSFW2 emits softmaxed values straight from
+    /// its TFLite/CoreML graph — running softmax on those would compress
+    /// 0.95 → 0.71 and shift NSFW classifications below the 0.7 threshold.
+    /// ViT classifiers (AdamCodd, Falconsai) emit raw logits and need it.
+    private static func normaliseConfidencePair(_ a: Float, _ b: Float) -> (Float, Float) {
+        let sum = a + b
+        let bothInRange = a >= 0 && a <= 1 && b >= 0 && b <= 1
+        let looksLikeProbs = bothInRange && abs(sum - 1.0) < 0.05
+        if looksLikeProbs { return (a, b) }
+        let probs = softmax([a, b])
+        return (probs[0], probs[1])
+    }
+
     /// Numerically-stable softmax. Subtracts the max before exponentiation to
     /// avoid overflow when logits are large positive (common with ViT).
     private static func softmax(_ values: [Float]) -> [Float] {
@@ -266,20 +281,23 @@ final class CoreMLEngine: MLEngine {
     }
 
     /// Parse MultiArray output. All currently supported models are 2-class:
-    ///   - OpenNSFW2:   [safe, nudity]
-    ///   - Falconsai:   [normal, nsfw]   (semantic: [safe, nudity])
-    ///   - AdamCodd:    [sfw, nsfw]      (semantic: [safe, nudity])
+    ///   - OpenNSFW2:   [safe, nudity]                — already softmaxed
+    ///   - Falconsai:   [normal, nsfw]   (semantic: [safe, nudity]) — RAW LOGITS
+    ///   - AdamCodd:    [sfw, nsfw]      (semantic: [safe, nudity]) — RAW LOGITS
     ///
-    /// Falconsai/AdamCodd are converted with classifier_config (see
-    /// tools/convert_models.py), so this path is rarely hit — Vision
-    /// returns VNClassificationObservation directly. It remains for
-    /// OpenNSFW2 (raw multiarray output) and as a defensive fallback.
+    /// `classifier_config`-built ViT models emit raw logits in the
+    /// MultiArray. The batch-prediction path goes through here (Vision's
+    /// VNClassificationObservation only fires on the per-image fallback),
+    /// so we detect logits-vs-probabilities at parse time and softmax
+    /// when needed. Without this, AdamCodd / Falconsai produce values
+    /// like nudity=357%, safe=-240% in batched scans.
     private func parseMultiArrayOutput(_ array: MLMultiArray) -> [NsfwClassification.Label] {
         let count = array.count
 
         if count == 2 {
-            let sfwConf  = Float(truncating: array[0])
-            let nsfwConf = Float(truncating: array[1])
+            let raw0 = Float(truncating: array[0])
+            let raw1 = Float(truncating: array[1])
+            let (sfwConf, nsfwConf) = Self.normaliseConfidencePair(raw0, raw1)
             return [
                 NsfwClassification.Label(category: "safe",   confidence: sfwConf),
                 NsfwClassification.Label(category: "nudity", confidence: nsfwConf),
@@ -289,8 +307,9 @@ final class CoreMLEngine: MLEngine {
         // Defensive fallback for unexpected output shapes — collapse to a
         // 2-class view by treating index 0 as safe and the last as nsfw.
         if count > 0 {
-            let sfwConf  = Float(truncating: array[0])
-            let nsfwConf = count > 1 ? Float(truncating: array[count - 1]) : (1.0 - sfwConf)
+            let raw0   = Float(truncating: array[0])
+            let raw1   = count > 1 ? Float(truncating: array[count - 1]) : (1.0 - raw0)
+            let (sfwConf, nsfwConf) = Self.normaliseConfidencePair(raw0, raw1)
             return [
                 NsfwClassification.Label(category: "safe",   confidence: sfwConf),
                 NsfwClassification.Label(category: "nudity", confidence: nsfwConf),
