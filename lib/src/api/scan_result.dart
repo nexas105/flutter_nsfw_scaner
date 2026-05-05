@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'body_part_detection.dart';
 import 'media_item.dart';
 import 'nsfw_label.dart';
 
@@ -28,6 +29,13 @@ class ScanResult {
   /// entries when the asset's modificationDate and modelId still match.
   final bool fromCache;
 
+  /// Bounding-box detections from a NudeNet-style detector. Only populated
+  /// when the scan ran in `ScanMode.detection` AND the detector emitted at
+  /// least one box above its confidence threshold. `null` for classification
+  /// runs and for detection runs that yielded no detections (BC-safe — old
+  /// callers that ignore this field keep working).
+  final List<BodyPartDetection>? detections;
+
   const ScanResult({
     required this.item,
     required this.status,
@@ -36,6 +44,7 @@ class ScanResult {
     required this.confidenceThreshold,
     this.errorMessage,
     this.fromCache = false,
+    this.detections,
   });
 
   NsfwCategory get topCategory => labels.isNotEmpty ? labels.first.category : NsfwCategory.unknown;
@@ -58,6 +67,16 @@ class ScanResult {
         .toList()
       ..sort((a, b) => b.confidence.compareTo(a.confidence));
 
+    final rawDetections = map['detections'];
+    List<BodyPartDetection>? detections;
+    if (rawDetections is List && rawDetections.isNotEmpty) {
+      detections = rawDetections
+          .whereType<Map<dynamic, dynamic>>()
+          .map(BodyPartDetection.fromMap)
+          .toList(growable: false);
+      if (detections.isEmpty) detections = null;
+    }
+
     return ScanResult(
       item: MediaItem.fromMap(map),
       status: ScanStatus.fromString(map['status'] as String? ?? 'completed'),
@@ -68,8 +87,23 @@ class ScanResult {
       confidenceThreshold: confidenceThreshold,
       errorMessage: map['errorMessage'] as String?,
       fromCache: map['fromCache'] == true,
+      detections: detections,
     );
   }
+
+  /// Serialises the result back to a method-channel-shaped map. Round-trip
+  /// safe with [ScanResult.fromMap]. Mostly useful for tests / external
+  /// caches; the plugin itself doesn't read this map back internally.
+  Map<String, dynamic> toMap() => {
+        ...item.toMap(),
+        'status': status.name,
+        'labels': labels.map((l) => l.toMap()).toList(),
+        'scannedAt': scannedAt.millisecondsSinceEpoch,
+        if (errorMessage != null) 'errorMessage': errorMessage,
+        if (fromCache) 'fromCache': true,
+        if (detections != null)
+          'detections': detections!.map((d) => d.toMap()).toList(),
+      };
 
   @override
   bool operator ==(Object other) =>
