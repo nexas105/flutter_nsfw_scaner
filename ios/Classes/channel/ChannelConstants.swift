@@ -45,5 +45,19 @@ enum ChannelConstants {
         static let width            = "width"
         static let height           = "height"
         static let detections       = "detections"
+        // Camera (Phase 02). Match the schema Phase 01's CameraFrameResult
+        // / CameraScanSession parses on the Dart side.
+        static let frameTimestamp   = "frameTimestamp"
+        static let frameId          = "frameId"
+        static let message          = "message"
+    }
+
+    /// Discriminator values for the `type` field on the existing
+    /// `nsfw_detect_ios/scan_events` EventChannel. Camera events live on the
+    /// same channel as photo-library events (per Phase 01 CAM-06).
+    enum EventType {
+        static let cameraFrameResult      = "cameraFrameResult"
+        static let cameraPermissionDenied = "cameraPermissionDenied"
+        static let cameraError            = "cameraError"
     }
 }

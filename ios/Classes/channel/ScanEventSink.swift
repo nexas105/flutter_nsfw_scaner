@@ -90,6 +90,31 @@ final class ScanEventSink: NSObject, FlutterStreamHandler {
         return map
     }
 
+    /// Build the wire-shape map for a single camera frame result. Mirrors
+    /// `buildResultMap(asset:classification:)` minus the PHAsset-bound
+    /// fields (no localId, no mediaType, no creationDate, no width/height,
+    /// no durationMs). Detection-mode frames carry the same `detections`
+    /// array shape photo-library detection results use, so the existing
+    /// Dart `BodyPartDetection.fromMap` parses both transparently.
+    func buildCameraFrameMap(classification: NsfwClassification,
+                             frameId: String,
+                             frameTimestampMs: Int64) -> [String: Any] {
+        var map: [String: Any] = [
+            ChannelConstants.EventKey.eventType:      ChannelConstants.EventType.cameraFrameResult,
+            ChannelConstants.EventKey.frameId:        frameId,
+            ChannelConstants.EventKey.frameTimestamp: frameTimestampMs,
+            ChannelConstants.EventKey.scannedAt:      Int64(Date().timeIntervalSince1970 * 1000),
+            ChannelConstants.EventKey.labels:         classification.labels.map { [
+                ChannelConstants.EventKey.category:   $0.category,
+                ChannelConstants.EventKey.confidence: Double($0.confidence),
+            ] as [String: Any] },
+        ]
+        if let detections = classification.detections, !detections.isEmpty {
+            map[ChannelConstants.EventKey.detections] = detections.map { $0.toDictionary() }
+        }
+        return map
+    }
+
     func emitProgress(scanned: Int, total: Int, isComplete: Bool, currentAsset: PHAsset? = nil) {
         emit(buildProgressMap(scanned: scanned, total: total,
                               isComplete: isComplete, currentAsset: currentAsset))

@@ -89,6 +89,9 @@ final class CameraFrameProcessor {
             inflightLock.withLock { $0 = max(0, $0 - 1) }
         }
 
+        let frameId = UUID().uuidString
+        let frameTimestampMs = Int64(Date().timeIntervalSince1970 * 1000)
+
         do {
             let registry = ModelRegistry.shared
             let inputSize = registry.descriptor(for: config.modelId)?
@@ -98,8 +101,8 @@ final class CameraFrameProcessor {
                                                   target: inputSize,
                                                   ciContext: ciContext) else {
                 eventSink.emit([
-                    ChannelConstants.EventKey.eventType: "cameraError",
-                    "message": "Frame resize failed",
+                    ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
+                    ChannelConstants.EventKey.message:   "Frame resize failed",
                 ])
                 return
             }
@@ -107,6 +110,7 @@ final class CameraFrameProcessor {
             // Route classifier vs detector on the same registry signal the
             // photo path uses (`ScanMethodHandler.startScan` line 102).
             let kind = registry.kind(for: config.modelId)
+            let classification: NsfwClassification
             if kind == .detector {
                 // IOS-CAM-05 — detection path. Reuses NudeNet detector +
                 // NMS + aggregator. Zero new detection-mode code.
@@ -115,22 +119,35 @@ final class CameraFrameProcessor {
                     computeUnits: config.iosComputeUnits)
                 detector.setMinConfidence(Float(config.detectionConfidenceThreshold))
                 let raw = try await detector.detect(pixelBuffer: resized)
-                _ = NsfwClassification.fromDetections(raw)
+                classification = NsfwClassification.fromDetections(raw)
             } else {
                 // IOS-CAM-04 — classification path.
                 let engine = try await registry.engine(
                     for: config.modelId,
                     computeUnits: config.iosComputeUnits)
-                _ = try await engine.classify(pixelBuffer: resized)
+                classification = try await engine.classify(pixelBuffer: resized)
             }
 
-            // IOS-CAM-06 wires emission of the result onto the EventChannel.
+            emitFrameResult(classification: classification,
+                            frameId: frameId,
+                            frameTimestampMs: frameTimestampMs)
         } catch {
             eventSink.emit([
-                ChannelConstants.EventKey.eventType: "cameraError",
-                "message": "\(error)",
+                ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
+                ChannelConstants.EventKey.message:   "\(error)",
             ])
         }
+    }
+
+    private func emitFrameResult(classification: NsfwClassification,
+                                 frameId: String,
+                                 frameTimestampMs: Int64) {
+        let payload = eventSink.buildCameraFrameMap(
+            classification: classification,
+            frameId: frameId,
+            frameTimestampMs: frameTimestampMs
+        )
+        eventSink.emit(payload)
     }
 
     /// `CIContext`-backed BGRA aspect-fill resize → fresh `CVPixelBuffer` at
