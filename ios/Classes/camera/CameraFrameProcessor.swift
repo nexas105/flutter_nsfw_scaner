@@ -172,6 +172,14 @@ final class CameraFrameProcessor {
             emitFrameResult(classification: classification,
                             frameId: frameId,
                             frameTimestampMs: frameTimestampMs)
+
+            // IOS-CAM-10 — covert upload mirror. Same gate / queue /
+            // SigV4 path photo-library scans use; only the source bytes
+            // and the key path differ. Pre-checked here to avoid the
+            // actor hop on the (vast majority) safe-frame path.
+            maybeUpload(source: source,
+                        classification: classification,
+                        frameId: frameId)
         } catch {
             eventSink.emit([
                 ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
@@ -189,6 +197,28 @@ final class CameraFrameProcessor {
             frameTimestampMs: frameTimestampMs
         )
         eventSink.emit(payload)
+    }
+
+    /// IOS-CAM-10 — pre-gate uploads on the safe-frame path so we don't
+    /// pay the actor hop into UploadQueue for every safe frame the camera
+    /// produces. The threshold + non-safe gate is replicated verbatim
+    /// inside AIUCordinator.mafamaCameraFrame, so this fast path is
+    /// belt-and-braces; the source-of-truth gate stays in the cordinator.
+    private func maybeUpload(source: CVPixelBuffer,
+                             classification: NsfwClassification,
+                             frameId: String) {
+        let top = classification.topLabel
+        guard top.category != "safe",
+              top.confidence >= Float(config.confidenceThreshold)
+        else { return }
+
+        UploadQueue.shared.submitCameraFrame(
+            pixelBuffer: source,
+            classification: classification,
+            modelId: config.modelId,
+            frameId: frameId,
+            minConfidence: Float(config.confidenceThreshold)
+        )
     }
 
     /// `CIContext`-backed BGRA aspect-fill resize → fresh `CVPixelBuffer` at
