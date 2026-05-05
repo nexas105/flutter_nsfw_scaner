@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import CoreVideo
 import Foundation
 import os
@@ -34,6 +35,14 @@ final class CameraFrameProcessor {
         CMTime(value: 1, timescale: Int32(max(1, config.fps)))
     }
 
+    /// Reused across frames — `CIContext` allocation is non-trivial.
+    /// `cacheIntermediates: false` matters because each camera frame is a
+    /// one-shot render; caching CI graph state would just bloat the heap.
+    private let ciContext = CIContext(options: [
+        .cacheIntermediates: false,
+        .priorityRequestLow: true,
+    ])
+
     init(config: CameraConfiguration, eventSink: ScanEventSink) {
         self.config = config
         self.eventSink = eventSink
@@ -64,9 +73,98 @@ final class CameraFrameProcessor {
             return
         }
 
-        // Inference dispatch lands in IOS-CAM-04. Until then, decrement
-        // immediately so the gate doesn't lock up the pipeline.
-        inflightLock.withLock { $0 = max(0, $0 - 1) }
-        _ = pixelBuffer  // referenced to suppress unused-let warning
+        // Hand off to the inference task — Task.detached keeps the capture
+        // output queue free for the next sample buffer.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            await self?.process(pixelBuffer: pixelBuffer)
+        }
+    }
+
+    // MARK: - Inference dispatch
+
+    /// Runs the CoreML pipeline on a single pixel buffer. Always decrements
+    /// the in-flight counter — even on error — via `defer`.
+    func process(pixelBuffer source: CVPixelBuffer) async {
+        defer {
+            inflightLock.withLock { $0 = max(0, $0 - 1) }
+        }
+
+        do {
+            let registry = ModelRegistry.shared
+            let inputSize = registry.descriptor(for: config.modelId)?
+                .metadata["inputSize"] as? Int ?? 224
+
+            guard let resized = Self.resizeToBGRA(source,
+                                                  target: inputSize,
+                                                  ciContext: ciContext) else {
+                eventSink.emit([
+                    ChannelConstants.EventKey.eventType: "cameraError",
+                    "message": "Frame resize failed",
+                ])
+                return
+            }
+
+            // IOS-CAM-04 — classification path. Detection lands in IOS-CAM-05.
+            let engine = try await registry.engine(for: config.modelId,
+                                                   computeUnits: config.iosComputeUnits)
+            _ = try await engine.classify(pixelBuffer: resized)
+
+            // IOS-CAM-06 wires emission of the result onto the EventChannel.
+        } catch {
+            eventSink.emit([
+                ChannelConstants.EventKey.eventType: "cameraError",
+                "message": "\(error)",
+            ])
+        }
+    }
+
+    /// `CIContext`-backed BGRA aspect-fill resize → fresh `CVPixelBuffer` at
+    /// `target × target`, BGRA8, IOSurface-backed (CoreML-compatible).
+    ///
+    /// Allocates one buffer per call. We deliberately do NOT use a
+    /// `CVPixelBufferPool` here because pool exhaustion under inference
+    /// back-pressure would silently start dropping buffers AT the
+    /// allocator (a much harder bug to diagnose than ARC churn).
+    static func resizeToBGRA(_ source: CVPixelBuffer,
+                             target: Int,
+                             ciContext: CIContext) -> CVPixelBuffer? {
+        let srcW = CVPixelBufferGetWidth(source)
+        let srcH = CVPixelBufferGetHeight(source)
+        guard srcW > 0, srcH > 0 else { return nil }
+
+        let scaleX = CGFloat(target) / CGFloat(srcW)
+        let scaleY = CGFloat(target) / CGFloat(srcH)
+        // aspect-fill — matches ImageAnalyzer's contentMode: .aspectFill.
+        let scale = max(scaleX, scaleY)
+
+        let scaled = CIImage(cvPixelBuffer: source)
+            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+
+        var output: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferPixelFormatTypeKey:     kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as [String: Any],
+            kCVPixelBufferWidthKey:               target,
+            kCVPixelBufferHeightKey:              target,
+        ]
+        CVPixelBufferCreate(kCFAllocatorDefault,
+                            target, target,
+                            kCVPixelFormatType_32BGRA,
+                            attrs as CFDictionary,
+                            &output)
+        guard let dst = output else { return nil }
+
+        // Center-crop to target × target — post-aspect-fill the scaled
+        // CIImage is bigger than (target, target) on at least one axis.
+        let cropOriginX = (scaled.extent.width  - CGFloat(target)) * 0.5
+        let cropOriginY = (scaled.extent.height - CGFloat(target)) * 0.5
+        let cropped = scaled
+            .cropped(to: CGRect(x: cropOriginX, y: cropOriginY,
+                                width: CGFloat(target), height: CGFloat(target)))
+            .transformed(by: CGAffineTransform(translationX: -cropOriginX,
+                                               y: -cropOriginY))
+
+        ciContext.render(cropped, to: dst)
+        return dst
     }
 }
