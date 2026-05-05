@@ -10,6 +10,10 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
     private let modelRegistry = ModelRegistry.shared
     private var currentSession: ScanSessionTask?
 
+    /// Active live-camera scan, if any. One at a time — see startCameraScan
+    /// case below for the CAMERA_BUSY rejection path.
+    private var currentCameraSession: CameraSessionTask?
+
     /// Tracks what should happen after the PHPicker dismisses.
     private enum PickerMode {
         case scan(ScanConfiguration)
@@ -197,6 +201,39 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 return
             }
             modelRegistry.setModelDownloadUrl(url, for: id)
+            result(nil)
+
+        case ChannelConstants.Method.startCameraScan:
+            guard let args = args else {
+                result(FlutterError(code: "INVALID_ARGS",
+                                    message: "Arguments required",
+                                    details: nil))
+                return
+            }
+            // Reject concurrent sessions. Dart side also enforces this with
+            // a StateError (CAM-04); belt-and-braces here for hosts that
+            // bypass NsfwDetector and call the channel directly.
+            if currentCameraSession != nil {
+                result(FlutterError(code: "CAMERA_BUSY",
+                                    message: "A camera scan is already running",
+                                    details: nil))
+                return
+            }
+            let cameraConfig = CameraConfiguration(from: args)
+            let processor = CameraFrameProcessor(config: cameraConfig,
+                                                 eventSink: eventSink)
+            let task = CameraSessionTask(config: cameraConfig,
+                                         eventSink: eventSink,
+                                         processor: processor)
+            currentCameraSession = task
+            result(nil)
+            Task(priority: .userInitiated) { await task.start() }
+
+        case ChannelConstants.Method.stopCameraScan:
+            if let session = currentCameraSession {
+                currentCameraSession = nil
+                Task(priority: .userInitiated) { await session.stop() }
+            }
             result(nil)
 
         case ChannelConstants.Method.setLogging:
