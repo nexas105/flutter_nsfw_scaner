@@ -256,8 +256,11 @@ final class ScanSessionTask {
                                 let frames = try await sampler.sample(asset: asset, config: self.config, inputSize: inputSize)
                                 let classification: NsfwClassification
                                 if frames.isEmpty {
+                                    NSLog("[NSFW] Video SKIPPED (no usable frames): %@ duration=%.2fs",
+                                          asset.localIdentifier, asset.duration)
                                     batcher.recordResult(self.eventSink.buildResultMap(
-                                        asset: asset, classification: .unknown, status: "skipped"))
+                                        asset: asset, classification: .unknown, status: "skipped",
+                                        errorMessage: "no usable frames (duration=\(String(format: "%.2f", asset.duration))s)"))
                                     let s = scanned.increment()
                                     batcher.recordProgress(self.eventSink.buildProgressMap(
                                         scanned: s, total: total, isComplete: s == total, currentAsset: asset))
@@ -576,8 +579,11 @@ final class ScanSessionTask {
                         if asset.mediaType == .video {
                             let frames = try await sampler.sample(asset: asset, config: self.config, inputSize: inputSize)
                             guard let first = frames.first else {
+                                NSLog("[NSFW] Detection video SKIPPED (no frames): %@ duration=%.2fs",
+                                      asset.localIdentifier, asset.duration)
                                 batcher.recordResult(self.eventSink.buildResultMap(
-                                    asset: asset, classification: .unknown, status: "skipped"))
+                                    asset: asset, classification: .unknown, status: "skipped",
+                                    errorMessage: "no usable frames (duration=\(String(format: "%.2f", asset.duration))s)"))
                                 let s = scanned.increment()
                                 batcher.recordProgress(self.eventSink.buildProgressMap(
                                     scanned: s, total: total, isComplete: s == total, currentAsset: asset))
