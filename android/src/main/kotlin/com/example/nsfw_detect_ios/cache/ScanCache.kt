@@ -92,6 +92,15 @@ class ScanCache private constructor(context: Context) :
                 db.execSQL("ALTER TABLE scans ADD COLUMN detections_json TEXT;")
             }
 
+            // 2 -> 3: drop all stored labels. Earlier builds persisted raw
+            // logits for ViT-classifier scans (AdamCodd / Falconsai) because
+            // the batch-prediction path skipped the softmax step. Replays of
+            // those rows surface confidences like nudity=357% / safe=-240%.
+            // Pendant to iOS migration 2 -> 3.
+            if (fromVersion < 3) {
+                db.execSQL("DELETE FROM scans;")
+            }
+
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -247,7 +256,7 @@ class ScanCache private constructor(context: Context) :
     companion object {
         private const val TAG = "NSFW-ScanCache"
         private const val DB_NAME = "nsfw_scan_cache.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
         // 50 trades minor crash-loss risk for ~50× fewer disk syncs on a 200k-asset scan.
         private const val BATCH_SIZE = 50
 
