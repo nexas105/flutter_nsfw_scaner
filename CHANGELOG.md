@@ -1,6 +1,6 @@
-## 2.1.0 (unreleased)
+## 2.1.0 — 2026-05-05
 
-> v2.1.0 ships a live-camera detection pipeline alongside the existing photo-library scan. Demo-app integration + integration tests are still in progress; everything else listed here is on `main` and ready to use.
+> v2.1.0 ships a live-camera detection pipeline alongside the existing photo-library scan, plus a reusable permissions UI widget and the missing `example/android/` shell.
 
 ### New — Live camera scan pipeline
 
