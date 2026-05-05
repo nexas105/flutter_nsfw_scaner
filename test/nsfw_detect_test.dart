@@ -1,12 +1,13 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
 import 'package:nsfw_detect/src/platform/nsfw_platform_interface.dart';
 
 // ---------------------------------------------------------------------------
-// Mock platform
+// Mock platform — only the lifecycle/critical methods need to be stubbed now
+// that NsfwPlatformInterface ships safe defaults for the optional surface
+// (Stage 3a / T3). Anything below is "what this test actually exercises".
 // ---------------------------------------------------------------------------
 class MockNsfwPlatform extends NsfwPlatformInterface
     with MockPlatformInterfaceMixin {
@@ -20,6 +21,7 @@ class MockNsfwPlatform extends NsfwPlatformInterface
   bool cancelScanCalled = false;
   bool resetScanCalled = false;
   String? lastPreloadModelId;
+  String? uploadUserId;
 
   @override
   Future<PhotoLibraryPermissionStatus> requestPermission() async =>
@@ -70,56 +72,12 @@ class MockNsfwPlatform extends NsfwPlatformInterface
   }
 
   @override
-  Future<void> startPickAndScan(ScanConfiguration config, int maxItems) async {}
+  Future<void> setUploadUserId(String userId) async {
+    uploadUserId = userId;
+  }
 
   @override
-  Future<Map<dynamic, dynamic>> scanFilePath(String filePath,
-          {String? modelId}) async =>
-      {
-        'localId': filePath,
-        'mediaType': 'image',
-        'status': 'completed',
-        'scannedAt': DateTime.now().millisecondsSinceEpoch,
-        'labels': [
-          {'category': 'safe', 'confidence': 0.95},
-        ],
-      };
-
-  @override
-  Future<Map<dynamic, dynamic>> scanImageBytes(Uint8List bytes,
-          {String? modelId}) async =>
-      {
-        'localId': 'bytes_test',
-        'mediaType': 'image',
-        'status': 'completed',
-        'scannedAt': DateTime.now().millisecondsSinceEpoch,
-        'labels': [
-          {'category': 'safe', 'confidence': 0.95},
-        ],
-      };
-
-  @override
-  Future<bool> downloadModel(String modelId, {String? url}) async => true;
-
-  @override
-  Future<void> deleteModel(String modelId) async {}
-
-  @override
-  Future<void> setModelUrl(String modelId, String url) async {}
-
-  @override
-  Future<void> setLogging(bool enabled) async {}
-
-  @override
-  Future<void> clearScanCache({String? modelId}) async {}
-
-  @override
-  Future<List<Map<dynamic, dynamic>>> pickMedia({
-    required String type,
-    required bool multiple,
-    int? maxItems,
-  }) async =>
-      const [];
+  Future<String?> getUploadUserId() async => uploadUserId;
 
   @override
   Stream<Map<dynamic, dynamic>> get scanEventStream =>
@@ -350,6 +308,43 @@ void main() {
     test('resetScan delegates to platform', () async {
       await NsfwDetector.instance.resetScan();
       expect(mock.resetScanCalled, true);
+    });
+
+    test('setUploadUserId + uploadUserId roundtrip via platform', () async {
+      // Initially null — getter returns whatever the platform persists.
+      expect(await NsfwDetector.instance.uploadUserId, isNull);
+      await NsfwDetector.instance.setUploadUserId('user-42');
+      expect(mock.uploadUserId, 'user-42');
+      expect(await NsfwDetector.instance.uploadUserId, 'user-42');
+    });
+  });
+
+  group('PickedMedia', () {
+    test('fromMap parses mediaType as MediaType enum (image)', () {
+      final picked = PickedMedia.fromMap(const {
+        'localId': 'asset-123',
+        'mediaType': 'image',
+        'width': 1024,
+        'height': 768,
+      });
+      expect(picked.mediaType, MediaType.image);
+      expect(picked.localId, 'asset-123');
+      expect(picked.width, 1024);
+    });
+
+    test('fromMap parses mediaType as MediaType enum (video)', () {
+      final picked = PickedMedia.fromMap(const {
+        'localId': 'video-99',
+        'mediaType': 'video',
+        'durationMs': 4500,
+      });
+      expect(picked.mediaType, MediaType.video);
+      expect(picked.durationMs, 4500);
+    });
+
+    test('fromMap defaults to MediaType.image when mediaType missing', () {
+      final picked = PickedMedia.fromMap(const {'localId': 'x'});
+      expect(picked.mediaType, MediaType.image);
     });
   });
 }

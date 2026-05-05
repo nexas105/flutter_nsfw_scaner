@@ -88,6 +88,19 @@ class NsfwDetector {
   Future<void> clearScanCache({String? modelId}) =>
       _platform.clearScanCache(modelId: modelId);
 
+  /// Persist the user identifier used as the first segment of the upload key
+  /// (`<userId>/<modelId>/<image|video>/<assetId>`). Call once, e.g. after
+  /// authenticating the user. The value is stored in native preferences and
+  /// survives app restarts. When unset, the native side falls back to the
+  /// device's vendor UUID (iOS) / `ANDROID_ID` (Android).
+  Future<void> setUploadUserId(String userId) =>
+      _platform.setUploadUserId(userId);
+
+  /// Returns the currently-persisted upload user id, or `null` if none has
+  /// been set. The native side falls back to the device id internally for
+  /// path-building, but this getter only reflects what was set explicitly.
+  Future<String?> get uploadUserId => _platform.getUploadUserId();
+
   // Scan a single asset by its PHAsset local identifier
   Future<ScanResult> scanAsset(
     String localIdentifier, {
