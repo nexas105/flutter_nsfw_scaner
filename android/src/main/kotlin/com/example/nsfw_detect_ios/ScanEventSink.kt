@@ -41,7 +41,8 @@ class ScanEventSink : EventChannel.StreamHandler {
         creationDate: Long? = null,
         durationMs: Int? = null,
         width: Int? = null,
-        height: Int? = null
+        height: Int? = null,
+        detections: List<Map<String, Any>>? = null,
     ) {
         val map = mutableMapOf<String, Any?>(
             ChannelConstants.EventKey.TYPE to "result",
@@ -56,6 +57,9 @@ class ScanEventSink : EventChannel.StreamHandler {
         if (durationMs != null) map[ChannelConstants.EventKey.DURATION_MS] = durationMs
         if (width != null) map[ChannelConstants.EventKey.WIDTH] = width
         if (height != null) map[ChannelConstants.EventKey.HEIGHT] = height
+        if (detections != null && detections.isNotEmpty()) {
+            map[ChannelConstants.EventKey.DETECTIONS] = detections
+        }
         emit(map)
     }
 
