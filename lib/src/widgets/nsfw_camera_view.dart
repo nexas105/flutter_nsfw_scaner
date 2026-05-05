@@ -79,6 +79,7 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
   CameraScanSession? _session;
   CameraFrameResult? _lastResult;
   StreamSubscription<CameraFrameResult>? _resultSub;
+  Orientation? _lastOrientation;
 
   @override
   void initState() {
@@ -132,6 +133,25 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
 
   @override
   Widget build(BuildContext context) {
+    return OrientationBuilder(
+      builder: (context, orientation) {
+        // WIDGET-06 — drop the stale detection boxes for one frame on
+        // rotation. Labels + confidence are size-agnostic and stay valid;
+        // boxes were computed at the old orientation and would skew
+        // visibly if we kept them. The next analyzer result repopulates
+        // them at the new orientation.
+        if (_lastOrientation != null &&
+            _lastOrientation != orientation &&
+            _lastResult?.detections != null) {
+          _lastResult = _lastResult!.copyWithoutDetections();
+        }
+        _lastOrientation = orientation;
+        return _buildStack();
+      },
+    );
+  }
+
+  Widget _buildStack() {
     final effectiveTheme = widget.theme ?? NsfwGalleryTheme.defaults;
     final isBlurred = widget.enableBlurOnNsfw &&
         _lastResult != null &&
