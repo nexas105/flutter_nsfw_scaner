@@ -45,6 +45,18 @@ class CameraFrameResult {
   double confidenceFor(NsfwCategory category) =>
       labels.where((l) => l.category == category).firstOrNull?.confidence ?? 0.0;
 
+  /// Returns a copy of this frame with [detections] cleared. Used by
+  /// `NsfwCameraView` (Phase 04 / WIDGET-06) on orientation change to drop
+  /// stale boxes for one frame while waiting for the next analyzer result —
+  /// the labels and confidence are size-agnostic and can be carried over
+  /// untouched.
+  CameraFrameResult copyWithoutDetections() => CameraFrameResult(
+        frameTimestamp: frameTimestamp,
+        labels: labels,
+        detections: null,
+        confidenceThreshold: confidenceThreshold,
+      );
+
   /// Parses a camera-frame event from the native side.
   ///
   /// The wire format mirrors [ScanResult.fromMap] minus asset fields:
