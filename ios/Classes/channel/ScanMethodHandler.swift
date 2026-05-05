@@ -46,7 +46,10 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             Task(priority: .utility) { [weak self] in
                 guard let self = self else { return }
                 do {
-                    try await self.modelRegistry.engine(for: id)
+                    // preload() routes to the correct factory map (classifier
+                    // vs detector) based on kind(for:). Calling engine(for:)
+                    // directly would 404 every detector-kind model.
+                    try await self.modelRegistry.preload(id)
                     DispatchQueue.main.async { result(nil) }
                 } catch {
                     let message = error.localizedDescription
