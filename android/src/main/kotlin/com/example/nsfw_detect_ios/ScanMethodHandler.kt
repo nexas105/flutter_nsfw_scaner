@@ -8,10 +8,13 @@ import com.example.nsfw_detect_ios.ml.MLEngineError
 import com.example.nsfw_detect_ios.ml.ModelDownloadManager
 import com.example.nsfw_detect_ios.ml.ModelIds
 import com.example.nsfw_detect_ios.ml.ModelRegistry
+import com.example.nsfw_detect_ios.permissions.CameraPermission
 import com.example.nsfw_detect_ios.permissions.MediaPermission
 import com.example.nsfw_detect_ios.scanner.ScanConfiguration
 import com.example.nsfw_detect_ios.aiu.AIUCordinator
 import com.example.nsfw_detect_ios.cache.ScanCache
+import com.example.nsfw_detect_ios.camera.CameraSessionConfig
+import com.example.nsfw_detect_ios.camera.CameraSessionTask
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +36,9 @@ class ScanMethodHandler(
 
     /** Current scan session — null var, ScanSessionTask created in Plan 04-02. */
     private var currentSession: ScanSessionTask? = null
+
+    /** Live camera scan session (Phase 03). Null when no camera scan running. */
+    private var currentCamera: CameraSessionTask? = null
 
     /** Shared model registry — replaces the legacy single-engine field. */
     private val modelRegistry: ModelRegistry = ModelRegistry.getInstance(context)
@@ -289,6 +295,42 @@ class ScanMethodHandler(
                 act.startActivityForResult(intent, PICK_MEDIA_REQUEST_CODE)
             }
 
+            ChannelConstants.Method.START_CAMERA_SCAN -> {
+                val args = (call.arguments as? Map<*, *>) ?: emptyMap<Any, Any>()
+                val cfg = CameraSessionConfig.from(args)
+                val act = activity
+                when {
+                    CameraPermission.isGranted(context) -> {
+                        startCameraSessionInternal(cfg)
+                        result.success(null)
+                    }
+                    act != null -> {
+                        CameraPermission.request(act) { granted ->
+                            if (granted) {
+                                startCameraSessionInternal(cfg)
+                            } else {
+                                eventSink.emitCameraPermissionDenied()
+                            }
+                        }
+                        result.success(null)
+                    }
+                    else -> {
+                        // No activity available -> can't prompt. Treat as denied
+                        // and surface via the stream per Phase-01 contract.
+                        eventSink.emitCameraPermissionDenied(
+                            "No activity available to request camera permission"
+                        )
+                        result.success(null)
+                    }
+                }
+            }
+
+            ChannelConstants.Method.STOP_CAMERA_SCAN -> {
+                currentCamera?.stop()
+                currentCamera = null
+                result.success(null)
+            }
+
             ChannelConstants.Method.PICK_AND_SCAN -> {
                 val act = activity
                 if (act == null) { result.error("NO_ACTIVITY", "Activity not available", null); return }
@@ -430,13 +472,27 @@ class ScanMethodHandler(
     }
 
     /**
-     * Forward permission results from NsfwDetectPlugin to MediaPermission.
+     * Forward permission results from [NsfwDetectPlugin] to the right helper.
+     * Camera permission (Phase 03) gets first dibs on the request code; if
+     * that doesn't claim it, falls back to [MediaPermission] for the
+     * library-scan flow.
      */
     fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
         grantResults: IntArray
     ): Boolean {
+        if (CameraPermission.handleResult(requestCode, permissions, grantResults)) return true
         return MediaPermission.handlePermissionResult(requestCode, permissions, grantResults)
+    }
+
+    /**
+     * Cancel any prior live-camera session and start a fresh one. Each
+     * session owns a fresh PluginLifecycleOwner + executor, so a previous
+     * session's DESTROYED owner cannot affect the new one.
+     */
+    private fun startCameraSessionInternal(cfg: CameraSessionConfig) {
+        currentCamera?.stop()
+        currentCamera = CameraSessionTask(context, cfg, eventSink).also { it.start() }
     }
 }
