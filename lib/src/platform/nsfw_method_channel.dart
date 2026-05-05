@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import '../api/camera_configuration.dart';
 import '../api/model_descriptor.dart';
+import '../api/permissions/permission_kind.dart';
 import '../api/scan_configuration.dart';
 import 'nsfw_platform_interface.dart';
 
@@ -162,5 +163,29 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   @override
   Future<void> stopCameraScan() async {
     await _methodChannel.invokeMethod<void>('stopCameraScan');
+  }
+
+  @override
+  Future<PermissionStatus> checkCameraPermission() async {
+    try {
+      final result =
+          await _methodChannel.invokeMethod<String>('checkCameraPermission');
+      return PermissionStatus.fromString(result);
+    } on MissingPluginException {
+      // Native handler not yet wired (Phase 2 / 3). Surface as
+      // UnimplementedError so NsfwDetector can degrade to notDetermined.
+      throw UnimplementedError('checkCameraPermission not implemented');
+    }
+  }
+
+  @override
+  Future<PermissionStatus> requestCameraPermission() async {
+    try {
+      final result =
+          await _methodChannel.invokeMethod<String>('requestCameraPermission');
+      return PermissionStatus.fromString(result);
+    } on MissingPluginException {
+      throw UnimplementedError('requestCameraPermission not implemented');
+    }
   }
 }
