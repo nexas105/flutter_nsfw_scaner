@@ -1,14 +1,10 @@
 import 'package:flutter/foundation.dart';
 
-/// Filter passed to [NsfwDetector.pickMedia].
-enum MediaPickerType {
-  image('image'),
-  video('video'),
-  any('any');
+import 'media_item.dart';
 
-  const MediaPickerType(this.wireValue);
-  final String wireValue;
-}
+// Re-export for backwards compatibility — historically `MediaPickerType` lived
+// in this file. Consumers importing it from `picked_media.dart` keep working.
+export 'media_picker_type.dart';
 
 /// One item returned by [NsfwDetector.pickMedia].
 ///
@@ -18,7 +14,13 @@ enum MediaPickerType {
 @immutable
 class PickedMedia {
   final String localId;
-  final String mediaType; // "image" or "video"
+
+  /// Media type of the picked item. Stage 3a breaking change: this is now a
+  /// strongly-typed [MediaType] enum instead of the previous `String`. The
+  /// native picker only surfaces `image` or `video` here, but the field is
+  /// typed as [MediaType] so callers can compare directly with values from
+  /// [MediaItem.type].
+  final MediaType mediaType;
   final String? filePath;
   final int? width;
   final int? height;
@@ -35,7 +37,8 @@ class PickedMedia {
 
   factory PickedMedia.fromMap(Map<dynamic, dynamic> map) => PickedMedia(
         localId: map['localId'] as String,
-        mediaType: map['mediaType'] as String? ?? 'image',
+        mediaType: MediaType.fromString(
+            map['mediaType'] as String? ?? 'image'),
         filePath: map['filePath'] as String?,
         width: (map['width'] as num?)?.toInt(),
         height: (map['height'] as num?)?.toInt(),

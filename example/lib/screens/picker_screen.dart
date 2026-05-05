@@ -251,7 +251,7 @@ class _PickedMediaCard extends StatelessWidget {
     final t = theme;
     final asMediaItem = MediaItem(
       localIdentifier: media.localId,
-      type: media.mediaType == 'video' ? MediaType.video : MediaType.image,
+      type: media.mediaType,
       width: media.width,
       height: media.height,
       duration: media.durationMs != null
@@ -285,7 +285,7 @@ class _PickedMediaCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    media.mediaType.toUpperCase(),
+                    media.mediaType.name.toUpperCase(),
                     style: t.typography.label,
                   ),
                   SizedBox(height: t.spacing.xs),
