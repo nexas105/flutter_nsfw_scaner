@@ -1,6 +1,7 @@
 library nsfw_detect;
 
 export 'src/api/nsfw_detector.dart';
+export 'src/api/nsfw_scan_controller.dart';
 export 'src/api/nsfw_label.dart';
 export 'src/api/media_item.dart';
 export 'src/api/scan_result.dart';
