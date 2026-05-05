@@ -6,6 +6,8 @@ export 'src/api/media_item.dart';
 export 'src/api/scan_result.dart';
 export 'src/api/scan_progress.dart';
 export 'src/api/scan_configuration.dart';
+export 'src/api/scan_mode.dart';
+export 'src/api/body_part_detection.dart';
 export 'src/api/scan_session.dart';
 export 'src/api/picked_media.dart';
 export 'src/api/scan_summary.dart';

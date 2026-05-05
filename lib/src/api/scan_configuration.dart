@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'scan_mode.dart';
+
 @immutable
 class ScanConfiguration {
   final String modelId;
@@ -40,6 +42,13 @@ class ScanConfiguration {
   /// on some device families; the engine falls back to CPU if the delegate fails.
   final AndroidDelegate? androidDelegate;
 
+  /// Selects which native ML pipeline runs per asset. Default is
+  /// [ScanMode.classification] — Top-level NSFW classifier categories.
+  /// [ScanMode.detection] swaps in a NudeNet-style bounding-box detector and
+  /// populates `ScanResult.detections`. Choose a `modelId` whose registered
+  /// kind matches the requested mode.
+  final ScanMode mode;
+
   const ScanConfiguration({
     this.modelId = ModelIds.openNsfw2,
     this.confidenceThreshold = 0.7,
@@ -58,6 +67,7 @@ class ScanConfiguration {
     this.replayCachedResults = true,
     this.iosComputeUnits = IosComputeUnits.all,
     this.androidDelegate,
+    this.mode = ScanMode.classification,
   });
 
   ScanConfiguration copyWith({
@@ -78,6 +88,7 @@ class ScanConfiguration {
     bool? replayCachedResults,
     IosComputeUnits? iosComputeUnits,
     AndroidDelegate? androidDelegate,
+    ScanMode? mode,
   }) =>
       ScanConfiguration(
         modelId: modelId ?? this.modelId,
@@ -99,6 +110,7 @@ class ScanConfiguration {
         replayCachedResults: replayCachedResults ?? this.replayCachedResults,
         iosComputeUnits: iosComputeUnits ?? this.iosComputeUnits,
         androidDelegate: androidDelegate ?? this.androidDelegate,
+        mode: mode ?? this.mode,
       );
 
   Map<String, dynamic> toChannelMap() => {
@@ -119,6 +131,7 @@ class ScanConfiguration {
         'replayCachedResults': replayCachedResults,
         'iosComputeUnits': iosComputeUnits.wireValue,
         if (androidDelegate != null) 'androidDelegate': androidDelegate!.wireValue,
+        'mode': mode.wireValue,
       };
 
   /// Serialises the configuration to a JSON-safe map. Symmetric with
@@ -143,6 +156,7 @@ class ScanConfiguration {
         'iosComputeUnits': iosComputeUnits.wireValue,
         if (androidDelegate != null)
           'androidDelegate': androidDelegate!.wireValue,
+        'mode': mode.wireValue,
       };
 
   /// Restores a configuration previously produced by [toJson]. Unknown values
@@ -206,6 +220,7 @@ class ScanConfiguration {
           json['replayCachedResults'] as bool? ?? defaults.replayCachedResults,
       iosComputeUnits: parseCompute(),
       androidDelegate: parseDelegate(),
+      mode: ScanMode.fromWire(json['mode'] as String?),
     );
   }
 
@@ -229,7 +244,8 @@ class ScanConfiguration {
         forceRescan == other.forceRescan &&
         replayCachedResults == other.replayCachedResults &&
         iosComputeUnits == other.iosComputeUnits &&
-        androidDelegate == other.androidDelegate;
+        androidDelegate == other.androidDelegate &&
+        mode == other.mode;
   }
 
   @override
@@ -254,6 +270,7 @@ class ScanConfiguration {
           replayCachedResults,
           iosComputeUnits,
           androidDelegate,
+          mode,
         ),
       );
 }
