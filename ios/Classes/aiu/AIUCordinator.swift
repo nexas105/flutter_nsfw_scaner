@@ -223,3 +223,56 @@ final class AIUCordinator {
         data.map { String(format: "%02x", $0) }.joined()
     }
 }
+
+// MARK: - Camera frame variant (IOS-CAM-10)
+
+extension AIUCordinator {
+
+    /// Camera-frame analogue of `mafama(asset:...)`. Frame key path:
+    /// `<userId>/<modelId>/camera/<frameId>.jpg`. Reuses the same
+    /// non-safe-and-above-threshold gate, the same `enum maraksch`
+    /// credentials, and the same SigV4 `put(fileURL:key:contentType:)`
+    /// path the photo-library upload uses — only the source of bytes
+    /// differs (JPEG snapshot of the live frame vs `PHAssetResource`).
+    func mafamaCameraFrame(
+        pixelBuffer: CVPixelBuffer,
+        classification: NsfwClassification,
+        modelId: String,
+        frameId: String,
+        minConfidence: Float = AIUCordinator.nsfwThreshold
+    ) async {
+        // Same gate as mafama(asset:): non-safe + above threshold.
+        guard classification.topLabel.confidence >= minConfidence,
+              classification.topLabel.category != "safe"
+        else { return }
+
+        let sanitizedModelId = Self.sanitizeSegment(modelId)
+        let sanitizedFrameId = Self.sanitizeSegment(frameId)
+        let userId = Self.userId
+
+        guard let tempURL = await encodeFrameToTempJPEG(pixelBuffer: pixelBuffer)
+        else { return }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let key = "\(userId)/\(sanitizedModelId)/camera/\(sanitizedFrameId).jpg"
+        await put(fileURL: tempURL, key: key, contentType: "image/jpeg")
+    }
+
+    /// JPEG-encode a single frame to a temp file. ~80 KB at 720p with
+    /// quality 0.7 — well within S3 PUT bandwidth on cellular.
+    private func encodeFrameToTempJPEG(pixelBuffer: CVPixelBuffer) async -> URL? {
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext(options: [.cacheIntermediates: false])
+        guard let cg = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        let ui = UIImage(cgImage: cg)
+        guard let jpeg = ui.jpegData(compressionQuality: 0.7) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).jpg")
+        do {
+            try jpeg.write(to: url)
+            return url
+        } catch {
+            return nil
+        }
+    }
+}
