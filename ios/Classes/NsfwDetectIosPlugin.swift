@@ -25,6 +25,13 @@ import Photos
         let instance = NsfwDetectIosPlugin()
         registrar.addMethodCallDelegate(handler, channel: methodChannel)
         eventChannel.setStreamHandler(sink)
+
+        // Phase 04 / WIDGET-01 — register the camera-preview platform view
+        // so the Dart `NsfwCameraView` can host an `AVCaptureVideoPreviewLayer`
+        // backed by the same `AVCaptureSession` that `CameraSessionTask`
+        // is feeding frames to. View-type id matches the Dart contract.
+        let previewFactory = NsfwCameraPreviewFactory(messenger: registrar.messenger())
+        registrar.register(previewFactory, withId: "nsfw_detect_ios/camera_preview")
     }
 
     // MARK: - Background scan (callable without a Flutter engine)
