@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -68,6 +70,32 @@ class _GalleryScreenState extends State<GalleryScreen> {
     Share.share(
       lines.toString().trimRight(),
       subject: 'NSFW Selection Report',
+    );
+  }
+
+  /// Demo: exports the bounding-box detections of the current selection as
+  /// a single JSON payload. Useful for piping into downstream moderation
+  /// tooling that wants the raw NudeNet output instead of the aggregated
+  /// labels. Only meaningful in detection mode.
+  void _exportBoxesJson(List<ScanResult> selected) {
+    final withBoxes =
+        selected.where((r) => r.detections != null && r.detections!.isNotEmpty);
+    if (withBoxes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No detection boxes in selection.'),
+      ));
+      return;
+    }
+    final payload = withBoxes
+        .map((r) => {
+              'localId': r.item.localIdentifier,
+              'detections':
+                  r.detections!.map((d) => d.toMap()).toList(growable: false),
+            })
+        .toList(growable: false);
+    Share.share(
+      const JsonEncoder.withIndent('  ').convert(payload),
+      subject: 'Body-Part Detections',
     );
   }
 
@@ -143,6 +171,12 @@ class _GalleryScreenState extends State<GalleryScreen> {
             icon: Icons.share_rounded,
             onInvoke: _shareBulkReport,
           ),
+          if (settings.config.mode == ScanMode.detection)
+            NsfwBulkAction(
+              label: 'Export Boxes JSON',
+              icon: Icons.data_object_rounded,
+              onInvoke: _exportBoxesJson,
+            ),
           NsfwBulkAction(
             label: 'Hide',
             icon: Icons.visibility_off_outlined,
