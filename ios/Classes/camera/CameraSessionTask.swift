@@ -71,8 +71,8 @@ final class CameraSessionTask: NSObject {
                                                    position: position),
               let input = try? AVCaptureDeviceInput(device: device) else {
             eventSink.emit([
-                ChannelConstants.EventKey.eventType: "cameraError",
-                "message": "No camera device available for position .back",
+                ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
+                ChannelConstants.EventKey.message:   "No camera device available for position .back",
             ])
             return
         }
@@ -112,8 +112,8 @@ final class CameraSessionTask: NSObject {
         // Pre-flight: missing NSCameraUsageDescription crashes the host.
         guard CameraPermission.hostHasUsageDescription else {
             eventSink.emit([
-                ChannelConstants.EventKey.eventType: "cameraError",
-                "message": "Host app missing NSCameraUsageDescription in Info.plist",
+                ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
+                ChannelConstants.EventKey.message:   "Host app missing NSCameraUsageDescription in Info.plist",
             ])
             return false
         }
@@ -123,16 +123,16 @@ final class CameraSessionTask: NSObject {
             return true
         case .denied, .restricted:
             eventSink.emit([
-                ChannelConstants.EventKey.eventType: "cameraPermissionDenied",
-                "message": "Camera access denied",
+                ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraPermissionDenied,
+                ChannelConstants.EventKey.message:   "Camera access denied",
             ])
             return false
         case .notDetermined:
             // requestIfNeeded resolves notDetermined to authorized/denied —
             // unreachable in practice, but the compiler still requires a path.
             eventSink.emit([
-                ChannelConstants.EventKey.eventType: "cameraError",
-                "message": "Permission state unresolved",
+                ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
+                ChannelConstants.EventKey.message:   "Permission state unresolved",
             ])
             return false
         @unknown default:
