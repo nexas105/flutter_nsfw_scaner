@@ -1,13 +1,10 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import '../api/media_item.dart';
 import '../api/nsfw_gallery_filter.dart';
+import '../api/nsfw_scan_controller.dart';
 import '../api/scan_result.dart';
-import '../api/scan_progress.dart';
 import '../api/scan_summary.dart';
 import '../api/scan_configuration.dart';
-import '../api/scan_session.dart';
-import '../api/nsfw_detector.dart';
 import '../platform/nsfw_platform_interface.dart';
 import 'nsfw_filter_bar.dart';
 import 'nsfw_media_tile.dart';
@@ -19,8 +16,25 @@ import 'nsfw_selection_toolbar.dart';
 import 'nsfw_skeleton_tile.dart';
 import 'theme/nsfw_theme.dart';
 
+/// Pre-built gallery widget that consumes a [NsfwScanController].
+///
+/// When [controller] is null (the default — backwards-compatible behaviour),
+/// the widget creates and owns an internal [NsfwScanController] for the
+/// duration of its lifetime and disposes it on unmount. When [controller]
+/// is provided by the host, lifetime + disposal are the host's
+/// responsibility.
+///
+/// Filter / search / selection state remain in the widget — those are
+/// view-level concerns. Hosts that want to lift them up are expected to
+/// drive the [filter] / [onFilterChanged] / [onSelectionChanged] hooks.
 class NsfwGalleryView extends StatefulWidget {
+  /// Optional external controller. If null the widget creates its own.
+  final NsfwScanController? controller;
+
+  /// Used only when [controller] is null — the internally-created controller
+  /// is initialised with this configuration.
   final ScanConfiguration initialConfig;
+
   final NsfwGalleryTheme theme;
   final NsfwTheme? designTheme;
   final NsfwMediaTileBuilder? tileBuilder;
@@ -28,16 +42,6 @@ class NsfwGalleryView extends StatefulWidget {
   /// rendering. When set, the returned widget replaces the default grey
   /// placeholder inside [NsfwMediaTile]. Use this to inject real photo
   /// thumbnails from a photo-library package in the host application.
-  ///
-  /// Example (with photo_manager):
-  /// ```dart
-  /// thumbnailBuilder: (context, item) => AssetEntityImage(
-  ///   AssetEntity(id: item.localIdentifier, typeInt: 1, width: 200, height: 200),
-  ///   isOriginal: false,
-  ///   thumbnailSize: const ThumbnailSize.square(200),
-  ///   fit: BoxFit.cover,
-  /// ),
-  /// ```
   final Widget Function(BuildContext context, MediaItem item)? thumbnailBuilder;
   final BadgeStyle badgeStyle;
   final void Function(ScanResult)? onResultTap;
@@ -54,42 +58,30 @@ class NsfwGalleryView extends StatefulWidget {
   final bool autoStartOnPermission;
   final bool enablePullToRefresh;
 
-  /// View-only filter applied on top of the scanned items. The underlying
-  /// buffer is never mutated; toggling [filter] simply changes which results
-  /// the grid shows. Defaults to passthrough.
+  /// View-only filter applied on top of the scanned items.
   final NsfwGalleryFilter? filter;
 
-  /// When true, render a [NsfwFilterBar] above the grid. Set [filter] /
-  /// [onFilterChanged] together with this flag — the host owns the filter
-  /// state.
+  /// When true, render a [NsfwFilterBar] above the grid.
   final bool showFilterBar;
 
-  /// Emitted whenever the user changes the filter via [NsfwFilterBar]. If
-  /// null, the bar still mutates the internal default filter.
+  /// Emitted whenever the user changes the filter via [NsfwFilterBar].
   final ValueChanged<NsfwGalleryFilter>? onFilterChanged;
 
-  /// When true, render a [NsfwSearchField] above the grid. Search matches
-  /// against `MediaItem.localIdentifier` and `result.topCategory.displayName`.
+  /// When true, render a [NsfwSearchField] above the grid.
   final bool showSearchField;
 
-  /// Multi-select opt-in. When true:
-  ///   * Long-press toggles selection mode + selects the tile.
-  ///   * Subsequent taps in selection-mode toggle each tile.
-  ///   * The [NsfwScanControls] strip is replaced by [NsfwSelectionToolbar]
-  ///     showing the [bulkActions].
+  /// Multi-select opt-in.
   final bool enableSelection;
 
-  /// Bulk actions shown in the selection toolbar. Empty list still allows
-  /// selection but renders no actions (host can read selection via
-  /// [onSelectionChanged]).
+  /// Bulk actions shown in the selection toolbar.
   final List<NsfwBulkAction> bulkActions;
 
-  /// Notified whenever the active selection changes. Empty set means
-  /// selection mode is off (or just emptied — the toolbar exits automatically).
+  /// Notified whenever the active selection changes.
   final ValueChanged<Set<String>>? onSelectionChanged;
 
   const NsfwGalleryView({
     super.key,
+    this.controller,
     this.initialConfig = const ScanConfiguration(),
     this.theme = NsfwGalleryTheme.defaults,
     this.designTheme,
@@ -123,22 +115,10 @@ class NsfwGalleryView extends StatefulWidget {
 }
 
 class _NsfwGalleryViewState extends State<NsfwGalleryView> {
-  PhotoLibraryPermissionStatus? _permissionStatus;
-  ScanSession? _session;
-  late ScanConfiguration _config;
-  ScanProgress? _lastProgress;
+  late NsfwScanController _controller;
+  bool _ownsController = false;
 
-  // Ordered list of all items we've seen (inserted as results arrive)
-  final List<MediaItem> _items = [];
-  // Map from localIdentifier -> ScanResult
-  final Map<String, ScanResult> _results = {};
-
-  StreamSubscription<ScanResult>? _resultSub;
-  StreamSubscription<ScanProgress>? _progressSub;
-
-  final _progressStreamController = StreamController<ScanProgress>.broadcast();
-
-  // ── Stage 2 state ─────────────────────────────────────────────────────────
+  // ── View-only state ───────────────────────────────────────────────────
   late NsfwGalleryFilter _internalFilter;
   String _searchQuery = '';
   bool _selectionMode = false;
@@ -152,15 +132,40 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
   @override
   void initState() {
     super.initState();
-    _config = widget.initialConfig;
     _internalFilter = widget.filter ?? NsfwGalleryFilter.passthrough;
-    _checkPermission();
+    _bindController();
+    // Kick off the same permission probe the previous god-widget did.
+    _controller.checkPermission();
+  }
+
+  void _bindController() {
+    if (widget.controller != null) {
+      _controller = widget.controller!;
+      _ownsController = false;
+    } else {
+      _controller = NsfwScanController(
+        initialConfig: widget.initialConfig,
+        autoStartOnPermission: widget.autoStartOnPermission,
+      );
+      _ownsController = true;
+    }
   }
 
   @override
   void didUpdateWidget(covariant NsfwGalleryView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    _config = widget.initialConfig;
+    if (widget.controller != oldWidget.controller) {
+      // Swap controller. Dispose the previous one if we owned it.
+      if (_ownsController) {
+        _controller.dispose();
+      }
+      _bindController();
+      _controller.checkPermission();
+    } else if (widget.controller == null &&
+        widget.initialConfig != oldWidget.initialConfig) {
+      // Internal controller — propagate config changes.
+      _controller.updateConfig(widget.initialConfig);
+    }
     if (widget.filter != null && widget.filter != _internalFilter) {
       _internalFilter = widget.filter!;
     }
@@ -171,101 +176,20 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
 
   @override
   void dispose() {
-    _resultSub?.cancel();
-    _progressSub?.cancel();
-    _progressStreamController.close();
-    _session?.cancel();
+    if (_ownsController) {
+      _controller.dispose();
+    }
     super.dispose();
   }
 
-  Future<void> _checkPermission() async {
-    final status = await NsfwDetector.instance.checkPermission();
-    if (mounted) {
-      setState(() => _permissionStatus = status);
-      if (widget.autoStartOnPermission &&
-          (status == PhotoLibraryPermissionStatus.authorized ||
-              status == PhotoLibraryPermissionStatus.limited)) {
-        _startScan();
-      }
-    }
+  Future<void> _onScanCompleteWatcher() async {
+    final session = _controller.session;
+    if (session == null) return;
+    final summary = await session.done;
+    if (mounted) widget.onScanComplete?.call(summary);
   }
 
-  Future<void> _requestPermission() async {
-    final status = await NsfwDetector.instance.requestPermission();
-    if (mounted) {
-      setState(() => _permissionStatus = status);
-      if (status == PhotoLibraryPermissionStatus.authorized ||
-          status == PhotoLibraryPermissionStatus.limited) {
-        _startScan();
-      }
-    }
-  }
-
-  bool _wasStopped = false;
-
-  Future<void> _startScan({bool resume = false}) async {
-    if (_session?.isRunning == true) return;
-
-    if (!resume) {
-      setState(() {
-        _items.clear();
-        _results.clear();
-        _lastProgress = null;
-        _wasStopped = false;
-      });
-    } else {
-      setState(() => _wasStopped = false);
-    }
-
-    final scanConfig = resume
-        ? _config.copyWith(resumeFromCheckpoint: true)
-        : _config;
-
-    final session = await NsfwDetector.instance.startScan(scanConfig);
-    setState(() => _session = session);
-
-    _resultSub?.cancel();
-    _progressSub?.cancel();
-
-    _resultSub = session.results.listen((result) {
-      if (!mounted) return;
-      setState(() {
-        if (!_results.containsKey(result.item.localIdentifier)) {
-          _items.add(result.item);
-        }
-        _results[result.item.localIdentifier] = result;
-      });
-    });
-
-    _progressSub = session.progress.listen((p) {
-      if (!mounted) return;
-      setState(() => _lastProgress = p);
-      _progressStreamController.add(p);
-    });
-
-    session.done.then((summary) {
-      if (mounted) {
-        setState(() {});
-        widget.onScanComplete?.call(summary);
-      }
-    });
-  }
-
-  Future<void> _stopScan() async {
-    await _session?.cancel();
-    if (mounted) setState(() => _wasStopped = true);
-  }
-
-  Future<void> _onPullRefresh() async {
-    if (_session?.isRunning == true) return;
-    await _startScan();
-  }
-
-  void updateConfig(ScanConfiguration config) {
-    setState(() => _config = config);
-  }
-
-  // ── Selection helpers ─────────────────────────────────────────────────────
+  // ── Selection helpers ─────────────────────────────────────────────────
 
   void _toggleSelection(String id) {
     setState(() {
@@ -296,16 +220,18 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
     widget.onSelectionChanged?.call(const <String>{});
   }
 
-  List<ScanResult> get _selectedResults => _selectedIds
-      .map((id) => _results[id])
-      .whereType<ScanResult>()
-      .toList(growable: false);
+  List<ScanResult> _selectedResults(Map<String, ScanResult> results) =>
+      _selectedIds
+          .map((id) => results[id])
+          .whereType<ScanResult>()
+          .toList(growable: false);
 
-  // ── View-only filter / search ─────────────────────────────────────────────
+  // ── View-only filter / search ─────────────────────────────────────────
 
-  List<ScanResult> _computeVisibleResults() {
-    final all = _items
-        .map((it) => _results[it.localIdentifier])
+  List<ScanResult> _computeVisibleResults(
+      List<MediaItem> items, Map<String, ScanResult> results) {
+    final all = items
+        .map((it) => results[it.localIdentifier])
         .whereType<ScanResult>()
         .toList(growable: false);
     final filtered = _activeFilter.apply(all);
@@ -325,12 +251,25 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
     widget.onFilterChanged?.call(next);
   }
 
-  // ── Build ────────────────────────────────────────────────────────────────
+  Future<void> _startScan({bool resume = false}) async {
+    await _controller.startScan(resume: resume);
+    // Fire onScanComplete once the session reports done.
+    _onScanCompleteWatcher();
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    final isScanning = _session?.isRunning == true;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) => _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
     final t = _designTheme;
+    final isScanning = _controller.isScanning;
 
     return Container(
       color: widget.theme.scaffoldBackgroundColor,
@@ -353,12 +292,13 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
               value: _activeFilter,
               onChanged: _onFilterChanged,
             ),
-          if (widget.showProgressBar && (isScanning || _lastProgress != null))
+          if (widget.showProgressBar &&
+              (isScanning || _controller.lastProgress != null))
             Padding(
               padding: EdgeInsets.fromLTRB(
                   t.spacing.md, 0, t.spacing.md, t.spacing.sm),
               child: NsfwScanProgressBar(
-                progressStream: _progressStreamController.stream,
+                progressStream: _controller.progressStream,
                 theme: widget.theme,
               ),
             ),
@@ -373,7 +313,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
       return NsfwSelectionToolbar(
         theme: t,
         selectedCount: _selectedIds.length,
-        selectedResults: _selectedResults,
+        selectedResults: _selectedResults(_controller.results),
         actions: widget.bulkActions
             .map(
               (a) => NsfwBulkAction(
@@ -382,7 +322,6 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
                 tint: a.tint,
                 onInvoke: (results) {
                   a.onInvoke(results);
-                  // Auto-exit after invoke so the user sees a fresh state.
                   _exitSelection();
                 },
               ),
@@ -391,7 +330,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
         onExit: _exitSelection,
       );
     }
-    if (_wasStopped && !isScanning) {
+    if (_controller.wasStopped && !isScanning) {
       return Row(
         children: [
           Expanded(
@@ -421,30 +360,33 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
     }
     return NsfwScanControls(
       isScanning: isScanning,
-      onStart: _permissionStatus == null
-          ? _requestPermission
+      onStart: _controller.permissionStatus == null
+          ? _controller.requestPermission
           : () => _startScan(),
-      onStop: isScanning ? _stopScan : null,
+      onStop: isScanning ? _controller.stopScan : null,
     );
   }
 
   Widget _body(NsfwTheme t) {
-    if (_permissionStatus == PhotoLibraryPermissionStatus.denied ||
-        _permissionStatus == PhotoLibraryPermissionStatus.restricted) {
+    final status = _controller.permissionStatus;
+    if (status == PhotoLibraryPermissionStatus.denied ||
+        status == PhotoLibraryPermissionStatus.restricted) {
       return widget.permissionDeniedWidget ?? _defaultPermissionDenied(t);
     }
-    if (_permissionStatus == null ||
-        _permissionStatus == PhotoLibraryPermissionStatus.notDetermined) {
+    if (status == null ||
+        status == PhotoLibraryPermissionStatus.notDetermined) {
       return _defaultPermissionRequest(t);
     }
-    final isScanning = _session?.isRunning == true;
-    if (_items.isEmpty) {
+    final isScanning = _controller.isScanning;
+    final items = _controller.items;
+    final results = _controller.results;
+    if (items.isEmpty) {
       if (isScanning) {
         return NsfwSkeletonGrid(theme: t, crossAxisCount: widget.crossAxisCount);
       }
       return widget.emptyStateWidget ?? _defaultEmpty(t);
     }
-    final visible = _computeVisibleResults();
+    final visible = _computeVisibleResults(items, results);
     if (visible.isEmpty) return _defaultNoMatches(t);
     return _grid(t, visible);
   }
@@ -517,11 +459,11 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
       },
     );
 
-    if (!widget.enablePullToRefresh || _session?.isRunning == true) return grid;
+    if (!widget.enablePullToRefresh || _controller.isScanning) return grid;
     return RefreshIndicator(
       color: t.accent,
       backgroundColor: t.surface,
-      onRefresh: _onPullRefresh,
+      onRefresh: () => _startScan(),
       child: grid,
     );
   }
@@ -536,7 +478,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
         iconColor: t.onSurfaceMuted,
       );
 
-  // ── Empty / permission states ──────────────────────────────────────────────
+  // ── Empty / permission states ──────────────────────────────────────────
 
   Widget _stateScaffold(
     NsfwTheme t, {
@@ -598,7 +540,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
             'nothing leaves the phone.',
         iconColor: t.accent,
         action: FilledButton.icon(
-          onPressed: _requestPermission,
+          onPressed: _controller.requestPermission,
           icon: const Icon(Icons.check_circle_outline_rounded),
           label: const Text('Grant Access'),
           style: FilledButton.styleFrom(backgroundColor: t.accent),
