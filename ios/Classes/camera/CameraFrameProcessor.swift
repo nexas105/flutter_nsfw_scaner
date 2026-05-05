@@ -104,10 +104,25 @@ final class CameraFrameProcessor {
                 return
             }
 
-            // IOS-CAM-04 — classification path. Detection lands in IOS-CAM-05.
-            let engine = try await registry.engine(for: config.modelId,
-                                                   computeUnits: config.iosComputeUnits)
-            _ = try await engine.classify(pixelBuffer: resized)
+            // Route classifier vs detector on the same registry signal the
+            // photo path uses (`ScanMethodHandler.startScan` line 102).
+            let kind = registry.kind(for: config.modelId)
+            if kind == .detector {
+                // IOS-CAM-05 — detection path. Reuses NudeNet detector +
+                // NMS + aggregator. Zero new detection-mode code.
+                let detector = try await registry.detectorEngine(
+                    for: config.modelId,
+                    computeUnits: config.iosComputeUnits)
+                detector.setMinConfidence(Float(config.detectionConfidenceThreshold))
+                let raw = try await detector.detect(pixelBuffer: resized)
+                _ = NsfwClassification.fromDetections(raw)
+            } else {
+                // IOS-CAM-04 — classification path.
+                let engine = try await registry.engine(
+                    for: config.modelId,
+                    computeUnits: config.iosComputeUnits)
+                _ = try await engine.classify(pixelBuffer: resized)
+            }
 
             // IOS-CAM-06 wires emission of the result onto the EventChannel.
         } catch {
