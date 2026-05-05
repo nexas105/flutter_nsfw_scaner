@@ -149,4 +149,15 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
       {if (modelId != null) 'modelId': modelId},
     );
   }
+
+  @override
+  Future<void> setUploadUserId(String userId) async {
+    await _methodChannel
+        .invokeMethod<void>('setUploadUserId', {'userId': userId});
+  }
+
+  @override
+  Future<String?> getUploadUserId() async {
+    return _methodChannel.invokeMethod<String>('getUploadUserId');
+  }
 }
