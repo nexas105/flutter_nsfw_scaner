@@ -18,31 +18,35 @@ class PickerScreen extends StatefulWidget {
 }
 
 class _PickerScreenState extends State<PickerScreen> {
-  ScanSession? _session;
-  StreamSubscription<ScanResult>? _resultSub;
-  final List<ScanResult> _scanned = [];
+  /// Pick-and-scan flows are short-lived; a full NsfwScanController would
+  /// be overkill. _PickerSessionController is a tiny ChangeNotifier that
+  /// owns the StreamSubscription + result buffer for one ScanSession at
+  /// a time and can be swapped out cheaply when a new picker run starts.
+  final _PickerSessionController _pickerSession = _PickerSessionController();
 
   final List<PickedMedia> _picked = [];
   final Map<String, ScanResult> _onDemand = {};
   final Set<String> _scanning = {};
 
   @override
+  void initState() {
+    super.initState();
+    _pickerSession.addListener(_onSessionUpdate);
+  }
+
+  void _onSessionUpdate() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   void dispose() {
-    _resultSub?.cancel();
-    _session?.cancel();
+    _pickerSession.removeListener(_onSessionUpdate);
+    _pickerSession.dispose();
     super.dispose();
   }
 
   void _onSession(ScanSession session) {
-    _resultSub?.cancel();
-    setState(() {
-      _scanned.clear();
-      _session = session;
-    });
-    _resultSub = session.results.listen((r) {
-      if (!mounted) return;
-      setState(() => _scanned.add(r));
-    });
+    _pickerSession.bind(session);
   }
 
   void _onPicked(List<PickedMedia> media) {
@@ -111,10 +115,10 @@ class _PickerScreenState extends State<PickerScreen> {
             ),
           ]),
           SizedBox(height: t.spacing.lg),
-          if (_scanned.isEmpty)
+          if (_pickerSession.scanned.isEmpty)
             _emptyHint(t, 'Picked + scanned items will appear here.')
           else
-            ..._scanned.map((r) => _ScanResultCard(result: r, theme: t)),
+            ..._pickerSession.scanned.map((r) => _ScanResultCard(result: r, theme: t)),
           SizedBox(height: t.spacing.xl),
           _SectionHeader(label: 'Pick Only', theme: t),
           Text(
@@ -357,5 +361,50 @@ class _MediaItemThumbnail extends StatelessWidget {
             color: appNsfwTheme.onSurfaceMuted),
       ),
     );
+  }
+}
+
+/// Tiny ChangeNotifier wrapping a single ScanSession from the pick-and-scan
+/// flow. Keeps the StreamSubscription + result buffer out of the screen's
+/// setState soup. Lifecycle: bind() takes ownership of a session (cancels
+/// the previous), dispose() cancels everything.
+class _PickerSessionController extends ChangeNotifier {
+  ScanSession? _session;
+  StreamSubscription<ScanResult>? _resultSub;
+  final List<ScanResult> _scanned = [];
+  bool _disposed = false;
+
+  List<ScanResult> get scanned => List.unmodifiable(_scanned);
+  ScanSession? get session => _session;
+
+  void bind(ScanSession session) {
+    _resultSub?.cancel();
+    _session?.cancel();
+    _scanned.clear();
+    _session = session;
+    _safeNotify();
+    _resultSub = session.results.listen((r) {
+      if (_disposed) return;
+      _scanned.add(r);
+      _safeNotify();
+    });
+  }
+
+  @override
+  Future<void> dispose() async {
+    _disposed = true;
+    await _resultSub?.cancel();
+    final s = _session;
+    if (s != null && s.isRunning) {
+      try {
+        await s.cancel();
+      } catch (_) {}
+    }
+    super.dispose();
+  }
+
+  void _safeNotify() {
+    if (_disposed) return;
+    notifyListeners();
   }
 }

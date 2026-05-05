@@ -5,6 +5,13 @@ import '../main.dart';
 
 /// Demonstrates using the nsfw_detect plugin as a pure Dart API —
 /// no NsfwGalleryView widget, no built-in UI. Everything is wired manually.
+///
+/// **This is the raw API on purpose.** In production code you would normally
+/// reach for [NsfwScanController] which already encapsulates the session
+/// lifecycle, results buffer and progress stream behind a [ChangeNotifier].
+/// This screen exists to show what that controller does under the hood —
+/// the setState / StreamSubscription dance below is exactly what
+/// [NsfwScanController] hides for you.
 class HeadlessScanScreen extends StatefulWidget {
   const HeadlessScanScreen({super.key});
 
