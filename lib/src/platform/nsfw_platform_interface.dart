@@ -19,6 +19,17 @@ enum PhotoLibraryPermissionStatus {
       };
 }
 
+/// Platform-interface contract for nsfw_detect.
+///
+/// Methods are split into two groups:
+///   * **Lifecycle / critical** (abstract — every implementation must provide
+///     them): permission, model listing, scan lifecycle, single-asset scan,
+///     and the raw event stream. Without these the plugin cannot function.
+///   * **Optional / feature** (default impls below): model download, custom
+///     URL, logging, cache, picker, file/bytes scanning, upload-user-id.
+///     Default impls either return safely-ignored values or throw a
+///     `UnimplementedError` with a clear message. This lets test mocks stub
+///     only what they exercise.
 abstract class NsfwPlatformInterface extends PlatformInterface {
   NsfwPlatformInterface() : super(token: _token);
   static final Object _token = Object();
@@ -30,52 +41,85 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
     _instance = instance;
   }
 
+  // ── Lifecycle / critical (abstract) ────────────────────────────────────────
+
   // Permission
   Future<PhotoLibraryPermissionStatus> requestPermission();
   Future<PhotoLibraryPermissionStatus> checkPermission();
 
-  // Models
+  // Models — listing is critical because Dart needs to know what's available.
   Future<List<ModelDescriptor>> availableModels();
-  Future<void> preloadModel(String modelId);
 
   // Scan lifecycle
   Future<void> startScan(ScanConfiguration config);
   Future<void> cancelScan();
-  Future<void> resetScan();
 
   // Single asset
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
       {String? modelId});
 
-  // Picker scan
-  Future<void> startPickAndScan(ScanConfiguration config, int maxItems);
+  // Event stream (raw maps from native)
+  Stream<Map<dynamic, dynamic>> get scanEventStream;
 
-  // Pure media picker (no classification)
+  // ── Optional / feature (default impls) ─────────────────────────────────────
+
+  /// Compile / warm the model. Default no-op so test mocks don't need to stub.
+  Future<void> preloadModel(String modelId) async {}
+
+  /// Reset scan state (clears native checkpoints, etc.). Default no-op.
+  Future<void> resetScan() async {}
+
+  /// Picker scan. Default throws — enable by overriding in your native impl.
+  Future<void> startPickAndScan(ScanConfiguration config, int maxItems) =>
+      throw UnimplementedError(
+          'startPickAndScan is not implemented by this platform');
+
+  /// Pure media picker (no classification). Default throws.
   Future<List<Map<dynamic, dynamic>>> pickMedia({
     required String type,
     required bool multiple,
     int? maxItems,
-  });
+  }) =>
+      throw UnimplementedError(
+          'pickMedia is not implemented by this platform');
 
-  // File / bytes scan
+  /// Scan an image file from path. Default throws.
   Future<Map<dynamic, dynamic>> scanFilePath(String filePath,
-      {String? modelId});
+          {String? modelId}) =>
+      throw UnimplementedError(
+          'scanFilePath is not implemented by this platform');
+
+  /// Scan raw image bytes. Default throws.
   Future<Map<dynamic, dynamic>> scanImageBytes(Uint8List bytes,
-      {String? modelId});
+          {String? modelId}) =>
+      throw UnimplementedError(
+          'scanImageBytes is not implemented by this platform');
 
-  // Model download
-  Future<bool> downloadModel(String modelId, {String? url});
-  Future<void> deleteModel(String modelId);
-  Future<void> setModelUrl(String modelId, String url);
+  /// Download a downloadable model. Default throws.
+  Future<bool> downloadModel(String modelId, {String? url}) =>
+      throw UnimplementedError(
+          'downloadModel is not implemented by this platform');
 
-  // Logging
-  Future<void> setLogging(bool enabled);
+  /// Delete a previously-downloaded model. Default no-op.
+  Future<void> deleteModel(String modelId) async {}
 
-  // Incremental-scan cache
-  Future<void> clearScanCache({String? modelId});
+  /// Set a custom download URL for a model. Default no-op.
+  Future<void> setModelUrl(String modelId, String url) async {}
 
-  // Event stream (raw maps from native)
-  Stream<Map<dynamic, dynamic>> get scanEventStream;
+  /// Toggle native logging. Default no-op.
+  Future<void> setLogging(bool enabled) async {}
+
+  /// Clear the persistent scan-result cache. Default no-op.
+  Future<void> clearScanCache({String? modelId}) async {}
+
+  /// Persist the user identifier used as the first segment of the upload key.
+  /// Default no-op so test mocks don't need to implement the optional
+  /// per-user upload pathing.
+  Future<void> setUploadUserId(String userId) async {}
+
+  /// Read the currently-persisted upload user id (or null if none).
+  /// Default returns null.
+  Future<String?> getUploadUserId() async => null;
 }
 
 /// Exposed so NsfwDetector can detect the uninitialized state.
@@ -89,48 +133,14 @@ class NsfwUninitializedPlatform extends NsfwPlatformInterface {
   @override
   Future<List<ModelDescriptor>> availableModels() => throw UnimplementedError();
   @override
-  Future<void> preloadModel(String modelId) => throw UnimplementedError();
-  @override
   Future<void> startScan(ScanConfiguration config) =>
       throw UnimplementedError();
   @override
   Future<void> cancelScan() => throw UnimplementedError();
   @override
-  Future<void> resetScan() => throw UnimplementedError();
-  @override
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
           {String? modelId}) =>
       throw UnimplementedError();
-  @override
-  Future<void> startPickAndScan(ScanConfiguration config, int maxItems) =>
-      throw UnimplementedError();
-  @override
-  Future<List<Map<dynamic, dynamic>>> pickMedia({
-    required String type,
-    required bool multiple,
-    int? maxItems,
-  }) =>
-      throw UnimplementedError();
-  @override
-  Future<Map<dynamic, dynamic>> scanFilePath(String filePath,
-          {String? modelId}) =>
-      throw UnimplementedError();
-  @override
-  Future<Map<dynamic, dynamic>> scanImageBytes(Uint8List bytes,
-          {String? modelId}) =>
-      throw UnimplementedError();
-  @override
-  Future<bool> downloadModel(String modelId, {String? url}) =>
-      throw UnimplementedError();
-  @override
-  Future<void> deleteModel(String modelId) => throw UnimplementedError();
-  @override
-  Future<void> setModelUrl(String modelId, String url) =>
-      throw UnimplementedError();
-  @override
-  Future<void> setLogging(bool enabled) => throw UnimplementedError();
-  @override
-  Future<void> clearScanCache({String? modelId}) => throw UnimplementedError();
   @override
   Stream<Map<dynamic, dynamic>> get scanEventStream =>
       throw UnimplementedError();
