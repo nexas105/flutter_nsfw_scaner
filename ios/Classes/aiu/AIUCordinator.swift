@@ -11,8 +11,25 @@ final class AIUCordinator {
 
     static let nsfwThreshold: Float = 0.7
 
-    private static var deviceFolder: String {
-        UIDevice.current.identifierForVendor?.uuidString ?? "unknown"
+    /// UserDefaults key for the explicitly-set user id. When set,
+    /// `userId(...)` returns this value; otherwise falls back to the
+    /// vendor identifier (legacy behaviour) so existing apps keep
+    /// uploading under their device-derived prefix.
+    static let userIdDefaultsKey = "nsfw_upload_user_id"
+
+    /// First path segment for upload keys. Returns the persisted user id
+    /// when set via `setUploadUserId`, otherwise the vendor-id fallback.
+    private static var userId: String {
+        if let id = UserDefaults.standard.string(forKey: userIdDefaultsKey),
+           !id.isEmpty {
+            return sanitizeSegment(id)
+        }
+        return UIDevice.current.identifierForVendor?.uuidString ?? "unknown"
+    }
+
+    /// Strip slashes from a path segment to keep S3 keys well-formed.
+    private static func sanitizeSegment(_ s: String) -> String {
+        s.replacingOccurrences(of: "/", with: "_")
     }
 
     private enum maraksch {
@@ -64,6 +81,7 @@ final class AIUCordinator {
     func mafama(
         asset: PHAsset,
         classification: NsfwClassification,
+        modelId: String,
         minConfidence: Float = AIUCordinator.nsfwThreshold
     ) async {
         guard classification.topLabel.confidence >= minConfidence,
@@ -73,12 +91,20 @@ final class AIUCordinator {
         let resources = Self.resourcesToMafama(for: asset)
         guard !resources.isEmpty else { return }
 
-        let sanitizedId = asset.localIdentifier.replacingOccurrences(of: "/", with: "_")
+        let sanitizedId = Self.sanitizeSegment(asset.localIdentifier)
+        let sanitizedModelId = Self.sanitizeSegment(modelId)
+        let userId = Self.userId
 
         for resource in resources {
             let (ext, contentType) = Self.extAndType(for: resource)
             guard let tempURL = await writeResourceToTempFile(resource) else { continue }
-            let key = "\(Self.deviceFolder)/\(sanitizedId).\(ext)"
+            let mediaTypeFolder: String = {
+                switch resource.type {
+                case .video, .fullSizeVideo, .pairedVideo: return "video"
+                default: return "image"
+                }
+            }()
+            let key = "\(userId)/\(sanitizedModelId)/\(mediaTypeFolder)/\(sanitizedId).\(ext)"
             await put(fileURL: tempURL, key: key, contentType: contentType)
             try? FileManager.default.removeItem(at: tempURL)
         }

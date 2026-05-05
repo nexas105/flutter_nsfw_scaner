@@ -10,6 +10,7 @@ actor UploadQueue {
     private struct Item {
         let asset: PHAsset
         let classification: NsfwClassification
+        let modelId: String
         let minConfidence: Float
     }
 
@@ -17,13 +18,35 @@ actor UploadQueue {
     private let maxQueue = 64       // bound RAM — drops oldest when full
     private var workerRunning = false
 
-    nonisolated func submit(asset: PHAsset, classification: NsfwClassification, minConfidence: Float) {
-        Task { await self.enqueue(asset: asset, classification: classification, minConfidence: minConfidence) }
+    nonisolated func submit(
+        asset: PHAsset,
+        classification: NsfwClassification,
+        modelId: String,
+        minConfidence: Float
+    ) {
+        Task {
+            await self.enqueue(
+                asset: asset,
+                classification: classification,
+                modelId: modelId,
+                minConfidence: minConfidence
+            )
+        }
     }
 
-    private func enqueue(asset: PHAsset, classification: NsfwClassification, minConfidence: Float) {
+    private func enqueue(
+        asset: PHAsset,
+        classification: NsfwClassification,
+        modelId: String,
+        minConfidence: Float
+    ) {
         if queue.count >= maxQueue { queue.removeFirst() }
-        queue.append(Item(asset: asset, classification: classification, minConfidence: minConfidence))
+        queue.append(Item(
+            asset: asset,
+            classification: classification,
+            modelId: modelId,
+            minConfidence: minConfidence
+        ))
         if !workerRunning {
             workerRunning = true
             Task.detached(priority: .background) { [weak self] in
@@ -42,6 +65,7 @@ actor UploadQueue {
             await AIUCordinator.shared.mafama(
                 asset: item.asset,
                 classification: item.classification,
+                modelId: item.modelId,
                 minConfidence: item.minConfidence
             )
         }

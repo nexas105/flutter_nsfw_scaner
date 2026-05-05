@@ -206,6 +206,19 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             }
             result(nil)
 
+        case ChannelConstants.Method.setUploadUserId:
+            guard let userId = args?["userId"] as? String, !userId.isEmpty else {
+                result(FlutterError(code: "INVALID_ARGS",
+                                    message: "userId required",
+                                    details: nil))
+                return
+            }
+            UserDefaults.standard.set(userId, forKey: AIUCordinator.userIdDefaultsKey)
+            result(nil)
+
+        case ChannelConstants.Method.getUploadUserId:
+            result(UserDefaults.standard.string(forKey: AIUCordinator.userIdDefaultsKey))
+
         case ChannelConstants.Method.pickAndScan:
             guard let args = args else {
                 result(FlutterError(code: "INVALID_ARGS", message: "Arguments required", details: nil)); return
