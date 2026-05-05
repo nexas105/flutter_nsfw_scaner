@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
+import '../api/camera_configuration.dart';
 import '../api/model_descriptor.dart';
 import '../api/scan_configuration.dart';
 import 'nsfw_platform_interface.dart';
@@ -148,5 +149,18 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
       'clearScanCache',
       {if (modelId != null) 'modelId': modelId},
     );
+  }
+
+  @override
+  Future<void> startCameraScan(CameraConfiguration config) async {
+    await _methodChannel.invokeMethod<void>(
+      'startCameraScan',
+      config.toChannelMap(),
+    );
+  }
+
+  @override
+  Future<void> stopCameraScan() async {
+    await _methodChannel.invokeMethod<void>('stopCameraScan');
   }
 }

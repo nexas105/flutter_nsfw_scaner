@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
+import '../api/camera_configuration.dart';
 import '../api/model_descriptor.dart';
 import '../api/scan_configuration.dart';
 
@@ -53,6 +54,10 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
   // Scan lifecycle
   Future<void> startScan(ScanConfiguration config);
   Future<void> cancelScan();
+
+  // Camera scan lifecycle
+  Future<void> startCameraScan(CameraConfiguration config);
+  Future<void> stopCameraScan();
 
   // Single asset
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
@@ -128,6 +133,11 @@ class NsfwUninitializedPlatform extends NsfwPlatformInterface {
       throw UnimplementedError();
   @override
   Future<void> cancelScan() => throw UnimplementedError();
+  @override
+  Future<void> startCameraScan(CameraConfiguration config) =>
+      throw UnimplementedError();
+  @override
+  Future<void> stopCameraScan() => throw UnimplementedError();
   @override
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
           {String? modelId}) =>

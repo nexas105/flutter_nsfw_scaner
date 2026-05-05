@@ -48,6 +48,12 @@ class _MockPlatform extends NsfwPlatformInterface
   @override
   Stream<Map<dynamic, dynamic>> get scanEventStream => scanEvents.stream;
 
+  @override
+  Future<void> startCameraScan(CameraConfiguration config) async {}
+
+  @override
+  Future<void> stopCameraScan() async {}
+
   void dispose() => scanEvents.close();
 }
 

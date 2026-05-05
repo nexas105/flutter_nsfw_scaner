@@ -5,6 +5,8 @@ import 'picked_media.dart';
 import 'scan_configuration.dart';
 import 'scan_result.dart';
 import 'scan_session.dart';
+import 'camera_configuration.dart';
+import 'camera_scan_session.dart';
 import 'model_descriptor.dart';
 import '../platform/nsfw_platform_interface.dart';
 import '../platform/nsfw_method_channel.dart';
@@ -87,6 +89,32 @@ class NsfwDetector {
   /// After clearing, the next scan re-classifies all matching assets.
   Future<void> clearScanCache({String? modelId}) =>
       _platform.clearScanCache(modelId: modelId);
+
+  // Active camera session — at most one at a time.
+  CameraScanSession? _cameraSession;
+
+  /// Starts the live camera scan.
+  ///
+  /// Throws [StateError] if a camera session is already running.
+  /// Results stream via [CameraScanSession.results].
+  Future<CameraScanSession> startCameraScan([CameraConfiguration? config]) async {
+    if (_cameraSession != null && _cameraSession!.isRunning) {
+      throw StateError('A camera scan is already running.');
+    }
+    final cfg = config ?? const CameraConfiguration();
+    final session =
+        await CameraScanSession.start(config: cfg, platform: _platform);
+    _cameraSession = session;
+    return session;
+  }
+
+  /// Stops the active camera scan. No-op if none is running.
+  Future<void> stopCameraScan() async {
+    if (_cameraSession != null && _cameraSession!.isRunning) {
+      await _cameraSession!.stop();
+      _cameraSession = null;
+    }
+  }
 
   // Scan a single asset by its PHAsset local identifier
   Future<ScanResult> scanAsset(
