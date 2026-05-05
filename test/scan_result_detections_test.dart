@@ -1,3 +1,8 @@
+// Test fixtures use mutable map / list literals so they can be passed to
+// `ScanResult.fromMap` which accepts `Map<dynamic, dynamic>`. The const-literal
+// lint isn't useful here.
+// ignore_for_file: prefer_const_literals_to_create_immutables
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
 
