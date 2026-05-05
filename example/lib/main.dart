@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
+import 'screens/camera_screen.dart';
 import 'screens/gallery_screen.dart';
 import 'screens/headless_scan_screen.dart';
 import 'screens/picker_screen.dart';
@@ -65,6 +66,7 @@ class _RootNavState extends State<_RootNav> {
     GalleryScreen(),
     PickerScreen(),
     HeadlessScanScreen(),
+    CameraScreen(),
   ];
 
   @override
@@ -92,6 +94,11 @@ class _RootNavState extends State<_RootNav> {
             icon: Icon(Icons.code_outlined),
             selectedIcon: Icon(Icons.code),
             label: 'Headless',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.videocam_outlined),
+            selectedIcon: Icon(Icons.videocam),
+            label: 'Camera',
           ),
         ],
       ),
