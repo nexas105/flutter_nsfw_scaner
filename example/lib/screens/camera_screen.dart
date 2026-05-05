@@ -44,6 +44,7 @@ class _CameraScreenState extends State<CameraScreen> {
   // NsfwSettingsPanel in SettingsScreen / GalleryScreen).
   List<ModelDescriptor> _models = const [];
   String? _modelId;
+  ScanMode _mode = ScanMode.classification;
   bool _settingsHydrated = false;
 
   @override
@@ -58,6 +59,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_settingsHydrated) return;
     final s = AppSettingsScope.of(context);
     _modelId = s.cameraModelId;
+    _mode = s.cameraMode;
     _settingsHydrated = true;
   }
 
@@ -82,6 +84,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   CameraConfiguration _currentConfig() => CameraConfiguration(
         modelId: _modelId ?? ModelIds.openNsfw2,
+        mode: _mode,
       );
 
   Future<void> _restartIfRunning() async {
@@ -104,6 +107,14 @@ class _CameraScreenState extends State<CameraScreen> {
     final settings = AppSettingsScope.of(context);
     setState(() => _modelId = newId);
     settings.cameraModelId = newId;
+    await _restartIfRunning();
+  }
+
+  Future<void> _onModeChanged(ScanMode newMode) async {
+    if (newMode == _mode) return;
+    final settings = AppSettingsScope.of(context);
+    setState(() => _mode = newMode);
+    settings.cameraMode = newMode;
     await _restartIfRunning();
   }
 
@@ -200,8 +211,10 @@ class _CameraScreenState extends State<CameraScreen> {
             bottom: 0,
             child: _CameraControlsBar(
               running: _running,
+              mode: _mode,
               onStart: _start,
               onStop: _stop,
+              onModeChanged: _onModeChanged,
               theme: t,
             ),
           ),
@@ -247,14 +260,18 @@ class _CameraIdlePanel extends StatelessWidget {
 
 class _CameraControlsBar extends StatelessWidget {
   final bool running;
+  final ScanMode mode;
   final VoidCallback onStart;
   final VoidCallback onStop;
+  final ValueChanged<ScanMode> onModeChanged;
   final NsfwTheme theme;
 
   const _CameraControlsBar({
     required this.running,
+    required this.mode,
     required this.onStart,
     required this.onStop,
+    required this.onModeChanged,
     required this.theme,
   });
 
@@ -272,31 +289,66 @@ class _CameraControlsBar extends StatelessWidget {
           border: Border.all(color: t.outline),
           boxShadow: t.elevation.mid,
         ),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              child: running
-                  ? FilledButton.icon(
-                      onPressed: onStop,
-                      icon: const Icon(Icons.stop_rounded, size: 20),
-                      label: const Text('Stop'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: t.danger,
-                        padding: EdgeInsets.symmetric(
-                            vertical: t.spacing.md),
-                      ),
-                    )
-                  : FilledButton.icon(
-                      onPressed: onStart,
-                      icon: const Icon(
-                          Icons.play_arrow_rounded, size: 20),
-                      label: const Text('Start'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: t.accent,
-                        padding: EdgeInsets.symmetric(
-                            vertical: t.spacing.md),
-                      ),
-                    ),
+            Row(
+              children: [
+                Expanded(
+                  child: running
+                      ? FilledButton.icon(
+                          onPressed: onStop,
+                          icon: const Icon(Icons.stop_rounded, size: 20),
+                          label: const Text('Stop'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: t.danger,
+                            padding: EdgeInsets.symmetric(
+                                vertical: t.spacing.md),
+                          ),
+                        )
+                      : FilledButton.icon(
+                          onPressed: onStart,
+                          icon: const Icon(
+                              Icons.play_arrow_rounded, size: 20),
+                          label: const Text('Start'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: t.accent,
+                            padding: EdgeInsets.symmetric(
+                                vertical: t.spacing.md),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+            SizedBox(height: t.spacing.sm),
+            // Mode toggle. Switching mode mid-session triggers a clean
+            // restart of the underlying CameraScanSession via the
+            // screen's _onModeChanged → _restartIfRunning() chain.
+            SegmentedButton<ScanMode>(
+              segments: const [
+                ButtonSegment(
+                  value: ScanMode.classification,
+                  label: Text('Classify'),
+                  icon: Icon(Icons.tune_rounded),
+                ),
+                ButtonSegment(
+                  value: ScanMode.detection,
+                  label: Text('Detect'),
+                  icon: Icon(Icons.crop_free_rounded),
+                ),
+              ],
+              selected: {mode},
+              onSelectionChanged: (s) => onModeChanged(s.first),
+              style: ButtonStyle(
+                backgroundColor: WidgetStateProperty.resolveWith((states) {
+                  if (states.contains(WidgetState.selected)) {
+                    return t.accent.withValues(alpha: 0.18);
+                  }
+                  return t.surfaceVariant;
+                }),
+                foregroundColor: WidgetStateProperty.all(t.onSurface),
+              ),
             ),
           ],
         ),

@@ -16,6 +16,7 @@ class AppSettings extends ChangeNotifier {
   static const _kFilter = 'nsfw_demo.filter';
   static const _kTab = 'nsfw_demo.lastTabIndex';
   static const _kCameraModelId = 'nsfw_demo.cameraModelId';
+  static const _kCameraMode = 'nsfw_demo.cameraMode';
 
   final SharedPreferences _prefs;
 
@@ -23,6 +24,7 @@ class AppSettings extends ChangeNotifier {
   NsfwGalleryFilter _filter;
   int _lastTabIndex;
   String? _cameraModelId;
+  ScanMode _cameraMode;
 
   AppSettings._(
     this._prefs,
@@ -30,6 +32,7 @@ class AppSettings extends ChangeNotifier {
     this._filter,
     this._lastTabIndex,
     this._cameraModelId,
+    this._cameraMode,
   );
 
   static Future<AppSettings> load() async {
@@ -63,7 +66,9 @@ class AppSettings extends ChangeNotifier {
 
     final tab = prefs.getInt(_kTab) ?? 0;
     final cameraModelId = prefs.getString(_kCameraModelId);
-    return AppSettings._(prefs, cfg, filter, tab, cameraModelId);
+    final cameraMode = ScanMode.fromWire(prefs.getString(_kCameraMode));
+    return AppSettings._(
+        prefs, cfg, filter, tab, cameraModelId, cameraMode);
   }
 
   ScanConfiguration get config => _config;
@@ -73,6 +78,10 @@ class AppSettings extends ChangeNotifier {
   /// Persisted camera-screen model selection. `null` means "no choice
   /// yet" — the camera screen falls back to the first available model.
   String? get cameraModelId => _cameraModelId;
+
+  /// Persisted camera-screen scan mode (classification vs detection).
+  /// Defaults to [ScanMode.classification] on first run.
+  ScanMode get cameraMode => _cameraMode;
 
   set config(ScanConfiguration v) {
     if (v == _config) return;
@@ -103,6 +112,13 @@ class AppSettings extends ChangeNotifier {
     } else {
       _prefs.setString(_kCameraModelId, v);
     }
+    notifyListeners();
+  }
+
+  set cameraMode(ScanMode v) {
+    if (v == _cameraMode) return;
+    _cameraMode = v;
+    _prefs.setString(_kCameraMode, v.wireValue);
     notifyListeners();
   }
 }
