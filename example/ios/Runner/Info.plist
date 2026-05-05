@@ -55,6 +55,8 @@
 	<string>Main</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>This app needs access to your photo library to scan images for NSFW content.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access to run live NSFW detection on the camera feed.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
