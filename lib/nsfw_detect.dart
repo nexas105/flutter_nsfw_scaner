@@ -10,6 +10,7 @@ export 'src/api/scan_mode.dart';
 export 'src/api/body_part_detection.dart';
 export 'src/api/scan_session.dart';
 export 'src/api/picked_media.dart';
+export 'src/api/media_picker_type.dart';
 export 'src/api/scan_summary.dart';
 export 'src/api/model_descriptor.dart';
 export 'src/api/model_download_progress.dart';
