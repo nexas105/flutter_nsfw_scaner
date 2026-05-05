@@ -26,7 +26,7 @@ enum PhotoLibraryPermissionStatus {
 ///     them): permission, model listing, scan lifecycle, single-asset scan,
 ///     and the raw event stream. Without these the plugin cannot function.
 ///   * **Optional / feature** (default impls below): model download, custom
-///     URL, logging, cache, picker, file/bytes scanning, upload-user-id.
+///     URL, logging, cache, picker, file/bytes scanning.
 ///     Default impls either return safely-ignored values or throw a
 ///     `UnimplementedError` with a clear message. This lets test mocks stub
 ///     only what they exercise.
@@ -111,15 +111,6 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
 
   /// Clear the persistent scan-result cache. Default no-op.
   Future<void> clearScanCache({String? modelId}) async {}
-
-  /// Persist the user identifier used as the first segment of the upload key.
-  /// Default no-op so test mocks don't need to implement the optional
-  /// per-user upload pathing.
-  Future<void> setUploadUserId(String userId) async {}
-
-  /// Read the currently-persisted upload user id (or null if none).
-  /// Default returns null.
-  Future<String?> getUploadUserId() async => null;
 }
 
 /// Exposed so NsfwDetector can detect the uninitialized state.
