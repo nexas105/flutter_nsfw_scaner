@@ -16,6 +16,32 @@ import os
 ///    (IOS-CAM-09) by ensuring at most one in-flight `CVPixelBuffer` at a
 ///    time.
 ///
+/// ### IOS-CAM-09: bounded resident memory under sustained scan
+///
+/// Three design choices keep the persistent-bytes plateau flat over the
+/// life of a session:
+///
+/// 1. **No bounded queue inside the processor.** Frames are either
+///    processed immediately (counter = 0) or dropped at the entry gate.
+///    `AVCaptureVideoDataOutput.alwaysDiscardsLateVideoFrames = true`
+///    handles SDK-side drops. Net effect: at most one inference's worth
+///    of `CVPixelBuffer` (the source frame) plus one resized buffer is
+///    alive at any moment.
+/// 2. **No `CVPixelBufferPool` for the resized buffer.** Per-call
+///    `CVPixelBufferCreate` lets ARC reclaim each buffer as soon as
+///    `engine.classify` returns. A pool would win on allocator throughput
+///    but would also pin N buffers permanently — undesirable for a
+///    multi-minute session.
+/// 3. **`CMSampleBuffer` is not retained past `captureOutput` return.**
+///    The detached Task captures the *image buffer* (`CVPixelBuffer`),
+///    not the sample buffer. The underlying `CVPixelBuffer` is held only
+///    for the duration of the inference, then released by the `Task`
+///    closure exit.
+///
+/// Real-device verification (Instruments → Allocations → "Persistent
+/// Bytes" filter for `CVPixelBuffer`, ≥ 60 s scan) is part of the manual
+/// UAT checklist landing in Phase 05.
+///
 /// Inference dispatch (classification + detection) arrives in IOS-CAM-04 / 05.
 final class CameraFrameProcessor {
 
