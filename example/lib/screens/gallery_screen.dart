@@ -18,10 +18,42 @@ class GalleryScreen extends StatefulWidget {
 }
 
 class _GalleryScreenState extends State<GalleryScreen> {
+  /// Hosts now own a NsfwScanController explicitly. NsfwGalleryView consumes
+  /// it; the AppBar listens to the same controller via AnimatedBuilder so
+  /// the live NSFW count can re-render without the screen having to mirror
+  /// it back through setState.
+  late final NsfwScanController _scanController;
+
   int _nsfwFoundCount = 0;
   int _selectionCount = 0;
   // Demo-only: locally-tracked "hidden" set, illustrates the bulk-action API.
   final Set<String> _hiddenIds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = AppSettingsScope.of(context);
+    _scanController =
+        NsfwScanController(initialConfig: settings.config);
+    // Keep _nsfwFoundCount derived from the controller's results without
+    // needing setState explicitly — AnimatedBuilder rebuilds the AppBar.
+    _scanController.addListener(_recomputeNsfwCount);
+  }
+
+  void _recomputeNsfwCount() {
+    final next =
+        _scanController.results.values.where((r) => r.isNsfw).length;
+    if (next != _nsfwFoundCount) {
+      setState(() => _nsfwFoundCount = next);
+    }
+  }
+
+  @override
+  void dispose() {
+    _scanController.removeListener(_recomputeNsfwCount);
+    _scanController.dispose();
+    super.dispose();
+  }
 
   void _onResultTap(ScanResult result) {
     Navigator.of(context).push(
@@ -49,7 +81,10 @@ class _GalleryScreenState extends State<GalleryScreen> {
       MaterialPageRoute(
           builder: (_) => SettingsScreen(currentConfig: settings.config)),
     );
-    if (newConfig != null) settings.config = newConfig;
+    if (newConfig != null) {
+      settings.config = newConfig;
+      _scanController.updateConfig(newConfig);
+    }
   }
 
   void _shareBulkReport(List<ScanResult> selected) {
@@ -146,7 +181,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
               ],
       ),
       body: NsfwGalleryView(
-        initialConfig: settings.config,
+        controller: _scanController,
         theme: t.gallery,
         designTheme: t,
         crossAxisCount: 3,
