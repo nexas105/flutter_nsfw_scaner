@@ -32,6 +32,15 @@ class MediaItem {
     this.height,
   });
 
+  /// Returns a placeholder [MediaItem] used when a non-gallery surface
+  /// (camera frames) needs to construct a transient [ScanResult] for a widget
+  /// that was originally designed against the gallery shape — see
+  /// `NsfwCameraHud._resultBadgeFromFrame`. Not for general use.
+  factory MediaItem.empty() => const MediaItem(
+        localIdentifier: '',
+        type: MediaType.unknown,
+      );
+
   factory MediaItem.fromMap(Map<dynamic, dynamic> map) => MediaItem(
         localIdentifier: map['localId'] as String,
         type: MediaType.fromString(map['mediaType'] as String? ?? 'unknown'),

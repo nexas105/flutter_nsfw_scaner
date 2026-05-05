@@ -37,5 +37,6 @@ export 'src/widgets/nsfw_filter_bar.dart';
 export 'src/widgets/nsfw_search_field.dart';
 export 'src/widgets/nsfw_selection_toolbar.dart';
 export 'src/widgets/nsfw_camera_view.dart';
+export 'src/widgets/nsfw_camera_hud.dart';
 export 'src/widgets/theme/nsfw_theme.dart';
 export 'src/widgets/theme/nsfw_design_tokens.dart';
