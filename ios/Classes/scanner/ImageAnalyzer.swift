@@ -22,18 +22,29 @@ final class ImageAnalyzer {
     /// rebuilding it for every CGContext.
     fileprivate static let sharedDeviceRGB: CGColorSpace = CGColorSpaceCreateDeviceRGB()
 
-    /// Reuses CVPixelBuffer-backed IOSurfaces across frames. Lazy because the
-    /// pool is tied to `inputSize` × `inputSize` × BGRA — built once on first use.
-    /// `nil` if pool creation fails; we then fall back to per-frame CVPixelBufferCreate.
-    private lazy var pixelBufferPool: CVPixelBufferPool? = makePixelBufferPool()
+    /// Reuses CVPixelBuffer-backed IOSurfaces across frames. Pool is tied to
+    /// `inputSize` × `inputSize` × BGRA — built eagerly in `init` so concurrent
+    /// callers never race on lazy-var initialisation.
+    ///
+    /// History: was `lazy var` until 2026-05-05 — `ScanSessionTask` runs
+    /// `pixelBuffer(for:)` from inside `withTaskGroup` across N Swift Tasks
+    /// sharing one `ImageAnalyzer`; lazy-var initialisation in Swift is NOT
+    /// thread-safe and a partial pointer write trashed the pool. Symptom was
+    /// `EXC_BAD_ACCESS` inside `CVPixelBufferPool::createPixelBuffer +0x18`
+    /// on cooperative-queue threads. Eager init fixes it.
+    ///
+    /// `nil` if pool creation fails; we then fall back to per-frame
+    /// `CVPixelBufferCreate` in `renderToPooledBuffer`.
+    private let pixelBufferPool: CVPixelBufferPool?
 
     init(inputSize: Int = 224, imageManager: PHImageManager = PHImageManager.default()) {
         self.inputSize = inputSize
         self.targetSize = CGSize(width: inputSize, height: inputSize)
         self.imageManager = imageManager
+        self.pixelBufferPool = ImageAnalyzer.makePixelBufferPool(inputSize: inputSize)
     }
 
-    private func makePixelBufferPool() -> CVPixelBufferPool? {
+    private static func makePixelBufferPool(inputSize: Int) -> CVPixelBufferPool? {
         let pixelBufferAttrs: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey:              kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey:                        inputSize,
