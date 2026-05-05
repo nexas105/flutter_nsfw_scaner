@@ -22,6 +22,8 @@ enum ChannelConstants {
         static let scanFile           = "scanFile"
         static let scanBytes          = "scanBytes"
         static let clearScanCache     = "clearScanCache"
+        static let startCameraScan    = "startCameraScan"
+        static let stopCameraScan     = "stopCameraScan"
     }
 
     enum EventKey {
