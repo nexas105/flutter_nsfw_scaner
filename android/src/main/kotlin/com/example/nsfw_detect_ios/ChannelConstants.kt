@@ -24,6 +24,11 @@ object ChannelConstants {
         const val DOWNLOAD_MODEL = "downloadModel"
         const val DELETE_MODEL = "deleteModel"
         const val SET_MODEL_URL = "setModelUrl"
+
+        // Live camera scan (v2.1.0 — Phase 03). Multiplexed onto the
+        // existing scan_events EventChannel via the `type` discriminator.
+        const val START_CAMERA_SCAN = "startCameraScan"
+        const val STOP_CAMERA_SCAN = "stopCameraScan"
     }
 
     object EventKey {
@@ -48,5 +53,23 @@ object ChannelConstants {
         const val HEIGHT = "height"
         /** Detection-mode bounding boxes. List of `{label, confidence, box, aggregatedCategory}` maps. */
         const val DETECTIONS = "detections"
+
+        // Live camera (Phase 03) — milliseconds-since-epoch capture timestamp
+        // carried per cameraFrameResult event. Mirrors iOS' EventKey.frameTimestamp.
+        const val FRAME_TIMESTAMP = "frameTimestamp"
+    }
+
+    /**
+     * Discriminator values for the `type` key on the existing
+     * `nsfw_detect_ios/scan_events` EventChannel. Camera events multiplex
+     * onto the same channel; Phase-01 Dart contract filters by these.
+     */
+    object EventType {
+        /** Per-frame classification / detection result from a live camera scan. */
+        const val CAMERA_FRAME_RESULT = "cameraFrameResult"
+        /** User denied (or system restricted) the runtime CAMERA permission. */
+        const val CAMERA_PERMISSION_DENIED = "cameraPermissionDenied"
+        /** Non-recoverable native camera-pipeline error. */
+        const val CAMERA_ERROR = "cameraError"
     }
 }
