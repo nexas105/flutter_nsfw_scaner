@@ -97,25 +97,4 @@ class NsfwDetectPlugin : FlutterPlugin, ActivityAware, PluginRegistry.RequestPer
         return scanMethodHandler.onActivityResult(requestCode, resultCode, data)
     }
 
-    // MARK: - V1 Embedding Compatibility
-
-    companion object {
-        @JvmStatic
-        @Suppress("DEPRECATION")
-        fun registerWith(registrar: PluginRegistry.Registrar) {
-            val plugin = NsfwDetectPlugin()
-            val scanEventSink = ScanEventSink()
-            val scanMethodHandler = ScanMethodHandler(registrar.context(), scanEventSink)
-
-            val methodChannel = MethodChannel(registrar.messenger(), ChannelConstants.METHOD_CHANNEL)
-            methodChannel.setMethodCallHandler(scanMethodHandler)
-
-            val eventChannel = EventChannel(registrar.messenger(), ChannelConstants.EVENT_CHANNEL)
-            eventChannel.setStreamHandler(scanEventSink)
-
-            registrar.addRequestPermissionsResultListener { requestCode, permissions, grantResults ->
-                scanMethodHandler.onRequestPermissionsResult(requestCode, permissions, grantResults)
-            }
-        }
-    }
 }

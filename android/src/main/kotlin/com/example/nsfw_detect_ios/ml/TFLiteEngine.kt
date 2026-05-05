@@ -4,7 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.util.Log
-import com.google.ai.edge.litert.Interpreter
+import org.tensorflow.lite.Interpreter
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
@@ -55,7 +55,7 @@ class TFLiteEngine(
             "gpu" -> tryAddDelegate(
                 options,
                 listOf(
-                    "com.google.ai.edge.litert.gpu.GpuDelegate",
+                    "org.tensorflow.lite.gpu.GpuDelegate",
                     "org.tensorflow.lite.gpu.GpuDelegate",
                 ),
                 "GPU",
@@ -63,7 +63,7 @@ class TFLiteEngine(
             "nnapi" -> tryAddDelegate(
                 options,
                 listOf(
-                    "com.google.ai.edge.litert.nnapi.NnApiDelegate",
+                    "org.tensorflow.lite.nnapi.NnApiDelegate",
                     "org.tensorflow.lite.nnapi.NnApiDelegate",
                 ),
                 "NNAPI",
