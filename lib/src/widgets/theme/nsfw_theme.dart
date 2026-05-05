@@ -20,6 +20,29 @@ class NsfwGalleryTheme {
   final Color progressBarColor;
   final TextStyle? progressTextStyle;
 
+  // ---------------------------------------------------------------------------
+  // Camera-only fields (v2.1.0 / Phase 04 — NsfwCameraView). All defaults are
+  // backwards-compatible — every existing `NsfwGalleryTheme(...)` caller keeps
+  // compiling without change.
+  // ---------------------------------------------------------------------------
+
+  /// Sigma used by [NsfwCameraView]'s blur-on-NSFW `BackdropFilter`.
+  /// Higher = stronger blur. Tune in the 6..16 range; default 10 mirrors the
+  /// previous hard-coded value on the camera widget.
+  final double cameraBlurSigma;
+
+  /// Alpha applied to [scaffoldBackgroundColor] when tinting over the blur.
+  /// 0.0 = no tint, 1.0 = solid scaffold colour over the blur.
+  final double cameraBlurTintOpacity;
+
+  /// Min height of the HUD confidence bar (px).
+  final double cameraConfidenceBarHeight;
+
+  /// Background opacity for HUD pill / confidence-bar track. Separate from
+  /// [badgeOpacity] so the two can be tuned independently — the badge is
+  /// usually higher (more legible) than the bar background.
+  final double cameraHudBackgroundOpacity;
+
   const NsfwGalleryTheme({
     this.safeColor = const Color(0xFF4CAF50),
     this.suggestiveColor = const Color(0xFFFF9800),
@@ -33,6 +56,10 @@ class NsfwGalleryTheme {
     this.scaffoldBackgroundColor = Colors.black,
     this.progressBarColor = const Color(0xFF2196F3),
     this.progressTextStyle,
+    this.cameraBlurSigma = 10.0,
+    this.cameraBlurTintOpacity = 0.2,
+    this.cameraConfidenceBarHeight = 4.0,
+    this.cameraHudBackgroundOpacity = 0.3,
   });
 
   static const NsfwGalleryTheme defaults = NsfwGalleryTheme();
@@ -58,6 +85,10 @@ class NsfwGalleryTheme {
     Color? scaffoldBackgroundColor,
     Color? progressBarColor,
     TextStyle? progressTextStyle,
+    double? cameraBlurSigma,
+    double? cameraBlurTintOpacity,
+    double? cameraConfidenceBarHeight,
+    double? cameraHudBackgroundOpacity,
   }) =>
       NsfwGalleryTheme(
         safeColor: safeColor ?? this.safeColor,
@@ -73,6 +104,13 @@ class NsfwGalleryTheme {
             scaffoldBackgroundColor ?? this.scaffoldBackgroundColor,
         progressBarColor: progressBarColor ?? this.progressBarColor,
         progressTextStyle: progressTextStyle ?? this.progressTextStyle,
+        cameraBlurSigma: cameraBlurSigma ?? this.cameraBlurSigma,
+        cameraBlurTintOpacity:
+            cameraBlurTintOpacity ?? this.cameraBlurTintOpacity,
+        cameraConfidenceBarHeight:
+            cameraConfidenceBarHeight ?? this.cameraConfidenceBarHeight,
+        cameraHudBackgroundOpacity:
+            cameraHudBackgroundOpacity ?? this.cameraHudBackgroundOpacity,
       );
 }
 
