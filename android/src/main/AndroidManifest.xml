@@ -11,4 +11,8 @@
     <!-- API ≥34: limited photo picker access -->
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 
+    <!-- Live camera scan pipeline (v2.1.0). The plugin requests this at
+         runtime via CameraPermission; host apps don't need to pre-request. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
 </manifest>
