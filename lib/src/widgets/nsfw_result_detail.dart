@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../api/media_item.dart';
 import '../api/nsfw_label.dart';
 import '../api/scan_result.dart';
+import 'nsfw_detection_overlay.dart';
 import 'nsfw_result_badge.dart';
 import 'theme/nsfw_theme.dart';
 
@@ -66,7 +67,7 @@ class NsfwLabelBar extends StatelessWidget {
 /// thumbnail, a detailed badge, the per-label confidence bars, and a metadata
 /// card. Photo-library agnostic — supply [thumbnailBuilder] to inject your own
 /// image widget (e.g. via `photo_manager`).
-class NsfwResultDetailView extends StatelessWidget {
+class NsfwResultDetailView extends StatefulWidget {
   final ScanResult result;
   final NsfwTheme? theme;
   final Widget Function(BuildContext context, MediaItem item)? thumbnailBuilder;
@@ -97,6 +98,9 @@ class NsfwResultDetailView extends StatelessWidget {
     this.showDistributionChart = false,
   });
 
+  @override
+  State<NsfwResultDetailView> createState() => _NsfwResultDetailViewState();
+
   /// Default classification report text. Public so consumers can extend it
   /// before piping through their share channel.
   static String defaultReportText(ScanResult r) {
@@ -108,30 +112,66 @@ class NsfwResultDetailView extends StatelessWidget {
       lines.writeln(
           '  - ${l.category.displayName}: ${(l.confidence * 100).toStringAsFixed(1)}%');
     }
+    if (r.detections != null && r.detections!.isNotEmpty) {
+      lines.writeln('Body Parts Detected:');
+      for (final d in r.detections!) {
+        lines.writeln(
+            '  - ${d.label}: ${(d.confidence * 100).toStringAsFixed(1)}%');
+      }
+    }
     return lines.toString().trimRight();
   }
+}
+
+class _NsfwResultDetailViewState extends State<NsfwResultDetailView> {
+  /// Detection overlay is opt-in per result-view by default — privacy-first.
+  /// Toggle is only shown when the result actually has detections.
+  bool _showDetections = false;
+
+  ScanResult get _result => widget.result;
 
   @override
   Widget build(BuildContext context) {
-    final t = theme ?? NsfwTheme.defaults();
+    final t = widget.theme ?? NsfwTheme.defaults();
     final s = t.spacing;
+    final hasDetections =
+        _result.detections != null && _result.detections!.isNotEmpty;
+
     return SingleChildScrollView(
-      padding: padding,
+      padding: widget.padding,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (hasDetections) ...[
+            _DetectionToggleRow(
+              theme: t,
+              value: _showDetections,
+              onChanged: (v) => setState(() => _showDetections = v),
+            ),
+            SizedBox(height: s.sm),
+          ],
           ClipRRect(
             borderRadius: BorderRadius.circular(s.md),
             child: AspectRatio(
               aspectRatio: 1,
-              child: thumbnailBuilder?.call(context, result.item) ??
-                  _placeholder(t),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  widget.thumbnailBuilder?.call(context, _result.item) ??
+                      _placeholder(t),
+                  if (hasDetections && _showDetections)
+                    NsfwDetectionOverlay(
+                      detections: _result.detections!,
+                      theme: t,
+                    ),
+                ],
+              ),
             ),
           ),
           SizedBox(height: s.lg),
           Center(
             child: NsfwResultBadge(
-              result: result,
+              result: _result,
               style: BadgeStyle.detailed,
               theme: t.gallery,
               fontSize: 14,
@@ -140,27 +180,34 @@ class NsfwResultDetailView extends StatelessWidget {
           SizedBox(height: s.xl),
           Text('Classification Breakdown', style: t.typography.title),
           SizedBox(height: s.md),
-          if (showDistributionChart && result.labels.isNotEmpty) ...[
+          if (widget.showDistributionChart && _result.labels.isNotEmpty) ...[
             Center(
               child: SizedBox(
                 width: 140,
                 height: 140,
-                child: _DistributionDonut(result: result, theme: t),
+                child: _DistributionDonut(result: _result, theme: t),
               ),
             ),
             SizedBox(height: s.md),
           ],
-          ...result.labels.map((l) => NsfwLabelBar(label: l, theme: t)),
-          SizedBox(height: s.lg),
-          _MetaCard(result: result, theme: t),
-          if (extraActions != null && extraActions!.isNotEmpty) ...[
-            SizedBox(height: s.md),
-            ...extraActions!,
+          ..._result.labels.map((l) => NsfwLabelBar(label: l, theme: t)),
+          if (hasDetections) ...[
+            SizedBox(height: s.lg),
+            Text('Body Parts Detected', style: t.typography.title),
+            SizedBox(height: s.sm),
+            ..._result.detections!.map((d) => _DetectionRow(detection: d, theme: t)),
           ],
-          if (onShare != null) ...[
+          SizedBox(height: s.lg),
+          _MetaCard(result: _result, theme: t),
+          if (widget.extraActions != null && widget.extraActions!.isNotEmpty) ...[
+            SizedBox(height: s.md),
+            ...widget.extraActions!,
+          ],
+          if (widget.onShare != null) ...[
             SizedBox(height: s.md),
             OutlinedButton.icon(
-              onPressed: () => onShare!.call(defaultReportText(result)),
+              onPressed: () => widget.onShare!
+                  .call(NsfwResultDetailView.defaultReportText(_result)),
               icon: Icon(Icons.share_rounded, color: t.accent),
               label: Text(
                 'Share Report',
@@ -181,6 +228,90 @@ class NsfwResultDetailView extends StatelessWidget {
         color: t.surfaceVariant,
         child: Icon(Icons.photo_outlined, size: 80, color: t.onSurfaceMuted),
       );
+}
+
+class _DetectionToggleRow extends StatelessWidget {
+  final NsfwTheme theme;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _DetectionToggleRow({
+    required this.theme,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final t = theme;
+    return Container(
+      padding: EdgeInsets.symmetric(
+          horizontal: t.spacing.md, vertical: t.spacing.xs),
+      decoration: BoxDecoration(
+        color: t.surfaceVariant,
+        borderRadius: BorderRadius.circular(t.spacing.sm),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.crop_free, size: 18, color: t.onSurfaceMuted),
+          SizedBox(width: t.spacing.sm),
+          Expanded(
+            child: Text('Show detections',
+                style: t.typography.body.copyWith(color: t.onSurface)),
+          ),
+          Switch.adaptive(
+            value: value,
+            activeTrackColor: t.accent,
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DetectionRow extends StatelessWidget {
+  final dynamic detection; // BodyPartDetection — kept dynamic to avoid extra import here
+  final NsfwTheme theme;
+
+  const _DetectionRow({required this.detection, required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = theme;
+    final color = t.gallery.categoryColor(
+      // ignore: avoid_dynamic_calls
+      (detection.aggregatedCategory as NsfwCategory).name,
+    );
+    // ignore: avoid_dynamic_calls
+    final label = detection.label as String;
+    // ignore: avoid_dynamic_calls
+    final confidence = detection.confidence as double;
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: t.spacing.xs),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          SizedBox(width: t.spacing.sm),
+          Expanded(
+            child: Text(label,
+                style: t.typography.body.copyWith(color: t.onSurface)),
+          ),
+          Text(
+            '${(confidence * 100).toStringAsFixed(1)}%',
+            style: t.typography.body.copyWith(
+              color: color,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _DistributionDonut extends StatelessWidget {

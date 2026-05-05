@@ -25,6 +25,7 @@ export 'src/widgets/nsfw_skeleton_tile.dart';
 export 'src/widgets/nsfw_summary_sheet.dart';
 export 'src/widgets/nsfw_result_detail.dart';
 export 'src/widgets/nsfw_settings_panel.dart';
+export 'src/widgets/nsfw_detection_overlay.dart';
 export 'src/widgets/nsfw_picker_button.dart';
 export 'src/widgets/nsfw_filter_bar.dart';
 export 'src/widgets/nsfw_search_field.dart';

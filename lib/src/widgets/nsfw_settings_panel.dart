@@ -4,6 +4,7 @@ import '../api/model_descriptor.dart';
 import '../api/model_download_progress.dart';
 import '../api/nsfw_detector.dart';
 import '../api/scan_configuration.dart';
+import '../api/scan_mode.dart';
 import 'theme/nsfw_theme.dart';
 
 /// Reusable settings panel that exposes the most common
@@ -107,6 +108,19 @@ class _NsfwSettingsPanelState extends State<NsfwSettingsPanel> {
     );
   }
 
+  /// Models filtered by the currently-selected `mode`. Detection mode shows
+  /// detector-kind descriptors only; classification mode shows everything
+  /// else. Falls back to the unfiltered list when the registry hasn't told
+  /// us the kind for any model (e.g. plugin pre-Phase-B).
+  List<ModelDescriptor> get _filteredModels {
+    final isDetection = _config.mode == ScanMode.detection;
+    final filtered = _models
+        .where((m) => isDetection ? m.isDetector : !m.isDetector)
+        .toList(growable: false);
+    if (filtered.isEmpty) return _models;
+    return filtered;
+  }
+
   Widget _card(NsfwTheme t, Widget child) => Container(
         decoration: BoxDecoration(
           color: t.surface,
@@ -117,26 +131,29 @@ class _NsfwSettingsPanelState extends State<NsfwSettingsPanel> {
 
   // ── Model picker ──────────────────────────────────────────────────────────
 
-  Widget _modelPicker(NsfwTheme t) => _card(
-        t,
-        _loadingModels
-            ? Padding(
-                padding: EdgeInsets.all(t.spacing.lg),
-                child: const Center(child: CircularProgressIndicator()),
-              )
-            : RadioGroup<String>(
-                groupValue: _config.modelId,
-                onChanged: (v) {
-                  final model = _models.where((m) => m.id == v).firstOrNull;
-                  if (model != null && model.isAvailable) {
-                    _emit(_config.copyWith(modelId: v));
-                  }
-                },
-                child: Column(
-                  children: _models.map((m) => _modelTile(t, m)).toList(),
-                ),
+  Widget _modelPicker(NsfwTheme t) {
+    final visibleModels = _filteredModels;
+    return _card(
+      t,
+      _loadingModels
+          ? Padding(
+              padding: EdgeInsets.all(t.spacing.lg),
+              child: const Center(child: CircularProgressIndicator()),
+            )
+          : RadioGroup<String>(
+              groupValue: _config.modelId,
+              onChanged: (v) {
+                final model = visibleModels.where((m) => m.id == v).firstOrNull;
+                if (model != null && model.isAvailable) {
+                  _emit(_config.copyWith(modelId: v));
+                }
+              },
+              child: Column(
+                children: visibleModels.map((m) => _modelTile(t, m)).toList(),
               ),
-      );
+            ),
+    );
+  }
 
   Widget _modelTile(NsfwTheme t, ModelDescriptor m) {
     final needsDownload = m.requiresDownload && !m.isDownloaded;
@@ -273,6 +290,27 @@ class _NsfwSettingsPanelState extends State<NsfwSettingsPanel> {
         t,
         Column(
           children: [
+            _switchTile(
+              t,
+              title: 'Detection Mode (NudeNet)',
+              subtitle:
+                  'Detects body-part exposure with bounding-boxes. Requires NudeNet model download (~50 MB).',
+              value: _config.mode == ScanMode.detection,
+              onChanged: (v) {
+                final newMode =
+                    v ? ScanMode.detection : ScanMode.classification;
+                // When toggling, also nudge modelId to a sensible default for
+                // the new mode so the picker isn't stuck on a now-hidden model.
+                final firstMatching = _models
+                    .where((m) => v ? m.isDetector : !m.isDetector)
+                    .firstOrNull;
+                _emit(_config.copyWith(
+                  mode: newMode,
+                  modelId: firstMatching?.id ?? _config.modelId,
+                ));
+              },
+            ),
+            _divider(t),
             _sliderTile(
               t,
               title: 'Confidence Threshold',
