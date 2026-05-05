@@ -20,6 +20,13 @@ data class ScanConfiguration(
     val forceRescan: Boolean = false,
     val replayCachedResults: Boolean = true,
     val acceleratorDelegate: String? = null,
+    /**
+     * Native scan mode. `"classification"` (default) routes through
+     * [com.example.nsfw_detect_ios.ml.MLEngine]; `"detection"` routes through
+     * [com.example.nsfw_detect_ios.ml.MLDetectorEngine]. Wire value comes
+     * from Dart `ScanMode.wireValue`.
+     */
+    val mode: String = "classification",
 ) {
     companion object {
         fun from(args: Map<*, *>): ScanConfiguration = ScanConfiguration(
@@ -38,6 +45,7 @@ data class ScanConfiguration(
             forceRescan = (args["forceRescan"] as? Boolean) ?: false,
             replayCachedResults = (args["replayCachedResults"] as? Boolean) ?: true,
             acceleratorDelegate = args["androidDelegate"] as? String,
+            mode = (args["mode"] as? String) ?: "classification",
         )
     }
 }

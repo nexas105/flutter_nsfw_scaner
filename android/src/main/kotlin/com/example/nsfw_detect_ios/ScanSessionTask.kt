@@ -7,8 +7,11 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import com.example.nsfw_detect_ios.ml.BodyPartDetection
+import com.example.nsfw_detect_ios.ml.MLDetectorEngine
 import com.example.nsfw_detect_ios.ml.MLEngine
 import com.example.nsfw_detect_ios.ml.ModelDownloadManager
+import com.example.nsfw_detect_ios.ml.ModelKind
 import com.example.nsfw_detect_ios.ml.ModelRegistry
 import com.example.nsfw_detect_ios.scanner.MediaStoreScanner
 import com.example.nsfw_detect_ios.scanner.ScanConfiguration
@@ -113,6 +116,15 @@ class ScanSessionTask(
                     )
                     return
                 }
+            }
+
+            // Route to detector pipeline if the chosen model is a detector or
+            // the user explicitly requested detection mode.
+            val isDetectionMode = config.mode == "detection" ||
+                registry.kind(config.modelId) == ModelKind.DETECTOR
+            if (isDetectionMode) {
+                runDetectionScan(assets, total, cache, fingerprints, cacheActive, cacheModelId)
+                return
             }
 
             val engine: MLEngine = registry
@@ -319,6 +331,215 @@ class ScanSessionTask(
         } catch (e: Exception) {
             Log.e("NSFW-Scan", "Scan failed: ${e.message}", e)
             eventSink.emitError("SCAN_ERROR", e.message ?: "Unknown error")
+        }
+    }
+
+    // MARK: - Detection-mode pipeline (NudeNet body-part bounding boxes)
+
+    /**
+     * Detection-mode parallel of [runScan]. Resolves an [MLDetectorEngine]
+     * instead of an [MLEngine] and emits results with `detections` populated.
+     * Falls back to the same cache, MediaStore and event-sink plumbing as
+     * the classifier path.
+     *
+     * Videos: only the first frame is detected on. Aggregation across frames
+     * is out of Phase B scope — detector models are heavier and the typical
+     * NudeNet use case is per-image moderation.
+     */
+    private suspend fun runDetectionScan(
+        assets: List<com.example.nsfw_detect_ios.scanner.AndroidMediaItem>,
+        total: Int,
+        cache: com.example.nsfw_detect_ios.cache.ScanCache,
+        fingerprints: Map<String, Long>,
+        cacheActive: Boolean,
+        cacheModelId: String,
+    ) {
+        val registry = ModelRegistry.getInstance(context)
+        val engine: MLDetectorEngine = registry.detectorEngine(
+            id = config.modelId,
+            delegate = config.acceleratorDelegate,
+        )
+        engine.setMinConfidence(config.detectionConfidenceThreshold.toFloat())
+        val targetBitmapSize: Int =
+            (engine.descriptor.metadata["inputSize"] as? Number)?.toInt()
+                ?: 320
+
+        val semaphore = Semaphore(maxOf(1, config.concurrency))
+        val scannedCount = AtomicInteger(0)
+
+        try {
+            coroutineScope {
+                for (asset in assets) {
+                    if (!isActive) break
+
+                    val assetModMs = asset.dateModified * 1000
+                    if (cacheActive && fingerprints[asset.id.toString()] == assetModMs) {
+                        if (config.replayCachedResults) {
+                            val rec = cache.cachedRecord(
+                                localIdentifier = asset.id.toString(),
+                                modelId = cacheModelId,
+                                modificationDateMs = assetModMs,
+                            )
+                            if (rec != null) {
+                                val labels = com.example.nsfw_detect_ios.cache.ScanCache.decodeLabels(rec.labelsJson).map {
+                                    mapOf("category" to it.first, "confidence" to it.second.toDouble())
+                                }
+                                val detections = com.example.nsfw_detect_ios.cache.ScanCache.decodeDetections(rec.detectionsJson)
+                                val map = mutableMapOf<String, Any?>(
+                                    ChannelConstants.EventKey.TYPE to "result",
+                                    ChannelConstants.EventKey.LOCAL_ID to asset.id.toString(),
+                                    ChannelConstants.EventKey.MEDIA_TYPE to asset.mediaType,
+                                    ChannelConstants.EventKey.STATUS to "completed",
+                                    ChannelConstants.EventKey.SCANNED_AT to rec.scannedAtMs,
+                                    ChannelConstants.EventKey.LABELS to labels,
+                                    ChannelConstants.EventKey.CREATION_DATE to asset.dateAdded * 1000,
+                                    ChannelConstants.EventKey.WIDTH to asset.width,
+                                    ChannelConstants.EventKey.HEIGHT to asset.height,
+                                    "fromCache" to true,
+                                )
+                                if (detections != null) {
+                                    map[ChannelConstants.EventKey.DETECTIONS] = detections
+                                }
+                                eventSink.emit(map)
+                            }
+                        }
+                        val count = scannedCount.incrementAndGet()
+                        eventSink.emitProgress(
+                            scannedCount = count,
+                            totalCount = total,
+                            isComplete = false,
+                            currentLocalId = asset.id.toString(),
+                            currentMediaType = asset.mediaType,
+                        )
+                        continue
+                    }
+
+                    semaphore.acquire()
+                    launch {
+                        try {
+                            val bitmap = if (asset.mediaType == "video") {
+                                val retriever = MediaMetadataRetriever()
+                                try {
+                                    retriever.setDataSource(context, asset.contentUri)
+                                    retriever.getFrameAtTime(0)
+                                } finally {
+                                    retriever.release()
+                                }
+                            } else {
+                                decodeDownsampled(asset.contentUri, context.contentResolver, targetBitmapSize)
+                            }
+
+                            if (bitmap == null) {
+                                val count = scannedCount.incrementAndGet()
+                                eventSink.emitResult(
+                                    localId = asset.id.toString(),
+                                    mediaType = asset.mediaType,
+                                    status = "skipped",
+                                    scannedAt = System.currentTimeMillis(),
+                                    labels = emptyList(),
+                                    creationDate = asset.dateAdded * 1000,
+                                    durationMs = asset.durationMs,
+                                    width = asset.width,
+                                    height = asset.height,
+                                )
+                                eventSink.emitProgress(
+                                    scannedCount = count,
+                                    totalCount = total,
+                                    isComplete = false,
+                                    currentLocalId = asset.id.toString(),
+                                    currentMediaType = asset.mediaType,
+                                )
+                                return@launch
+                            }
+
+                            val detections: List<BodyPartDetection> = engine.detect(bitmap)
+                            // Aggregate per-category max confidence so result.labels keeps
+                            // the existing topCategory/topConfidence semantics.
+                            val perCat = HashMap<String, Float>()
+                            for (d in detections) {
+                                val prev = perCat[d.aggregatedCategory] ?: 0f
+                                if (d.confidence > prev) perCat[d.aggregatedCategory] = d.confidence
+                            }
+                            val labelsMap: List<Map<String, Any>> = perCat
+                                .entries
+                                .sortedByDescending { it.value }
+                                .map { mapOf("category" to it.key, "confidence" to it.value.toDouble()) }
+                            val detectionsMap: List<Map<String, Any>> = detections.map { it.toMap() }
+                            val scannedAt = System.currentTimeMillis()
+
+                            eventSink.emitResult(
+                                localId = asset.id.toString(),
+                                mediaType = asset.mediaType,
+                                status = "completed",
+                                scannedAt = scannedAt,
+                                labels = labelsMap,
+                                creationDate = asset.dateAdded * 1000,
+                                durationMs = asset.durationMs,
+                                width = asset.width,
+                                height = asset.height,
+                                detections = detectionsMap,
+                            )
+
+                            cache.record(
+                                localIdentifier = asset.id.toString(),
+                                modelId = cacheModelId,
+                                modificationDateMs = assetModMs,
+                                scannedAtMs = scannedAt,
+                                labelsJson = com.example.nsfw_detect_ios.cache.ScanCache.encodeLabels(
+                                    labelsMap.map { (it["category"] as String) to (it["confidence"] as Double).toFloat() }
+                                ),
+                                detectionsJson = com.example.nsfw_detect_ios.cache.ScanCache.encodeDetections(detectionsMap),
+                            )
+
+                            val count = scannedCount.incrementAndGet()
+                            eventSink.emitProgress(
+                                scannedCount = count,
+                                totalCount = total,
+                                isComplete = false,
+                                currentLocalId = asset.id.toString(),
+                                currentMediaType = asset.mediaType,
+                            )
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Log.w("NSFW-Scan", "Detection asset ${asset.id} failed: ${e.message}")
+                            val count = scannedCount.incrementAndGet()
+                            eventSink.emitResult(
+                                localId = asset.id.toString(),
+                                mediaType = asset.mediaType,
+                                status = "failed",
+                                scannedAt = System.currentTimeMillis(),
+                                labels = emptyList(),
+                                errorMessage = e.message,
+                            )
+                            eventSink.emitProgress(
+                                scannedCount = count,
+                                totalCount = total,
+                                isComplete = false,
+                                currentLocalId = asset.id.toString(),
+                                currentMediaType = asset.mediaType,
+                            )
+                        } finally {
+                            semaphore.release()
+                        }
+                    }
+                }
+            }
+            val finalCount = scannedCount.get()
+            eventSink.emitProgress(
+                scannedCount = finalCount,
+                totalCount = total,
+                isComplete = true,
+            )
+            cache.flush()
+        } catch (e: CancellationException) {
+            val finalCount = scannedCount.get()
+            eventSink.emitProgress(
+                scannedCount = finalCount,
+                totalCount = total,
+                isComplete = false,
+            )
+            cache.flush()
         }
     }
 
