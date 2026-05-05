@@ -4,8 +4,9 @@ scripts/
 tools/
 models_cache/
 
-# Python virtualenvs / caches (tools/convert_models.py)
+# Python virtualenvs / caches (tools/convert_models.py + convert_tflite.py)
 .venv/
+.venv-*/
 venv/
 __pycache__/
 *.py[cod]

@@ -233,7 +233,7 @@ class ModelRegistry private constructor(appContext: Context) {
         val falconsai = ModelDescriptorNative(
             id = ModelIds.FALCONSAI,
             displayName = "Falconsai ViT NSFW",
-            description = "High-accuracy ViT classifier (98%). ~45 MB download.",
+            description = "High-accuracy ViT classifier (98%). ~75 MB download.",
             version = "1.0",
             bundleResourceName = "FalconsaiNSFW",
             metadata = mapOf(
@@ -242,7 +242,7 @@ class ModelRegistry private constructor(appContext: Context) {
                 "framework" to "TFLite",
             ),
             downloadUrl = resolveDownloadUrl(ModelIds.FALCONSAI, falconsaiDefault),
-            downloadSizeBytes = 45_000_000L,
+            downloadSizeBytes = 78_000_000L,
         )
         register(falconsai) { TFLiteEngine(appContext, it) }
 
@@ -250,7 +250,7 @@ class ModelRegistry private constructor(appContext: Context) {
         val adamcodd = ModelDescriptorNative(
             id = ModelIds.ADAMCODD,
             displayName = "AdamCodd ViT NSFW",
-            description = "Highest-accuracy ViT-384 detector (AUC 0.9948). ~45 MB download.",
+            description = "Highest-accuracy ViT-384 detector (AUC 0.9948). ~75 MB download.",
             version = "1.0",
             bundleResourceName = "AdamCoddNSFW",
             metadata = mapOf(
@@ -259,7 +259,7 @@ class ModelRegistry private constructor(appContext: Context) {
                 "framework" to "TFLite",
             ),
             downloadUrl = resolveDownloadUrl(ModelIds.ADAMCODD, adamcoddDefault),
-            downloadSizeBytes = 45_000_000L,
+            downloadSizeBytes = 78_000_000L,
         )
         register(adamcodd) { TFLiteEngine(appContext, it) }
 
