@@ -12,18 +12,18 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * TFLite object-detection engine for SSD-style NudeNet models.
+ * TFLite object-detection engine for YOLOv8-style NudeNet models.
  *
- * Expected output tensors (standard SSD MobileNet layout — 4 outputs):
- *   - `output_locations` shape `[1, N, 4]` boxes `(y_min, x_min, y_max, x_max)`, normalised
- *   - `output_classes`   shape `[1, N]`     class index as float
- *   - `output_scores`    shape `[1, N]`     confidence in `[0, 1]`
- *   - `num_detections`   shape `[1]`        number of valid detections
+ * Expected output tensor (single output, raw ultralytics YOLOv8 export):
+ *   - shape `[1, 22, A]` where `22 = 4 (cx, cy, w, h in input pixels) + 18
+ *     class scores in [0, 1]`, and `A` is the total anchor count across
+ *     detection scales (8400 for input 640).
  *
- * The class-index → label table is the canonical 18-class NudeNet vocabulary
- * (see [NUDENET_LABELS]). Boxes below [minConfidence] are dropped. Coordinates
- * are converted from `(y_min, x_min, y_max, x_max)` to `(x, y, width, height)`
- * with origin top-left for parity with the iOS detector.
+ * Per-anchor processing: argmax class over channels 4..21, drop anchors
+ * below [minConfidence], convert `(cx, cy, w, h)` → normalised
+ * `(x, y, width, height)` with top-left origin, then run class-aware
+ * NMS at `IOU_THRESHOLD = 0.45`. The final list mirrors the iOS path
+ * via Vision's built-in NMS.
  *
  * Pendant to `ios/Classes/ml/CoreMLDetectorEngine.swift`.
  */
@@ -41,9 +41,6 @@ class TFLiteDetectorEngine(
 
     private val inputSize: Int =
         (descriptor.metadata["inputSize"] as? Number)?.toInt() ?: DEFAULT_INPUT_SIZE
-    /** Maximum N (boxes) per tensor — depends on model export, but 100 is the SSD norm. */
-    private val maxDetections: Int =
-        (descriptor.metadata["maxDetections"] as? Number)?.toInt() ?: DEFAULT_MAX_DETECTIONS
 
     private var minConfidence: Float = 0.25f
 
@@ -115,54 +112,99 @@ class TFLiteDetectorEngine(
         }
         inputBuffer.rewind()
 
-        // SSD-style 4-output layout. Allocate the maximum and let the model fill in
-        // the actual count via num_detections.
-        val locations = Array(1) { Array(maxDetections) { FloatArray(4) } }
-        val classes   = Array(1) { FloatArray(maxDetections) }
-        val scores    = Array(1) { FloatArray(maxDetections) }
-        val numDet    = FloatArray(1)
-
-        val outputs: MutableMap<Int, Any> = mutableMapOf(
-            0 to locations,
-            1 to classes,
-            2 to scores,
-            3 to numDet,
-        )
+        // Read output shape from the interpreter — A varies with input size
+        // (8400 for 640, 2100 for 320). Allocate exactly to avoid over-reads.
+        val outShape = interp.getOutputTensor(0).shape()  // [1, 22, A]
+        require(outShape.size == 3 && outShape[1] == CHANNELS) {
+            "Unexpected detector output shape ${outShape.contentToString()}; expected [1, $CHANNELS, A]"
+        }
+        val numAnchors = outShape[2]
+        val output = Array(1) { Array(CHANNELS) { FloatArray(numAnchors) } }
 
         runMutex.withLock {
-            interp.runForMultipleInputsOutputs(arrayOf<Any>(inputBuffer), outputs)
+            interp.run(inputBuffer, output)
         }
 
-        val n = numDet[0].toInt().coerceIn(0, maxDetections)
-        val results = ArrayList<BodyPartDetection>(n)
-        for (i in 0 until n) {
-            val score = scores[0][i]
-            if (score < minConfidence) continue
+        return parseAndNms(output[0], numAnchors)
+    }
 
-            val classIndex = classes[0][i].toInt()
-            val label = NUDENET_LABELS.getOrNull(classIndex) ?: continue
+    /**
+     * Parse YOLOv8 raw output and apply class-aware NMS. Per-anchor layout:
+     * `[cx, cy, w, h, score_0, …, score_17]` with bbox in input-pixel coords
+     * and scores already sigmoid-activated.
+     */
+    private fun parseAndNms(out: Array<FloatArray>, numAnchors: Int): List<BodyPartDetection> {
+        val candidates = ArrayList<Box>(64)
+        val invSize = 1f / inputSize
+        for (i in 0 until numAnchors) {
+            // Argmax over class scores (channels 4..21).
+            var bestScore = 0f
+            var bestClass = -1
+            for (c in 0 until NUM_CLASSES) {
+                val s = out[4 + c][i]
+                if (s > bestScore) {
+                    bestScore = s
+                    bestClass = c
+                }
+            }
+            if (bestClass < 0 || bestScore < minConfidence) continue
 
-            val yMin = locations[0][i][0].coerceIn(0f, 1f)
-            val xMin = locations[0][i][1].coerceIn(0f, 1f)
-            val yMax = locations[0][i][2].coerceIn(0f, 1f)
-            val xMax = locations[0][i][3].coerceIn(0f, 1f)
-            val width  = (xMax - xMin).coerceAtLeast(0f)
-            val height = (yMax - yMin).coerceAtLeast(0f)
+            val cx = out[0][i] * invSize
+            val cy = out[1][i] * invSize
+            val w  = out[2][i] * invSize
+            val h  = out[3][i] * invSize
+            val xMin = (cx - w * 0.5f).coerceIn(0f, 1f)
+            val yMin = (cy - h * 0.5f).coerceIn(0f, 1f)
+            val xMax = (cx + w * 0.5f).coerceIn(0f, 1f)
+            val yMax = (cy + h * 0.5f).coerceIn(0f, 1f)
+            if (xMax <= xMin || yMax <= yMin) continue
+            candidates.add(Box(xMin, yMin, xMax, yMax, bestScore, bestClass))
+        }
+        if (candidates.isEmpty()) return emptyList()
 
-            val agg = BodyPartDetection.aggregateCategoryFor(label)
+        // Class-aware NMS — sort by score desc, suppress overlaps within same class.
+        candidates.sortByDescending { it.score }
+        val kept = ArrayList<Box>(candidates.size)
+        outer@ for (cand in candidates) {
+            for (k in kept) {
+                if (k.classIndex != cand.classIndex) continue
+                if (iou(cand, k) > IOU_THRESHOLD) continue@outer
+            }
+            kept.add(cand)
+            if (kept.size >= MAX_DETECTIONS) break
+        }
+
+        val results = ArrayList<BodyPartDetection>(kept.size)
+        for (b in kept) {
+            val label = NUDENET_LABELS.getOrNull(b.classIndex) ?: continue
             results.add(
                 BodyPartDetection(
                     label = label,
-                    confidence = score,
-                    x = xMin,
-                    y = yMin,
-                    width = width,
-                    height = height,
-                    aggregatedCategory = agg,
+                    confidence = b.score,
+                    x = b.xMin,
+                    y = b.yMin,
+                    width  = (b.xMax - b.xMin).coerceAtLeast(0f),
+                    height = (b.yMax - b.yMin).coerceAtLeast(0f),
+                    aggregatedCategory = BodyPartDetection.aggregateCategoryFor(label),
                 )
             )
         }
         return results
+    }
+
+    private fun iou(a: Box, b: Box): Float {
+        val interLeft   = maxOf(a.xMin, b.xMin)
+        val interTop    = maxOf(a.yMin, b.yMin)
+        val interRight  = minOf(a.xMax, b.xMax)
+        val interBottom = minOf(a.yMax, b.yMax)
+        val interW = (interRight - interLeft).coerceAtLeast(0f)
+        val interH = (interBottom - interTop).coerceAtLeast(0f)
+        val inter  = interW * interH
+        if (inter <= 0f) return 0f
+        val areaA = (a.xMax - a.xMin) * (a.yMax - a.yMin)
+        val areaB = (b.xMax - b.xMin) * (b.yMax - b.yMin)
+        val union = areaA + areaB - inter
+        return if (union > 0f) inter / union else 0f
     }
 
     // MARK: - Asset loading (mirrors TFLiteEngine.loadModelBuffer)
@@ -230,18 +272,24 @@ class TFLiteDetectorEngine(
         Log.w(TAG, "$tag delegate could not be loaded — falling back to CPU")
     }
 
+    /** Internal representation during NMS — normalised top-left coords. */
+    private data class Box(
+        val xMin: Float, val yMin: Float, val xMax: Float, val yMax: Float,
+        val score: Float, val classIndex: Int,
+    )
+
     private companion object {
         const val TAG = "NSFW-TFLiteDetector"
-        const val DEFAULT_INPUT_SIZE = 320
-        const val DEFAULT_MAX_DETECTIONS = 100
+        const val DEFAULT_INPUT_SIZE = 640
+        const val NUM_CLASSES = 18
+        const val CHANNELS = 4 + NUM_CLASSES   // YOLOv8: 4 bbox + 18 classes
+        const val IOU_THRESHOLD = 0.45f
+        const val MAX_DETECTIONS = 100
 
         /**
-         * Canonical NudeNet 18-class label table. Order MUST match the model's
-         * class-index output. The standard NudeNet TFLite export uses this
-         * order; if a custom model uses a different one, override via
-         * `descriptor.metadata["labels"]` is a future improvement (not in
-         * Phase B scope — the user's converted model is expected to use this
-         * canonical order).
+         * Canonical NudeNet 18-class label table. Order MUST match the
+         * ultralytics export's `names` dict. Verified against the v3.4-weights
+         * 640m.pt checkpoint at conversion time.
          */
         val NUDENET_LABELS = listOf(
             "FEMALE_GENITALIA_COVERED",
