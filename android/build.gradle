@@ -61,6 +61,8 @@ dependencies {
     implementation "androidx.camera:camera-core:$cameraxVersion"
     implementation "androidx.camera:camera-camera2:$cameraxVersion"
     implementation "androidx.camera:camera-lifecycle:$cameraxVersion"
+    // PreviewView (Phase 04 / WIDGET-01 — PlatformView-backed camera preview).
+    implementation "androidx.camera:camera-view:$cameraxVersion"
     implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.6.2"
     implementation "androidx.core:core-ktx:1.12.0"
 }
