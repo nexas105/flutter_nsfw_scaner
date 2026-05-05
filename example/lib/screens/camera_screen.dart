@@ -45,6 +45,7 @@ class _CameraScreenState extends State<CameraScreen> {
   List<ModelDescriptor> _models = const [];
   String? _modelId;
   ScanMode _mode = ScanMode.classification;
+  bool _blurOnNsfw = false;
   bool _settingsHydrated = false;
 
   @override
@@ -60,7 +61,17 @@ class _CameraScreenState extends State<CameraScreen> {
     final s = AppSettingsScope.of(context);
     _modelId = s.cameraModelId;
     _mode = s.cameraMode;
+    _blurOnNsfw = s.cameraBlurOnNsfw;
     _settingsHydrated = true;
+  }
+
+  void _onBlurChanged(bool v) {
+    final settings = AppSettingsScope.of(context);
+    setState(() => _blurOnNsfw = v);
+    settings.cameraBlurOnNsfw = v;
+    // No restart — NsfwCameraView reads enableBlurOnNsfw on every
+    // build (per WIDGET-04). The next setState rebuild propagates the
+    // new value through the existing widget instance.
   }
 
   Future<void> _loadModels() async {
@@ -197,6 +208,7 @@ class _CameraScreenState extends State<CameraScreen> {
               child: NsfwCameraView(
                 key: ValueKey(_viewKey),
                 config: _currentConfig(),
+                enableBlurOnNsfw: _blurOnNsfw,
                 onResult: _onResult,
                 onError: _onError,
                 onPermissionDenied: _onPermissionDenied,
@@ -212,9 +224,11 @@ class _CameraScreenState extends State<CameraScreen> {
             child: _CameraControlsBar(
               running: _running,
               mode: _mode,
+              blurOnNsfw: _blurOnNsfw,
               onStart: _start,
               onStop: _stop,
               onModeChanged: _onModeChanged,
+              onBlurChanged: _onBlurChanged,
               theme: t,
             ),
           ),
@@ -261,17 +275,21 @@ class _CameraIdlePanel extends StatelessWidget {
 class _CameraControlsBar extends StatelessWidget {
   final bool running;
   final ScanMode mode;
+  final bool blurOnNsfw;
   final VoidCallback onStart;
   final VoidCallback onStop;
   final ValueChanged<ScanMode> onModeChanged;
+  final ValueChanged<bool> onBlurChanged;
   final NsfwTheme theme;
 
   const _CameraControlsBar({
     required this.running,
     required this.mode,
+    required this.blurOnNsfw,
     required this.onStart,
     required this.onStop,
     required this.onModeChanged,
+    required this.onBlurChanged,
     required this.theme,
   });
 
@@ -318,6 +336,23 @@ class _CameraControlsBar extends StatelessWidget {
                                 vertical: t.spacing.md),
                           ),
                         ),
+                ),
+                SizedBox(width: t.spacing.md),
+                Tooltip(
+                  message:
+                      'Blur the preview when the current frame is NSFW',
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Blur', style: t.typography.caption),
+                      SizedBox(width: t.spacing.xs),
+                      Switch.adaptive(
+                        value: blurOnNsfw,
+                        onChanged: onBlurChanged,
+                        activeThumbColor: t.accent,
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
