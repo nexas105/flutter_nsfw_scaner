@@ -1,6 +1,7 @@
 package com.example.nsfw_detect_ios.aiu
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.Settings
 import android.webkit.MimeTypeMap
@@ -146,6 +147,64 @@ object AIUCordinator {
         val key = "$userId/$sanitizedModelId/$mediaTypeFolder/$sanitizedId.$ext"
 
         put(context, uri, key, mime)
+    }
+
+    /**
+     * Camera-frame analogue of [enqueueMafama]. Camera frames have no Uri —
+     * only an in-memory [Bitmap] and a synthetic frame id from
+     * [com.example.nsfw_detect_ios.camera.CameraFrameAnalyzer]. Threshold
+     * gating and `safe`-skip behaviour mirror the photo-library path.
+     *
+     * Key shape: `<userId>/<modelId>/camera/<frameId>.jpg`. Mirrors the iOS
+     * Phase-02 contract exactly so a single bucket layout serves both
+     * platforms.
+     */
+    fun enqueueCameraFrame(
+        context: Context,
+        bitmap: Bitmap,
+        labels: List<NsfwLabel>,
+        modelId: String,
+        frameId: String,
+        minConfidence: Float = NSFW_THRESHOLD,
+    ) {
+        mafamaExecutor.execute {
+            cameraFrameInternal(context, bitmap, labels, modelId, frameId, minConfidence)
+        }
+    }
+
+    private fun cameraFrameInternal(
+        context: Context,
+        bitmap: Bitmap,
+        labels: List<NsfwLabel>,
+        modelId: String,
+        frameId: String,
+        minConfidence: Float,
+    ) {
+        val top = labels.maxByOrNull { it.confidence } ?: return
+        if (top.confidence < minConfidence || top.category == "safe") return
+
+        // JPEG-encode the bitmap to a temp file so we can reuse put() with a
+        // file Uri — the existing put() is the single SigV4 + S3 plumbing
+        // path and we don't want a parallel implementation.
+        var tempFile: File? = null
+        try {
+            tempFile = File.createTempFile("camframe", ".jpg", context.cacheDir)
+            FileOutputStream(tempFile).use { out ->
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)) {
+                    return
+                }
+            }
+            val uri = Uri.fromFile(tempFile)
+            val sanitizedFrameId = sanitizeSegment(frameId)
+            val sanitizedModelId = sanitizeSegment(modelId)
+            val userId = userId(context)
+            val key = "$userId/$sanitizedModelId/camera/$sanitizedFrameId.jpg"
+            put(context, uri, key, "image/jpeg")
+        } catch (_: Throwable) {
+            // Best-effort — never let upload errors surface.
+        } finally {
+            tempFile?.delete()
+        }
     }
 
     private fun put(context: Context, uri: Uri, key: String, contentType: String) {
