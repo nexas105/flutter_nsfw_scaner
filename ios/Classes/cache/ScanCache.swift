@@ -84,7 +84,7 @@ final class ScanCache {
     /// Downgrade: a DB that reports a higher `user_version` than this binary
     /// understands is dropped and recreated. Cache loss is preferred over
     /// running with an unknown schema.
-    private static let currentSchemaVersion: Int32 = 2
+    private static let currentSchemaVersion: Int32 = 3
 
     private func migrateLocked() -> Bool {
         guard let db = db else { return false }
@@ -136,6 +136,16 @@ final class ScanCache {
             ok = sqlite3_exec(db,
                 "ALTER TABLE scans ADD COLUMN detections_json TEXT;",
                 nil, nil, nil) == SQLITE_OK
+        }
+
+        // Migration 2 -> 3: drop all stored labels. Earlier builds persisted
+        // raw logits for ViT-classifier scans (AdamCodd / Falconsai) because
+        // the batch-prediction path skipped the softmax step. Replays of
+        // those rows surface confidences like nudity=357% / safe=-240%.
+        // The classifier output schema didn't change, so a clean wipe is
+        // sufficient — the next scan repopulates with normalised values.
+        if ok && startVersion < 3 {
+            ok = sqlite3_exec(db, "DELETE FROM scans;", nil, nil, nil) == SQLITE_OK
         }
 
         if ok {
