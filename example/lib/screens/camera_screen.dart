@@ -100,17 +100,46 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> _restartIfRunning() async {
     if (!_running) return;
-    // Briefly drop the view so its dispose() resolves (which invokes
-    // stopCameraScan) before we mount the next one. A single frame
-    // off-screen is enough for the platform side to drain.
+    // Drop the view (its dispose() invokes stopCameraScan) and explicitly
+    // await stop so the native session is fully drained before the next
+    // startCameraScan. The 50ms delay used here previously could miss the
+    // single-session guard in NsfwDetector and surface as
+    // StateError("A camera scan is already running.") on rapid switches.
     setState(() => _running = false);
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    try {
+      await NsfwDetector.instance.stopCameraScan();
+    } catch (_) {
+      // Best-effort — if no session is active the call is a no-op.
+    }
     if (!mounted) return;
     setState(() {
       _viewKey += 1;
       _running = true;
       _lastResult = null;
     });
+  }
+
+  /// Returns null if the (model, mode) pair is launchable; otherwise the
+  /// user-facing reason it is not. Catches the two crash classes the user
+  /// reported: launching a missing model, and switching to detection mode
+  /// against a classifier model that does not implement detection.
+  String? _preflightCheck() {
+    if (_modelId == null || _models.isEmpty) {
+      return 'No model selected.';
+    }
+    final model = _models.firstWhere(
+      (m) => m.id == _modelId,
+      orElse: () => _models.first,
+    );
+    if (!model.isAvailable) {
+      return 'Model "${model.displayName}" is not downloaded yet. '
+          'Download it from the Settings screen before starting the camera.';
+    }
+    if (_mode == ScanMode.detection && !model.isDetector) {
+      return 'Detection mode requires a detector model (e.g. NudeNet). '
+          '"${model.displayName}" is a classifier — switch model or mode.';
+    }
+    return null;
   }
 
   Future<void> _onModelChanged(String? newId) async {
@@ -131,6 +160,15 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _start() {
     if (_running) return;
+    final reason = _preflightCheck();
+    if (reason != null) {
+      setState(() => _lastError = reason);
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(reason),
+        backgroundColor: appNsfwTheme.danger,
+      ));
+      return;
+    }
     setState(() {
       _running = true;
       _lastError = null;
