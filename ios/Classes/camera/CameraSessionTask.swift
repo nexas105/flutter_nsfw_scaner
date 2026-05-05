@@ -140,9 +140,33 @@ final class CameraSessionTask: NSObject {
         }
     }
 
-    /// IOS-CAM-02 wires `AVCaptureVideoDataOutput`; placeholder lives here
-    /// so `configureSession()` compiles without an extra empty-method dance.
+    /// Wires `AVCaptureVideoDataOutput` configured for BGRA8 (CoreML's
+    /// native input format on iOS — no conversion needed before
+    /// `MLEngine.classify(pixelBuffer:)`). Late frames are discarded by the
+    /// SDK so the FPS throttle in `CameraFrameProcessor` (IOS-CAM-03) has
+    /// authority over backpressure.
     func attachVideoDataOutput() {
-        // Implemented in IOS-CAM-02.
+        let out = AVCaptureVideoDataOutput()
+        out.alwaysDiscardsLateVideoFrames = true
+        out.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        ]
+        out.setSampleBufferDelegate(self, queue: outputQueue)
+        if session.canAddOutput(out) {
+            session.addOutput(out)
+            videoOutput = out
+        }
+    }
+}
+
+// MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
+
+extension CameraSessionTask: AVCaptureVideoDataOutputSampleBufferDelegate {
+    func captureOutput(_ output: AVCaptureOutput,
+                       didOutput sampleBuffer: CMSampleBuffer,
+                       from connection: AVCaptureConnection) {
+        // Hand the buffer straight to the processor — throttle and
+        // in-flight gate live there (IOS-CAM-03).
+        processor.ingest(sampleBuffer: sampleBuffer, on: outputQueue)
     }
 }
