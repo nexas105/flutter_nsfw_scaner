@@ -90,4 +90,61 @@ class ScanEventSink : EventChannel.StreamHandler {
             "message" to message
         ))
     }
+
+    // MARK: - Live camera scan helpers (Phase 03)
+
+    /**
+     * Emit a single per-frame camera classification / detection result.
+     *
+     * Schema mirrors CAM-06 / iOS:
+     *  - `type`            = "cameraFrameResult"
+     *  - `frameTimestamp`  = capture time in millis (epoch / monotonic ms)
+     *  - `labels`          = list of `{category, confidence}` maps
+     *  - `detections`      = optional list of `BodyPartDetection.toMap()` entries
+     *  - `scannedAt`       = wall-clock millis when the result was produced
+     */
+    fun emitCameraFrameResult(
+        frameTimestampMs: Long,
+        labels: List<Map<String, Any>>,
+        detections: List<Map<String, Any>>?,
+    ) {
+        val map = mutableMapOf<String, Any?>(
+            ChannelConstants.EventKey.TYPE to ChannelConstants.EventType.CAMERA_FRAME_RESULT,
+            ChannelConstants.EventKey.FRAME_TIMESTAMP to frameTimestampMs,
+            ChannelConstants.EventKey.LABELS to labels,
+            ChannelConstants.EventKey.SCANNED_AT to System.currentTimeMillis(),
+        )
+        if (!detections.isNullOrEmpty()) {
+            map[ChannelConstants.EventKey.DETECTIONS] = detections
+        }
+        emit(map)
+    }
+
+    /**
+     * Emit a one-shot permission-denied event. The Dart-side
+     * [CameraScanSession] surfaces this as a [CameraPermissionDeniedException]
+     * on its results stream and resolves `done`.
+     */
+    fun emitCameraPermissionDenied(message: String? = null) {
+        emit(
+            mapOf(
+                ChannelConstants.EventKey.TYPE to
+                    ChannelConstants.EventType.CAMERA_PERMISSION_DENIED,
+                "message" to (message ?: "Camera permission denied"),
+            )
+        )
+    }
+
+    /**
+     * Emit a non-recoverable camera-pipeline error. Surfaces as a
+     * [CameraErrorException] on the Dart-side stream.
+     */
+    fun emitCameraError(message: String) {
+        emit(
+            mapOf(
+                ChannelConstants.EventKey.TYPE to ChannelConstants.EventType.CAMERA_ERROR,
+                "message" to message,
+            )
+        )
+    }
 }
