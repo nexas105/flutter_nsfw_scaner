@@ -50,8 +50,15 @@ repositories {
 
 dependencies {
     compileOnly 'io.flutter:flutter_embedding_debug:+'
-    implementation 'com.google.ai.edge.litert:litert:2.1.0'
-    implementation 'com.google.ai.edge.litert:litert-gpu:2.1.0'
+    // LiteRT 1.x line — drop-in replacement for the legacy
+    // org.tensorflow:tensorflow-lite artifacts, provides the
+    // com.google.ai.edge.litert.Interpreter / .gpu.GpuDelegate /
+    // .nnapi.NnApiDelegate classes that TFLiteEngine.kt and
+    // TFLiteDetectorEngine.kt reflectively look up. The 2.x line is a
+    // brand-new high-level Kotlin API with a different surface and is
+    // not source-compatible — do not bump without rewriting the engines.
+    implementation 'com.google.ai.edge.litert:litert:1.4.2'
+    implementation 'com.google.ai.edge.litert:litert-gpu:1.4.2'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
