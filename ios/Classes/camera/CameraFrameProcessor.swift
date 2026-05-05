@@ -48,6 +48,21 @@ final class CameraFrameProcessor {
         self.eventSink = eventSink
     }
 
+    /// Spin-wait until the in-flight counter drops to zero or `timeoutMs`
+    /// elapses. Called by `CameraSessionTask.stop()` after the capture
+    /// session has stopped delivering buffers — the count is bounded at 1
+    /// by the entry gate (IOS-CAM-03) so this resolves within a single
+    /// inference's worth of work in practice.
+    func drainInflight(timeoutMs: Int) async {
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+        while Date() < deadline {
+            let count = inflightLock.withLock { $0 }
+            if count == 0 { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)  // 10 ms
+        }
+        NSLog("[NSFW] CameraFrameProcessor.drainInflight timed out — proceeding anyway")
+    }
+
     /// Entry point from `CameraSessionTask`'s sample-buffer delegate.
     /// Runs on the capture output queue.
     func ingest(sampleBuffer: CMSampleBuffer, on queue: DispatchQueue) {

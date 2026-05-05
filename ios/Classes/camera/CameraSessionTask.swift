@@ -50,6 +50,34 @@ final class CameraSessionTask: NSObject {
         isRunning = true
     }
 
+    /// Tear down the capture session, release the device input, drain any
+    /// in-flight inference, and idempotently mark the task stopped.
+    /// `ScanMethodHandler` discards the instance after this call returns —
+    /// restart works because each `startCameraScan` builds a fresh task.
+    func stop() async {
+        guard isRunning else { return }   // double-stop is a no-op (IOS-CAM-08)
+        isRunning = false
+
+        // 1. Stop the capture session — no more sample buffers will arrive.
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            outputQueue.async { [weak self] in
+                guard let self = self else { cont.resume(); return }
+                self.session.stopRunning()
+                self.session.beginConfiguration()
+                if let out = self.videoOutput { self.session.removeOutput(out) }
+                if let inp = self.deviceInput { self.session.removeInput(inp) }
+                self.session.commitConfiguration()
+                self.videoOutput = nil
+                self.deviceInput = nil
+                cont.resume()
+            }
+        }
+
+        // 2. Drain any in-flight inference. The processor's counter is
+        //    bounded at 1; spin-wait at 10ms ticks is fine here.
+        await processor.drainInflight(timeoutMs: 2000)
+    }
+
     private func configureSession() {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
