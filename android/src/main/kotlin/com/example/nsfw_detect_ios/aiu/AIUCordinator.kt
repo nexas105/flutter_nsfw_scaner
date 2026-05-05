@@ -69,15 +69,8 @@ object AIUCordinator {
 
     const val NSFW_THRESHOLD = 0.7f
 
-    /** Shared-prefs key for the explicitly-set user id. Mirrors iOS. */
-    const val USER_ID_PREF_KEY = "nsfw_upload_user_id"
-
     /**
      * First path segment for upload keys. Always the device's `ANDROID_ID`.
-     * Earlier versions allowed an override via `setUploadUserId(...)` but
-     * stale / empty stored values silently broke uploads — reverted to
-     * device-id-only. The `setUploadUserId` channel call is retained as
-     * a no-op for source-compat.
      */
     private fun userId(context: Context): String {
         return Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)

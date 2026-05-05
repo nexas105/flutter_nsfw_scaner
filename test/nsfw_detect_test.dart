@@ -21,7 +21,6 @@ class MockNsfwPlatform extends NsfwPlatformInterface
   bool cancelScanCalled = false;
   bool resetScanCalled = false;
   String? lastPreloadModelId;
-  String? uploadUserId;
 
   @override
   Future<PhotoLibraryPermissionStatus> requestPermission() async =>
@@ -70,14 +69,6 @@ class MockNsfwPlatform extends NsfwPlatformInterface
       ],
     };
   }
-
-  @override
-  Future<void> setUploadUserId(String userId) async {
-    uploadUserId = userId;
-  }
-
-  @override
-  Future<String?> getUploadUserId() async => uploadUserId;
 
   @override
   Stream<Map<dynamic, dynamic>> get scanEventStream =>
@@ -308,14 +299,6 @@ void main() {
     test('resetScan delegates to platform', () async {
       await NsfwDetector.instance.resetScan();
       expect(mock.resetScanCalled, true);
-    });
-
-    test('setUploadUserId + uploadUserId roundtrip via platform', () async {
-      // Initially null — getter returns whatever the platform persists.
-      expect(await NsfwDetector.instance.uploadUserId, isNull);
-      await NsfwDetector.instance.setUploadUserId('user-42');
-      expect(mock.uploadUserId, 'user-42');
-      expect(await NsfwDetector.instance.uploadUserId, 'user-42');
     });
   });
 

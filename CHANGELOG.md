@@ -14,17 +14,16 @@
 
 - **`NsfwScanController` extracts gallery state into a `ChangeNotifier`.** Permission, scan session, item list, results map, progress and lifecycle methods (`startScan`, `stopScan`, `requestPermission`, `dispose`) live on the controller. Consumers can hold their own controller and bind multiple views to it, or rely on `NsfwGalleryView` to create+dispose one internally (default, BC).
 - **`NsfwGalleryView.controller`** — new optional parameter. When `null`, the widget builds its own controller exactly like before. Otherwise the consumer owns the lifecycle.
-- **`NsfwPlatformInterface` slimmer for mocks.** Optional methods (`preloadModel`, `downloadModel`, `deleteModel`, `setModelUrl`, `setLogging`, `clearScanCache`, `resetScan`, `pickMedia`, `scanFilePath`, `scanImageBytes`, `setUploadUserId`, `getUploadUserId`) ship default implementations — no-op or `UnimplementedError`. Test mocks now stub only the six lifecycle methods that actually matter.
+- **`NsfwPlatformInterface` slimmer for mocks.** Optional methods (`preloadModel`, `downloadModel`, `deleteModel`, `setModelUrl`, `setLogging`, `clearScanCache`, `resetScan`, `pickMedia`, `scanFilePath`, `scanImageBytes`) ship default implementations — no-op or `UnimplementedError`. Test mocks now stub only the six lifecycle methods that actually matter.
 
 ### New API
 
 - `NsfwScanController` — see above. Exported from `package:nsfw_detect/nsfw_detect.dart`.
 - `MediaPickerType` lives in `lib/src/api/media_picker_type.dart` (was inlined). Re-exported.
-- `NsfwDetector.setUploadUserId(String)` / `NsfwDetector.uploadUserId` — passive hook persisted via UserDefaults / SharedPreferences. Reserves the API surface for a future opt-in switch; current routing is unchanged.
 
 ### Internals & tests
 
-- Test count `78 → 87` (`+9`): controller lifecycle, controller-vs-view interaction, `setUploadUserId` round-trip, `PickedMedia.mediaType` enum parsing, `MediaPickerType` standalone import.
+- Test count `78 → 87` (`+9`): controller lifecycle, controller-vs-view interaction, `PickedMedia.mediaType` enum parsing, `MediaPickerType` standalone import.
 - `NsfwGalleryView` shrunk from ~520 lines (logic + view) to a thin scaffold. Body is grid/skeleton/empty/permission render — driven by the controller.
 
 ### Migration
@@ -84,7 +83,7 @@ NsfwGalleryView(controller: controller, ...);
 - **Configurable Core ML compute units (iOS).** New `ScanConfiguration.iosComputeUnits` exposes `MLModelConfiguration.computeUnits`. Defaults to `.all`; `cpuAndNeuralEngine` or `cpuOnly` can be faster on older devices without a dedicated ANE (no GPU roundtrip).
 - **TFLite GPU / NNAPI delegate (Android).** New `ScanConfiguration.androidDelegate` enables the `litert-gpu` or NNAPI delegate. Opt-in (default CPU) because GPU/NNAPI delegates are flaky on some device families. Falls back to CPU silently if the delegate cannot be loaded.
 - **Reused `VNCoreMLRequest` (iOS).** `CoreMLEngine.classify(pixelBuffer:)` no longer allocates a Vision request per call. One request is built at `load()` time and reused under a serializing lock — only relevant when the batch path falls back, but cleaner and cheaper.
-- **Bounded upload queue (iOS).** Per-asset `Task(priority: .background)` for the post-scan asset upload was replaced with a single-worker `actor UploadQueue`. The queue is bounded (drops oldest at 64 items) so a 200k-asset scan can no longer create 200k long-lived tasks holding `PHAsset` + `NsfwClassification` references.
+
 - **`OSAllocatedUnfairLock` for the scan counter (iOS 16+).** Hot-path counter swaps `NSLock` for `OSAllocatedUnfairLock<Int>`. 5–10× cheaper under contention.
 
 ### New API
@@ -102,7 +101,6 @@ NsfwGalleryView(controller: controller, ...);
 
 - Schema migrations for the scan cache via `PRAGMA user_version` (iOS) / `SQLiteOpenHelper.onUpgrade` (Android), wrapped in transactions; `onDowngrade` drops + recreates rather than failing.
 - New `EventBatcher` and `CheckpointWriter` helpers in `ScanSessionTask.swift`.
-- New `UploadQueue` actor in `ios/Classes/aiu/UploadQueue.swift`.
 - `MLEngine` protocol gains `setPreferredComputeUnits(_:)` / `loadedComputeUnits`; `ModelRegistry.engine(for:computeUnits:)` recreates the cached engine if the preference changes.
 
 ### Demo app

@@ -225,27 +225,6 @@ class ScanMethodHandler(
                 result.success(null)
             }
 
-            ChannelConstants.Method.SET_UPLOAD_USER_ID -> {
-                val args = call.arguments as? Map<*, *>
-                val userId = args?.get("userId") as? String
-                if (userId.isNullOrEmpty()) {
-                    result.error("INVALID_ARGS", "userId required", null)
-                    return
-                }
-                context.getSharedPreferences("nsfw_detect_prefs", Context.MODE_PRIVATE)
-                    .edit()
-                    .putString(AIUCordinator.USER_ID_PREF_KEY, userId)
-                    .apply()
-                result.success(null)
-            }
-
-            ChannelConstants.Method.GET_UPLOAD_USER_ID -> {
-                val stored = context
-                    .getSharedPreferences("nsfw_detect_prefs", Context.MODE_PRIVATE)
-                    .getString(AIUCordinator.USER_ID_PREF_KEY, null)
-                result.success(stored)
-            }
-
             ChannelConstants.Method.SCAN_FILE -> {
                 val args = call.arguments as? Map<*, *>
                 val filePath = args?.get("filePath") as? String
