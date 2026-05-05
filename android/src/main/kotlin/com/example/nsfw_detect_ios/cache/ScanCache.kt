@@ -28,6 +28,8 @@ class ScanCache private constructor(context: Context) :
         val modificationDateMs: Long,
         val scannedAtMs: Long,
         val labelsJson: String,
+        /** Optional JSON-encoded detection boxes — null for classifier rows / pre-v2. */
+        val detectionsJson: String?,
     )
 
     private val pendingLock = Any()
@@ -84,7 +86,11 @@ class ScanCache private constructor(context: Context) :
                 db.execSQL("CREATE INDEX IF NOT EXISTS idx_scans_model ON scans(model_id);")
             }
 
-            // if (fromVersion < 2) { db.execSQL("ALTER TABLE scans ADD COLUMN ...") }
+            // 1 -> 2: add detections_json column for NudeNet detection results.
+            // ALTER TABLE ADD COLUMN is non-destructive — old rows read NULL.
+            if (fromVersion < 2) {
+                db.execSQL("ALTER TABLE scans ADD COLUMN detections_json TEXT;")
+            }
 
             db.setTransactionSuccessful()
         } finally {
@@ -114,7 +120,15 @@ class ScanCache private constructor(context: Context) :
         return out
     }
 
-    data class CachedRecord(val labelsJson: String, val scannedAtMs: Long)
+    /**
+     * Cached scan record. `detectionsJson` is null for classifier rows and
+     * for pre-v2 entries (ALTER ADD COLUMN reads NULL on old rows).
+     */
+    data class CachedRecord(
+        val labelsJson: String,
+        val scannedAtMs: Long,
+        val detectionsJson: String? = null,
+    )
 
     /** Returns the cached record only when (localId, modelId, modDate) match. */
     fun cachedRecord(localIdentifier: String, modelId: String, modificationDateMs: Long): CachedRecord? {
@@ -122,13 +136,17 @@ class ScanCache private constructor(context: Context) :
         return try {
             readableDatabase.rawQuery(
                 """
-                SELECT labels_json, scanned_at_ms FROM scans
+                SELECT labels_json, scanned_at_ms, detections_json FROM scans
                 WHERE local_identifier = ? AND model_id = ? AND modification_date_ms = ?;
                 """.trimIndent(),
                 arrayOf(localIdentifier, modelId, modificationDateMs.toString())
             ).use { c ->
                 if (c.moveToFirst()) {
-                    CachedRecord(labelsJson = c.getString(0), scannedAtMs = c.getLong(1))
+                    CachedRecord(
+                        labelsJson = c.getString(0),
+                        scannedAtMs = c.getLong(1),
+                        detectionsJson = if (c.isNull(2)) null else c.getString(2),
+                    )
                 } else null
             }
         } catch (e: Exception) {
@@ -147,12 +165,13 @@ class ScanCache private constructor(context: Context) :
         modelId: String,
         modificationDateMs: Long,
         scannedAtMs: Long,
-        labelsJson: String
+        labelsJson: String,
+        detectionsJson: String? = null,
     ) {
         val shouldFlush: Boolean
         synchronized(pendingLock) {
             pending += PendingRecord(
-                localIdentifier, modelId, modificationDateMs, scannedAtMs, labelsJson
+                localIdentifier, modelId, modificationDateMs, scannedAtMs, labelsJson, detectionsJson
             )
             shouldFlush = pending.size >= BATCH_SIZE
         }
@@ -177,8 +196,8 @@ class ScanCache private constructor(context: Context) :
             try {
                 val stmt: SQLiteStatement = db.compileStatement(
                     "INSERT OR REPLACE INTO scans " +
-                        "(local_identifier, model_id, modification_date_ms, scanned_at_ms, labels_json) " +
-                        "VALUES (?, ?, ?, ?, ?);"
+                        "(local_identifier, model_id, modification_date_ms, scanned_at_ms, labels_json, detections_json) " +
+                        "VALUES (?, ?, ?, ?, ?, ?);"
                 )
                 stmt.use { s ->
                     for (rec in batch) {
@@ -188,6 +207,11 @@ class ScanCache private constructor(context: Context) :
                         s.bindLong(3, rec.modificationDateMs)
                         s.bindLong(4, rec.scannedAtMs)
                         s.bindString(5, rec.labelsJson)
+                        if (rec.detectionsJson != null) {
+                            s.bindString(6, rec.detectionsJson)
+                        } else {
+                            s.bindNull(6)
+                        }
                         s.executeInsert()
                     }
                 }
@@ -223,7 +247,7 @@ class ScanCache private constructor(context: Context) :
     companion object {
         private const val TAG = "NSFW-ScanCache"
         private const val DB_NAME = "nsfw_scan_cache.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
         // 50 trades minor crash-loss risk for ~50× fewer disk syncs on a 200k-asset scan.
         private const val BATCH_SIZE = 50
 
@@ -261,6 +285,74 @@ class ScanCache private constructor(context: Context) :
                 }
             } catch (e: Exception) {
                 emptyList()
+            }
+        }
+
+        /**
+         * Encodes a list of detection maps (already in wire shape — i.e. as
+         * produced by [com.example.nsfw_detect_ios.ml.BodyPartDetection.toMap])
+         * to a compact JSON string. Returns null when the list is empty so the
+         * column can stay NULL.
+         */
+        fun encodeDetections(detections: List<Map<String, Any?>>): String? {
+            if (detections.isEmpty()) return null
+            val arr = JSONArray()
+            for (det in detections) {
+                val obj = JSONObject()
+                obj.put("label", det["label"])
+                obj.put("confidence", det["confidence"])
+                obj.put("aggregatedCategory", det["aggregatedCategory"])
+                @Suppress("UNCHECKED_CAST")
+                val box = det["box"] as? Map<String, Any?>
+                if (box != null) {
+                    obj.put("box", JSONObject().apply {
+                        put("x", box["x"])
+                        put("y", box["y"])
+                        put("width", box["width"])
+                        put("height", box["height"])
+                    })
+                }
+                arr.put(obj)
+            }
+            return arr.toString()
+        }
+
+        /**
+         * Decodes the JSON produced by [encodeDetections] back into wire-shape
+         * maps suitable for embedding directly in the result event map.
+         * Returns null on null input / parse error / empty array.
+         */
+        fun decodeDetections(json: String?): List<Map<String, Any>>? {
+            if (json.isNullOrEmpty()) return null
+            return try {
+                val arr = JSONArray(json)
+                if (arr.length() == 0) return null
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val label = obj.optString("label", null) ?: continue
+                        val conf  = obj.optDouble("confidence", Double.NaN)
+                        if (conf.isNaN()) continue
+                        val cat   = obj.optString("aggregatedCategory", "unknown")
+                        val box   = obj.optJSONObject("box")
+                        val map = mutableMapOf<String, Any>(
+                            "label" to label,
+                            "confidence" to conf,
+                            "aggregatedCategory" to cat,
+                        )
+                        if (box != null) {
+                            map["box"] = mapOf(
+                                "x" to box.optDouble("x", 0.0),
+                                "y" to box.optDouble("y", 0.0),
+                                "width" to box.optDouble("width", 0.0),
+                                "height" to box.optDouble("height", 0.0),
+                            )
+                        }
+                        add(map)
+                    }
+                }.takeIf { it.isNotEmpty() }
+            } catch (e: Exception) {
+                null
             }
         }
     }

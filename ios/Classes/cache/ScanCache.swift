@@ -26,6 +26,9 @@ final class ScanCache {
         let modificationDateMs: Int64
         let scannedAtMs: Int64
         let labelsJson: String
+        /// Optional JSON-encoded detections (NudeNet bounding boxes). Null for
+        /// classifier results — column added in schema v2.
+        let detectionsJson: String?
     }
 
     /// Pending writes — only ever read/written on `queue`.
@@ -81,7 +84,7 @@ final class ScanCache {
     /// Downgrade: a DB that reports a higher `user_version` than this binary
     /// understands is dropped and recreated. Cache loss is preferred over
     /// running with an unknown schema.
-    private static let currentSchemaVersion: Int32 = 1
+    private static let currentSchemaVersion: Int32 = 2
 
     private func migrateLocked() -> Bool {
         guard let db = db else { return false }
@@ -127,7 +130,13 @@ final class ScanCache {
             """, nil, nil, nil) == SQLITE_OK
         }
 
-        // if ok && startVersion < 2 { ok = sqlite3_exec(db, "ALTER TABLE …", …) == SQLITE_OK }
+        // Migration 1 -> 2: add detections_json column for NudeNet detection results.
+        // ALTER TABLE ADD COLUMN is non-destructive — old rows read NULL.
+        if ok && startVersion < 2 {
+            ok = sqlite3_exec(db,
+                "ALTER TABLE scans ADD COLUMN detections_json TEXT;",
+                nil, nil, nil) == SQLITE_OK
+        }
 
         if ok {
             ok = sqlite3_exec(db,
@@ -181,6 +190,9 @@ final class ScanCache {
     struct CachedRecord {
         let labelsJson: String
         let scannedAtMs: Int64
+        /// JSON-encoded detection boxes for detection-mode scans, or nil for
+        /// classifier-only entries / pre-v2 rows. Always nil before schema v2.
+        let detectionsJson: String?
     }
 
     /// Returns the cached record if it matches (localId, modelId, modDate).
@@ -190,7 +202,7 @@ final class ScanCache {
             guard opened, let db = db else { return nil }
             var stmt: OpaquePointer?
             let sql = """
-                SELECT labels_json, scanned_at_ms FROM scans
+                SELECT labels_json, scanned_at_ms, detections_json FROM scans
                 WHERE local_identifier = ? AND model_id = ? AND modification_date_ms = ?;
             """
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -200,9 +212,16 @@ final class ScanCache {
             sqlite3_bind_int64(stmt, 3, modificationDateMs)
             if sqlite3_step(stmt) == SQLITE_ROW,
                let cstr = sqlite3_column_text(stmt, 0) {
+                let detectionsJson: String?
+                if let detCstr = sqlite3_column_text(stmt, 2) {
+                    detectionsJson = String(cString: detCstr)
+                } else {
+                    detectionsJson = nil
+                }
                 return CachedRecord(
                     labelsJson: String(cString: cstr),
-                    scannedAtMs: sqlite3_column_int64(stmt, 1)
+                    scannedAtMs: sqlite3_column_int64(stmt, 1),
+                    detectionsJson: detectionsJson
                 )
             }
             return nil
@@ -214,12 +233,16 @@ final class ScanCache {
     /// Buffers a scan record. Writes are batched in groups of `batchSize` inside one
     /// transaction — collapses N fsync()s into 1, dramatic speedup over per-asset inserts.
     /// Asynchronous — keeps writes off the scan hot path.
+    ///
+    /// `detectionsJson` is optional — only set when the run was a detector
+    /// pass and produced at least one bounding box. Classifier rows leave it nil.
     func record(
         localIdentifier: String,
         modelId: String,
         modificationDateMs: Int64,
         scannedAtMs: Int64,
-        labelsJson: String
+        labelsJson: String,
+        detectionsJson: String? = nil
     ) {
         queue.async { [weak self] in
             guard let self = self else { return }
@@ -228,7 +251,8 @@ final class ScanCache {
                 modelId: modelId,
                 modificationDateMs: modificationDateMs,
                 scannedAtMs: scannedAtMs,
-                labelsJson: labelsJson
+                labelsJson: labelsJson,
+                detectionsJson: detectionsJson
             ))
             if self.pending.count >= Self.batchSize {
                 self.flushLocked()
@@ -258,12 +282,13 @@ final class ScanCache {
         var stmt: OpaquePointer?
         let sql = """
             INSERT INTO scans
-                (local_identifier, model_id, modification_date_ms, scanned_at_ms, labels_json)
-            VALUES (?, ?, ?, ?, ?)
+                (local_identifier, model_id, modification_date_ms, scanned_at_ms, labels_json, detections_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(local_identifier, model_id) DO UPDATE SET
                 modification_date_ms = excluded.modification_date_ms,
                 scanned_at_ms        = excluded.scanned_at_ms,
-                labels_json          = excluded.labels_json;
+                labels_json          = excluded.labels_json,
+                detections_json      = excluded.detections_json;
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
@@ -277,6 +302,11 @@ final class ScanCache {
             sqlite3_bind_int64(stmt, 3, rec.modificationDateMs)
             sqlite3_bind_int64(stmt, 4, rec.scannedAtMs)
             sqlite3_bind_text(stmt, 5, rec.labelsJson, -1, Self.SQLITE_TRANSIENT)
+            if let det = rec.detectionsJson {
+                sqlite3_bind_text(stmt, 6, det, -1, Self.SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 6)
+            }
             sqlite3_step(stmt)
             sqlite3_reset(stmt)
             sqlite3_clear_bindings(stmt)

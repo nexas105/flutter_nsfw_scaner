@@ -46,5 +46,7 @@ object ChannelConstants {
         const val DURATION_MS = "durationMs"
         const val WIDTH = "width"
         const val HEIGHT = "height"
+        /** Detection-mode bounding boxes. List of `{label, confidence, box, aggregatedCategory}` maps. */
+        const val DETECTIONS = "detections"
     }
 }
