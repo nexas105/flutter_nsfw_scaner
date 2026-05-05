@@ -1,3 +1,46 @@
+## 2.0.0
+
+### Breaking changes
+
+- **`PickedMedia.mediaType` is now `MediaType` enum** (was `String`). `pickedMedia.mediaType == 'image'` → `pickedMedia.mediaType == MediaType.image`. Affects callers of `NsfwDetector.instance.pickMedia(...)`.
+
+### Architecture — `NsfwGalleryView` is no longer a god-widget
+
+- **`NsfwScanController` extracts gallery state into a `ChangeNotifier`.** Permission, scan session, item list, results map, progress and lifecycle methods (`startScan`, `stopScan`, `requestPermission`, `dispose`) live on the controller. Consumers can hold their own controller and bind multiple views to it, or rely on `NsfwGalleryView` to create+dispose one internally (default, BC).
+- **`NsfwGalleryView.controller`** — new optional parameter. When `null`, the widget builds its own controller exactly like before. Otherwise the consumer owns the lifecycle.
+- **`NsfwPlatformInterface` slimmer for mocks.** Optional methods (`preloadModel`, `downloadModel`, `deleteModel`, `setModelUrl`, `setLogging`, `clearScanCache`, `resetScan`, `pickMedia`, `scanFilePath`, `scanImageBytes`, `setUploadUserId`, `getUploadUserId`) ship default implementations — no-op or `UnimplementedError`. Test mocks now stub only the six lifecycle methods that actually matter.
+
+### New API
+
+- `NsfwScanController` — see above. Exported from `package:nsfw_detect/nsfw_detect.dart`.
+- `MediaPickerType` lives in `lib/src/api/media_picker_type.dart` (was inlined). Re-exported.
+- `NsfwDetector.setUploadUserId(String)` / `NsfwDetector.uploadUserId` — passive hook persisted via UserDefaults / SharedPreferences (`nsfw_upload_user_id`). Native upload routing currently ignores the value and continues to derive the path prefix from the device identifier; the hook reserves the surface for a future opt-in switch.
+
+### Native — S3 upload path restructured
+
+- New scheme: `<deviceId>/<modelId>/<image|video>/<assetId>.<ext>` (was `<deviceId>/<assetId>.<ext>`). `deviceId` is the same value as before (`identifierForVendor` on iOS, `Settings.Secure.ANDROID_ID` on Android). `modelId` is the resolved scan-time model. `image|video` is derived from the asset's media type. Old buckets continue to receive uploads; new prefixes start populating from this release onward — keep both for migration.
+- `mafama` / `enqueueMafama` signatures gained `modelId: String`. Internal callers updated.
+
+### Internals & tests
+
+- Test count `78 → 87` (`+9`): controller lifecycle, controller-vs-view interaction, `setUploadUserId` round-trip, `PickedMedia.mediaType` enum parsing, `MediaPickerType` standalone import.
+- `NsfwGalleryView` shrunk from ~520 lines (logic + view) to a thin scaffold. Body is grid/skeleton/empty/permission render — driven by the controller.
+
+### Migration
+
+```dart
+// PickedMedia.mediaType
+- if (pm.mediaType == 'image') { ... }
++ if (pm.mediaType == MediaType.image) { ... }
+
+// Optional: hold your own controller
+final controller = NsfwScanController(initialConfig: ScanConfiguration());
+NsfwGalleryView(controller: controller, ...);
+// remember to controller.dispose() in your State.dispose()
+```
+
+---
+
 ## 1.3.0
 
 ### Object detection — body-part bounding boxes
