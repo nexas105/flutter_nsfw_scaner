@@ -12,6 +12,7 @@ import '../api/camera_scan_session.dart';
 import '../api/camera_exceptions.dart';
 import '../api/nsfw_detector.dart';
 import 'nsfw_camera_hud.dart';
+import 'nsfw_detection_overlay.dart';
 import 'theme/nsfw_theme.dart';
 
 typedef CameraResultCallback = void Function(CameraFrameResult result);
@@ -138,6 +139,33 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
           BackdropFilter(
             filter: ImageFilter.blur(sigmaX: widget.blurSigma, sigmaY: widget.blurSigma),
             child: Container(color: Colors.black.withValues(alpha: 0.2)),
+          ),
+
+        // WIDGET-03 — bounding-box overlay for detection mode. Sized to the
+        // same rect as the camera preview, so the painter's normalised
+        // [0,1] box coordinates land on the right pixels.
+        //
+        // NOTE: This relies on the native preview using aspect-fill scaling
+        // (iOS resizeAspectFill / Android FILL_CENTER) that matches the
+        // analyser's targetResolution crop. If a future native-phase change
+        // diverges (e.g. switches to letterboxed resizeAspect), the boxes
+        // will drift and we'll need explicit BoxFit.cover transform math
+        // (Plan WIDGET-03 Option B). Keep this comment so the next reader
+        // knows where to look.
+        if (_lastResult?.detections != null &&
+            _lastResult!.detections!.isNotEmpty)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: NsfwDetectionOverlay(
+                detections: _lastResult!.detections!,
+                theme: NsfwTheme.dark(
+                  gallery: widget.theme ?? NsfwGalleryTheme.defaults,
+                ),
+                strokeWidth: 2.0,
+                showLabels: true,
+                minConfidence: widget.config.detectionConfidenceThreshold,
+              ),
+            ),
           ),
 
         // HUD overlay — extracted into NsfwCameraHud (WIDGET-02) so it
