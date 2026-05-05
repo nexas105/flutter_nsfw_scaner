@@ -1,20 +1,28 @@
 name: nsfw_detect
 description: >-
-  On-device NSFW/nudity detection for iOS and Android photo libraries.
+  Privacy-friendly NSFW detection for Flutter apps. Analyze images, videos,
+  picked media, photo libraries, and camera frames on-device.
 
-version: 2.1.0
-homepage: https://pub.dev/packages/nsfw_detect
+version: 2.1.1
+homepage: https://github.com/nexas105/flutter_nsfw_scaner
+repository: https://github.com/nexas105/flutter_nsfw_scaner
+issue_tracker: https://github.com/nexas105/flutter_nsfw_scaner/issues
+documentation: https://pub.dev/documentation/nsfw_detect/latest/
 
 topics:
-  - image-recognition
-  - machine-learning
   - content-moderation
   - nsfw-detection
-  - nudity-detection
+  - image-recognition
+  - machine-learning
+  - flutter-plugin
 
 environment:
   sdk: ^3.4.0
   flutter: '>=3.22.0'
+
+platforms:
+  android:
+  ios:
 
 dependencies:
   flutter:

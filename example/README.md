@@ -1,6 +1,6 @@
-# nsfw_detect_ios — Example App
+# nsfw_detect - Example App
 
-Demonstrates all features of the [`nsfw_detect_ios`](https://pub.dev/packages/nsfw_detect_ios) Flutter plugin.
+Demonstrates the main workflows of the [`nsfw_detect`](https://pub.dev/packages/nsfw_detect) Flutter plugin.
 
 ## Screens
 

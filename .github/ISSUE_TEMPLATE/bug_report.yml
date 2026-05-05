@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a reproducible problem in nsfw_detect.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue. Please include enough detail to reproduce the problem on a real device when possible.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+      placeholder: Describe the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest code sample, example-app steps, or repository that reproduces the issue.
+      placeholder: |
+        1. Configure ...
+        2. Call ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - iOS
+        - Android
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: nsfw_detect version
+      placeholder: "2.1.0"
+    validations:
+      required: true
+  - type: input
+    id: flutter-version
+    attributes:
+      label: Flutter version
+      placeholder: "flutter --version"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and OS
+      placeholder: "iPhone 15 / iOS 17.5, Pixel 8 / Android 14"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant Flutter, Xcode, Android Studio, or device logs. Remove private paths or media identifiers if needed.
+      render: text
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I tested with the latest published package version.
+        - label: I checked the README setup instructions for my platform.
+        - label: I can reproduce this without sharing private or explicit media.

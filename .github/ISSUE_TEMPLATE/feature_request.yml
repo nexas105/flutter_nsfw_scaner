@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest an improvement or new capability for nsfw_detect.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow are you trying to support?
+      placeholder: Describe the app scenario and why the current API is not enough.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What API, behavior, widget, or documentation change would help?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Dart API
+        - iOS
+        - Android
+        - Camera
+        - Photo library
+        - Picker
+        - Models
+        - Widgets
+        - Documentation
+        - Example app
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention workarounds or other APIs you considered.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add links, constraints, or implementation notes. Do not attach private or explicit media.

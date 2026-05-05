@@ -1,3 +1,11 @@
+## 2.1.1 - 2026-05-05
+
+- Refresh pub.dev presentation with a clearer privacy-first README, shorter quickstarts, use cases, setup guidance, FAQ, and neutral visual-asset suggestions.
+- Improve package metadata with repository, issue tracker, documentation, platform declarations, and search-friendly topics.
+- Add GitHub issue and pull request templates for bug reports, feature requests, documentation issues, and contribution review.
+- Exclude local agent/editor files from the published archive via `.pubignore`.
+- Fix the example README package name and include the iOS example lockfile entry for `app_settings`.
+
 ## 2.1.0 — 2026-05-05
 
 > v2.1.0 ships a live-camera detection pipeline alongside the existing photo-library scan, plus a reusable permissions UI widget and the missing `example/android/` shell.
