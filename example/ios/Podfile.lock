@@ -2,9 +2,14 @@ PODS:
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
-  - nsfw_detect (1.2.4):
+  - nsfw_detect (1.2.8):
     - Flutter
   - photo_manager (3.9.0):
+    - Flutter
+    - FlutterMacOS
+  - share_plus (0.0.1):
+    - Flutter
+  - shared_preferences_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
 
@@ -13,6 +18,8 @@ DEPENDENCIES:
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - nsfw_detect (from `.symlinks/plugins/nsfw_detect/ios`)
   - photo_manager (from `.symlinks/plugins/photo_manager/darwin`)
+  - share_plus (from `.symlinks/plugins/share_plus/ios`)
+  - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
 
 EXTERNAL SOURCES:
   Flutter:
@@ -23,12 +30,18 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/nsfw_detect/ios"
   photo_manager:
     :path: ".symlinks/plugins/photo_manager/darwin"
+  share_plus:
+    :path: ".symlinks/plugins/share_plus/ios"
+  shared_preferences_foundation:
+    :path: ".symlinks/plugins/shared_preferences_foundation/darwin"
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  nsfw_detect: 2d4264fc6c51fbe6d24dc81148673bbf28c1a8af
+  nsfw_detect: f57a511383f57853fe83b74b7f93ed622e137c3c
   photo_manager: 25fd77df14f4f0ba5ef99e2c61814dde77e2bceb
+  share_plus: 50da8cb520a8f0f65671c6c6a99b3617ed10a58a
+  shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
 
 PODFILE CHECKSUM: bd29822c3d5baf6b44b726f00ea3293a19339ef2
 
