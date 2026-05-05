@@ -1,3 +1,4 @@
+import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
 import '../main.dart';
@@ -43,6 +44,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         body: ListView(
           padding: EdgeInsets.all(appNsfwTheme.spacing.lg),
           children: [
+            NsfwPermissionsView(
+              theme: appNsfwTheme,
+              onOpenSettings: AppSettings.openAppSettings,
+              onPermissionChanged: (kind, status) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    duration: const Duration(seconds: 2),
+                    content: Text('${kind.defaultLabel}: ${status.name}'),
+                  ),
+                );
+              },
+            ),
+            SizedBox(height: appNsfwTheme.spacing.lg),
             NsfwSettingsPanel(
               current: _config,
               theme: appNsfwTheme,

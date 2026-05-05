@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import '../api/camera_configuration.dart';
 import '../api/model_descriptor.dart';
+import '../api/permissions/permission_kind.dart';
 import '../api/scan_configuration.dart';
 
 enum PhotoLibraryPermissionStatus {
@@ -58,6 +59,15 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
   // Camera scan lifecycle
   Future<void> startCameraScan(CameraConfiguration config);
   Future<void> stopCameraScan();
+
+  // Camera permission — non-abstract: native handlers are added in Phase 2 (iOS) /
+  // Phase 3 (Android). Default throws so [NsfwDetector] can degrade gracefully to
+  // [PermissionStatus.notDetermined] until the native side lands.
+  Future<PermissionStatus> checkCameraPermission() => throw UnimplementedError(
+      'checkCameraPermission is not yet implemented for this platform');
+  Future<PermissionStatus> requestCameraPermission() =>
+      throw UnimplementedError(
+          'requestCameraPermission is not yet implemented for this platform');
 
   // Single asset
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,

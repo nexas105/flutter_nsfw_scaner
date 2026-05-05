@@ -8,6 +8,7 @@ import 'scan_session.dart';
 import 'camera_configuration.dart';
 import 'camera_scan_session.dart';
 import 'model_descriptor.dart';
+import 'permissions/permission_kind.dart';
 import '../platform/nsfw_platform_interface.dart';
 import '../platform/nsfw_method_channel.dart';
 
@@ -62,6 +63,30 @@ class NsfwDetector {
       _platform.requestPermission();
   Future<PhotoLibraryPermissionStatus> checkPermission() =>
       _platform.checkPermission();
+
+  /// Returns the current camera-permission status.
+  ///
+  /// Falls back to [PermissionStatus.notDetermined] when the platform
+  /// implementation does not yet support it (pre–Phase-2 / pre–Phase-3 native
+  /// handlers). This lets [NsfwPermissionsView] render a Camera row today
+  /// without forcing the camera-pipeline phases to land first.
+  Future<PermissionStatus> checkCameraPermission() async {
+    try {
+      return await _platform.checkCameraPermission();
+    } on UnimplementedError {
+      return PermissionStatus.notDetermined;
+    }
+  }
+
+  /// Requests camera permission. Same graceful fallback as
+  /// [checkCameraPermission] when the native side hasn't been wired yet.
+  Future<PermissionStatus> requestCameraPermission() async {
+    try {
+      return await _platform.requestCameraPermission();
+    } on UnimplementedError {
+      return PermissionStatus.notDetermined;
+    }
+  }
 
   // Models
   Future<List<ModelDescriptor>> availableModels() =>
