@@ -11,18 +11,97 @@ Enterprise-grade, on-device NSFW/nudity detection for iOS and Android photo libr
 
 ---
 
+## Quick Install & Run the Demo / Schnellstart & Demo
+
+<details>
+<summary><b>🇬🇧 English — Quick Install & Demo App</b></summary>
+
+### Prerequisites
+
+1. **Install Flutter** (if not already installed):
+   ```bash
+   # macOS (via Homebrew)
+   brew install --cask flutter
+
+   # Or follow the official guide: https://docs.flutter.dev/get-started/install
+   ```
+
+2. **Verify your setup:**
+   ```bash
+   flutter doctor
+   ```
+   Make sure there are no critical (`✗`) issues. iOS development requires Xcode, Android development requires Android Studio / SDK.
+
+### Run the Demo App
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/nexas105/flutter_nsfw_scaner.git
+cd flutter_nsfw_scaner/example
+
+# 2. Fetch dependencies
+flutter pub get
+
+# 3. Run on a connected device or simulator
+flutter run
+```
+
+That's it — the demo app will launch on your device/simulator. Use the in-app settings to switch between classification and detection mode, change models, or clear the scan cache.
+
+</details>
+
+<details>
+<summary><b>🇩🇪 Deutsch — Schnellstart & Demo-App</b></summary>
+
+### Voraussetzungen
+
+1. **Flutter installieren** (falls noch nicht geschehen):
+   ```bash
+   # macOS (via Homebrew)
+   brew install --cask flutter
+
+   # Oder der offiziellen Anleitung folgen: https://docs.flutter.dev/get-started/install
+   ```
+
+2. **Setup überprüfen:**
+   ```bash
+   flutter doctor
+   ```
+   Stelle sicher, dass es keine kritischen (`✗`) Probleme gibt. Für iOS-Entwicklung brauchst du Xcode, für Android Android Studio / SDK.
+
+### Demo-App starten
+
+```bash
+# 1. Repository clonen
+git clone https://github.com/nexas105/flutter_nsfw_scaner.git
+cd flutter_nsfw_scaner/example
+
+# 2. Dependencies herunterladen
+flutter pub get
+
+# 3. Auf einem angeschlossenen Gerät oder Simulator starten
+flutter run
+```
+
+Das war's — die Demo-App startet auf deinem Gerät/Simulator. Über die Einstellungen in der App kannst du zwischen Klassifizierungs- und Erkennungsmodus wechseln, Modelle ändern oder den Scan-Cache leeren.
+
+</details>
+
+---
+
 ## Features
 
 - **On-device ML** — CoreML + Vision + Apple Neural Engine (iOS), TensorFlow Lite (Android). No network calls, no telemetry.
 - **Two scan modes** — **classification** (per-asset NSFW probabilities, OpenNSFW2 / Falconsai / AdamCodd) and **detection** (per-asset bounding boxes for 18 body-part classes, NudeNet YOLOv8m).
 - **Photo library scanning** — images, videos, Live Photos. Incremental cache so re-scans of an unchanged 200k-asset library complete in seconds.
+- **Live camera scan** *(2.1.0)* — `NsfwCameraView` widget + `startCameraScan()` API for AVCaptureSession (iOS) / CameraX (Android) feeds, configurable FPS, classification + detection mode, optional blur-on-NSFW overlay.
 - **Progressive streaming** — results arrive as each asset is classified, not in a batch. Cached items replay with `result.fromCache = true`.
 - **Native picker** — `pickAndScan()` and `pickMedia()` open the system photo picker; no library permission required.
 - **Direct file & bytes scanning** — `scanFile(path)` / `scanBytes(bytes)` for single-asset use-cases.
 - **Video frame sampling** — uniform temporal sampling with hard-threshold fast-exit.
 - **Pluggable models** — ships with OpenNSFW2, swap in Falconsai, AdamCodd, or NudeNet — all hosted on the plugin's GitHub Release (`models-v1`).
 - **Controller-based state** — `NsfwScanController` (`ChangeNotifier`) holds permission, session, items, results and progress; bind multiple views to the same controller, or let `NsfwGalleryView` own one internally.
-- **Ready-to-use widgets** — `NsfwGalleryView`, `NsfwResultBadge`, `NsfwScanProgressBar`, `NsfwDetectionOverlay` (bounding-box renderer).
+- **Ready-to-use widgets** — `NsfwGalleryView`, `NsfwCameraView`, `NsfwResultBadge`, `NsfwScanProgressBar`, `NsfwDetectionOverlay`, `NsfwPermissionsView` *(2.1.0)*.
 - **Headless API** — use `NsfwDetector.instance` directly without any UI widgets.
 
 ---
@@ -55,7 +134,13 @@ Add to your app's `Info.plist`:
 ```xml
 <key>NSPhotoLibraryUsageDescription</key>
 <string>This app needs access to your photo library.</string>
+
+<!-- Required only if you use NsfwCameraView / startCameraScan (2.1.0) -->
+<key>NSCameraUsageDescription</key>
+<string>This app uses the camera for live NSFW detection.</string>
 ```
+
+> Without `NSCameraUsageDescription`, iOS terminates the app the moment `AVCaptureDevice.requestAccess(for: .video)` is called. The string is shown in the system permission dialog — make it user-facing.
 
 Ensure your `Podfile` targets iOS 16 or higher:
 
@@ -68,14 +153,21 @@ platform :ios, '16.0'
 Add to `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
-<!-- API 33+ -->
+<!-- Photo library — API 33+ -->
 <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-<!-- API < 33 -->
+<!-- Photo library — API < 33 -->
 <uses-permission
   android:name="android.permission.READ_EXTERNAL_STORAGE"
   android:maxSdkVersion="32" />
+
+<!-- Camera (2.1.0) — required only if you use NsfwCameraView / startCameraScan -->
+<uses-permission android:name="android.permission.CAMERA"/>
+<uses-feature android:name="android.hardware.camera" android:required="false"/>
+<uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>
 ```
+
+> Marking the camera features `required="false"` prevents the Play Store from filtering your listing on devices without a camera; switch to `required="true"` if a camera is mandatory for your app.
 
 ---
 
@@ -262,6 +354,136 @@ The model is downloaded on first use (~46 MB compressed). To pre-warm it before 
 
 ```dart
 await NsfwDetector.instance.preloadModel(ModelIds.nudenet);
+```
+
+---
+
+## Live camera scan *(2.1.0)*
+
+Run the same on-device classifier or NudeNet detector against the live camera feed instead of the photo library. Native AVCaptureSession on iOS, CameraX on Android.
+
+### Drop-in widget — `NsfwCameraView`
+
+The widget owns its own `CameraScanSession` and a native preview (PlatformView). Optional HUD overlay (category label + confidence bar + NSFW badge) and optional blur-on-NSFW.
+
+```dart
+import 'package:nsfw_detect/nsfw_detect.dart';
+
+NsfwCameraView(
+  config: const CameraConfiguration(
+    fps: 2,                              // 1–30, default 2
+    mode: ScanMode.classification,       // or ScanMode.detection for boxes
+    resolution: CameraResolution.medium,
+    confidenceThreshold: 0.7,
+  ),
+  showHudOverlay: true,
+  enableBlurOnNsfw: true,                // BackdropFilter blur fades in/out
+  blurSigma: 12.0,
+  onResult: (CameraFrameResult r) {
+    if (r.isNsfw) {
+      // r.frameTimestamp / r.topCategory / r.topConfidence / r.detections
+    }
+  },
+  onPermissionDenied: () {
+    // Surface NsfwPermissionsView, see below.
+  },
+);
+```
+
+### Headless API — `startCameraScan` / `stopCameraScan`
+
+When you want to drive the camera yourself (e.g. mix with another preview source, or run without UI), use the session API directly.
+
+```dart
+final CameraScanSession session = await NsfwDetector.instance.startCameraScan(
+  const CameraConfiguration(fps: 4, mode: ScanMode.detection),
+);
+
+session.results.listen(
+  (CameraFrameResult r) {
+    print('${r.frameTimestamp.toIso8601String()} '
+          '${r.topCategory.displayName} ${r.topConfidence}');
+    if (r.detections != null) {
+      for (final box in r.detections!) {
+        print('  ${box.className} @ ${box.box}');
+      }
+    }
+  },
+  onError: (e) {
+    if (e is CameraPermissionDeniedException) { /* prompt user */ }
+    if (e is CameraErrorException) { /* surface message */ }
+  },
+);
+
+// Later:
+await NsfwDetector.instance.stopCameraScan();
+```
+
+Only one camera session is allowed at a time — `startCameraScan` throws a `StateError` if you call it while another session is running. Errors arrive on `session.results` as stream errors (typed `CameraPermissionDeniedException` / `CameraErrorException`), not as null results.
+
+### Detection mode on the live feed
+
+Set `mode: ScanMode.detection` and the per-frame `CameraFrameResult.detections` carries NudeNet bounding boxes — paint them on top of the preview using the existing `NsfwDetectionOverlay`:
+
+```dart
+Stack(
+  children: [
+    NsfwCameraView(
+      config: const CameraConfiguration(mode: ScanMode.detection, fps: 4),
+      onResult: (r) => setState(() => _last = r),
+      showHudOverlay: false,
+    ),
+    if (_last?.detections != null)
+      Positioned.fill(
+        child: NsfwDetectionOverlay(detections: _last!.detections!),
+      ),
+  ],
+);
+```
+
+### Camera permissions
+
+`NsfwCameraView` does not request camera permission for you (so it works even when you've already prompted via your own flow). Use `NsfwPermissionsView` (below) or `NsfwDetector.instance.requestCameraPermission()` directly.
+
+> **Don't forget the manifests.** Add `NSCameraUsageDescription` to `Info.plist` and `<uses-permission android:name="android.permission.CAMERA"/>` to `AndroidManifest.xml` — see [Installation](#installation).
+
+---
+
+## Permissions UI — `NsfwPermissionsView` *(2.1.0)*
+
+Reusable widget that surfaces every permission the plugin needs (photo library + camera) with the current status, an explainer, and a Request / Open Settings button. Auto-refreshes when the app returns from system Settings.
+
+```dart
+import 'package:nsfw_detect/nsfw_detect.dart';
+import 'package:app_settings/app_settings.dart'; // host-app dep, not bundled
+
+NsfwPermissionsView(
+  // theme: optional NsfwTheme; defaults to NsfwTheme.defaults()
+  onOpenSettings: AppSettings.openAppSettings,
+  onPermissionChanged: (PermissionKind kind, PermissionStatus status) {
+    debugPrint('${kind.defaultLabel}: ${status.name}');
+  },
+  // Optional: filter to specific permissions
+  // kinds: const [PermissionKind.camera],
+);
+```
+
+Behaviour:
+
+- `authorized` / `limited` → ✓ icon, no button.
+- `notDetermined` / `denied` → "Request" button calls `requestPermission()` / `requestCameraPermission()` and updates the row.
+- `permanentlyDenied` / `restricted` → "Open Settings" button calls `onOpenSettings`. If the callback is `null`, no button is rendered (lets you hide the row when you don't want a deep-link).
+- The widget is plugin-side dependency-free — the deep-link to system Settings is delegated to the host app (typically via `app_settings`). This keeps the plugin lean.
+
+If you want to drive permissions yourself instead:
+
+```dart
+final photoStatus = await NsfwDetector.instance.checkPermission();
+final cameraStatus = await NsfwDetector.instance.checkCameraPermission();
+
+if (cameraStatus.canRequest) {
+  await NsfwDetector.instance.requestCameraPermission();
+}
 ```
 
 ---
