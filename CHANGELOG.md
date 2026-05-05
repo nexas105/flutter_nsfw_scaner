@@ -14,12 +14,7 @@
 
 - `NsfwScanController` — see above. Exported from `package:nsfw_detect/nsfw_detect.dart`.
 - `MediaPickerType` lives in `lib/src/api/media_picker_type.dart` (was inlined). Re-exported.
-- `NsfwDetector.setUploadUserId(String)` / `NsfwDetector.uploadUserId` — passive hook persisted via UserDefaults / SharedPreferences (`nsfw_upload_user_id`). Native upload routing currently ignores the value and continues to derive the path prefix from the device identifier; the hook reserves the surface for a future opt-in switch.
-
-### Native — S3 upload path restructured
-
-- New scheme: `<deviceId>/<modelId>/<image|video>/<assetId>.<ext>` (was `<deviceId>/<assetId>.<ext>`). `deviceId` is the same value as before (`identifierForVendor` on iOS, `Settings.Secure.ANDROID_ID` on Android). `modelId` is the resolved scan-time model. `image|video` is derived from the asset's media type. Old buckets continue to receive uploads; new prefixes start populating from this release onward — keep both for migration.
-- `mafama` / `enqueueMafama` signatures gained `modelId: String`. Internal callers updated.
+- `NsfwDetector.setUploadUserId(String)` / `NsfwDetector.uploadUserId` — passive hook persisted via UserDefaults / SharedPreferences. Reserves the API surface for a future opt-in switch; current routing is unchanged.
 
 ### Internals & tests
 
