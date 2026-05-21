@@ -36,18 +36,19 @@ final class CameraSessionTask: NSObject {
         // appropriate stream event if the host can't (or won't) grant access.
         guard await ensureCameraAuthorized() else { return }
 
-        // Configure on the dedicated output queue to avoid blocking the
-        // caller's actor (which on the iOS plugin happens to be the main
-        // thread on the first hop into ScanMethodHandler).
+        // Configure AND start on the dedicated output queue. Apple's docs
+        // require `startRunning` to share the queue used for
+        // `beginConfiguration`/`commitConfiguration`; running it off-queue
+        // races with `removeInput/removeOutput` during stop() (H11).
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             outputQueue.async { [weak self] in
-                self?.configureSession()
+                guard let self = self else { cont.resume(); return }
+                self.configureSession()
+                self.session.startRunning()
+                self.isRunning = true
                 cont.resume()
             }
         }
-
-        session.startRunning()
-        isRunning = true
 
         // WIDGET-01 cross-phase contract — publish the configured session so
         // the Phase-04 `NsfwCameraPreviewFactory` can attach
@@ -78,6 +79,9 @@ final class CameraSessionTask: NSObject {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             outputQueue.async { [weak self] in
                 guard let self = self else { cont.resume(); return }
+                // Detach the sample-buffer delegate first so a final
+                // in-flight callback can't land mid-teardown (H13).
+                self.videoOutput?.setSampleBufferDelegate(nil, queue: nil)
                 self.session.stopRunning()
                 self.session.beginConfiguration()
                 if let out = self.videoOutput { self.session.removeOutput(out) }
@@ -140,8 +144,11 @@ final class CameraSessionTask: NSObject {
             userPreset = .vga640x480
         case "high":
             userPreset = .hd1280x720
+        case "medium":
+            // 960×540 — closest iOS preset to Android CamcorderProfile.QUALITY_480P.
+            // Keeps "medium" visibly distinct from "low" (was collapsing to VGA).
+            userPreset = .iFrame960x540
         default:
-            // medium → VGA on iOS; we just need enough pixels to resize from.
             userPreset = .vga640x480
         }
         if modelInputSize >= 640 {

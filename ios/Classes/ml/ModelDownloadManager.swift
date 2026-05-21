@@ -55,6 +55,12 @@ final class ModelDownloadManager {
         }
 
         let task = Task<URL, Error> {
+            // Yield once so the spawning code below has a chance to publish
+            // this Task to `activeDownloads` before any cleanup can fire.
+            // Without this, a synchronously-throwing performDownload would
+            // run the defer before `activeDownloads[modelId] = task`,
+            // permanently stranding the (now-completed) Task in the map (C9).
+            await Task.yield()
             defer {
                 lock.lock()
                 activeDownloads.removeValue(forKey: modelId)

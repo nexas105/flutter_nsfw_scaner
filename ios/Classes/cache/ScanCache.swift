@@ -279,7 +279,10 @@ final class ScanCache {
 
     /// Must be called on `queue`.
     private func flushLocked() {
-        guard opened, let db = db else { pending.removeAll(); return }
+        // If the DB isn't open yet, keep pending records so a later flush
+        // (post-openIfNeeded) can persist them. Dropping silently would
+        // lose every record buffered before the first successful open (H7).
+        guard opened, let db = db else { return }
         guard !pending.isEmpty else { return }
         let batch = pending
         pending.removeAll(keepingCapacity: true)

@@ -30,7 +30,17 @@ final class ScanEventSink: NSObject, FlutterStreamHandler {
         lock.lock()
         let s = sink
         lock.unlock()
-        DispatchQueue.main.async { s?(event) }
+        guard let captured = s else { return }
+        // Re-check on main: between the lock release here and the closure
+        // running, `onCancel` may have niled `sink`. Flutter's EventChannel
+        // documents that invoking a sink past onCancel is undefined.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let stillLive = (self.sink != nil)
+            self.lock.unlock()
+            if stillLive { captured(event) }
+        }
     }
 
     func emitResult(

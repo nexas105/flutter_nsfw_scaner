@@ -183,7 +183,7 @@ final class CameraFrameProcessor {
         } catch {
             eventSink.emit([
                 ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
-                ChannelConstants.EventKey.message:   "\(error)",
+                ChannelConstants.EventKey.message:   error.localizedDescription,
             ])
         }
     }

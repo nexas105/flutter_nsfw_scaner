@@ -9,21 +9,79 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
 
     private let eventSink: ScanEventSink
     private let modelRegistry = ModelRegistry.shared
-    private var currentSession: ScanSessionTask?
 
-    /// Active live-camera scan, if any. One at a time — see startCameraScan
-    /// case below for the CAMERA_BUSY rejection path.
-    private var currentCameraSession: CameraSessionTask?
+    /// Guards `currentSession`, `currentCameraSession`, and `pickerMode`.
+    /// These fields are read from the platform-channel thread (`handle(_:)`)
+    /// and written from cooperative-pool Tasks (after the async
+    /// download/preload step in `startScan`/`startCameraScan`). Without
+    /// serialization, `cancelScan` can race with a just-published session.
+    private let stateLock = NSLock()
+    private var _currentSession: ScanSessionTask?
+    private var _currentCameraSession: CameraSessionTask?
+    private var _pickerMode: PickerMode?
 
     /// Tracks what should happen after the PHPicker dismisses.
     private enum PickerMode {
         case scan(ScanConfiguration)
         case identify(FlutterResult)
     }
-    private var pickerMode: PickerMode?
 
     init(eventSink: ScanEventSink) {
         self.eventSink = eventSink
+    }
+
+    // MARK: - Locked state accessors
+
+    private func setCurrentSession(_ session: ScanSessionTask?) -> ScanSessionTask? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        let previous = _currentSession
+        _currentSession = session
+        return previous
+    }
+
+    private func takeCurrentSession() -> ScanSessionTask? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        let s = _currentSession
+        _currentSession = nil
+        return s
+    }
+
+    private func setCurrentCameraSession(_ session: CameraSessionTask?) -> CameraSessionTask? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        let previous = _currentCameraSession
+        _currentCameraSession = session
+        return previous
+    }
+
+    private func takeCurrentCameraSession() -> CameraSessionTask? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        let s = _currentCameraSession
+        _currentCameraSession = nil
+        return s
+    }
+
+    /// Replaces `pickerMode` and returns the previous one so the caller can
+    /// reply to any captured `FlutterResult` (otherwise the Dart caller hangs
+    /// forever — see H3 / C6).
+    private func swapPickerMode(_ mode: PickerMode?) -> PickerMode? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        let previous = _pickerMode
+        _pickerMode = mode
+        return previous
+    }
+
+    private func takePickerMode() -> PickerMode? {
+        return swapPickerMode(nil)
+    }
+
+    /// Reply to an outstanding `identify` FlutterResult so the Dart side's
+    /// awaited Completer always resolves.
+    private static func rejectIfIdentify(_ mode: PickerMode?, code: String, message: String) {
+        if case .identify(let r) = mode {
+            DispatchQueue.main.async {
+                r(FlutterError(code: code, message: message, details: nil))
+            }
+        }
     }
 
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -69,8 +127,7 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 result(FlutterError(code: "INVALID_ARGS", message: "Arguments required", details: nil))
                 return
             }
-            currentSession?.cancel()
-            currentSession = nil
+            takeCurrentSession()?.cancel()
             result(nil)  // Return immediately — download + preload + scan all run in background.
             let config = ScanConfiguration(from: args)
             Task(priority: .utility) { [weak self] in
@@ -117,18 +174,18 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                     return
                 }
                 let session = ScanSessionTask(config: config, eventSink: self.eventSink)
-                self.currentSession = session
+                // Replace whatever the previous winner published — also
+                // cancels anything that beat us to the publish (C2).
+                self.setCurrentSession(session)?.cancel()
                 await session.start()
             }
 
         case ChannelConstants.Method.cancelScan:
-            currentSession?.cancel()
-            currentSession = nil
+            takeCurrentSession()?.cancel()
             result(nil)
 
         case ChannelConstants.Method.resetScan:
-            currentSession?.cancel()
-            currentSession = nil
+            takeCurrentSession()?.cancel()
             UserDefaults.standard.removeObject(forKey: "nsfw_scan_checkpoint")
             AIUCordinator.shared.reset()
             result(nil)
@@ -147,10 +204,11 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             let modelId = args?["modelId"] as? String
             let detConf = Float(args?["detectionConfidenceThreshold"] as? Double ?? 0.25)
             let iouThr = Float(args?["iouThreshold"] as? Double ?? 0.45)
+            let region = RoiCropper.Region.from(map: args?["roi"] as? [String: Any])
             Task(priority: .utility) { [weak self] in
                 guard let self = self else { return }
                 do {
-                    let map = try await self.scanSingleAsset(localId: localId, modelId: modelId, detectionConfidence: detConf, iouThreshold: iouThr)
+                    let map = try await self.scanSingleAsset(localId: localId, modelId: modelId, detectionConfidence: detConf, iouThreshold: iouThr, region: region)
                     DispatchQueue.main.async { result(map) }
                 } catch {
                     let message = error.localizedDescription
@@ -214,35 +272,48 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             // Reject concurrent sessions. Dart side also enforces this with
             // a StateError (CAM-04); belt-and-braces here for hosts that
             // bypass NsfwDetector and call the channel directly.
-            if currentCameraSession != nil {
-                result(FlutterError(code: "CAMERA_BUSY",
-                                    message: "A camera scan is already running",
-                                    details: nil))
-                return
-            }
             let cameraConfig = CameraConfiguration(from: args)
             let processor = CameraFrameProcessor(config: cameraConfig,
                                                  eventSink: eventSink)
             let task = CameraSessionTask(config: cameraConfig,
                                          eventSink: eventSink,
                                          processor: processor)
-            currentCameraSession = task
+            // Atomic compare-and-set: install only if no session is live.
+            let busy: Bool = {
+                stateLock.lock(); defer { stateLock.unlock() }
+                if _currentCameraSession != nil { return true }
+                _currentCameraSession = task
+                return false
+            }()
+            if busy {
+                result(FlutterError(code: "CAMERA_BUSY",
+                                    message: "A camera scan is already running",
+                                    details: nil))
+                return
+            }
             result(nil)
             Task(priority: .userInitiated) { await task.start() }
 
         case ChannelConstants.Method.stopCameraScan:
-            if let session = currentCameraSession {
-                currentCameraSession = nil
+            if let session = takeCurrentCameraSession() {
                 Task(priority: .userInitiated) { await session.stop() }
             }
             result(nil)
 
         case ChannelConstants.Method.setLogging:
             let enabled = args?["enabled"] as? Bool ?? false
-            if enabled {
-                print("[NSFW] Logging enabled")
-            }
+            print("[NSFW] Logging \(enabled ? "enabled" : "disabled")")
             result(nil)
+
+        case ChannelConstants.Method.getComputeUnits:
+            // Task #20 — transparency for the active CoreML compute-unit
+            // selection. Returns the loaded value, or the descriptor-default
+            // "all" if the model hasn't been loaded yet. Never crashes —
+            // Dart side may or may not have wired up a caller.
+            let modelId = (args?["modelId"] as? String) ?? ModelIds.openNsfw2
+            let units = modelRegistry.currentComputeUnits(for: modelId)?.rawValue
+                ?? ComputeUnitsPreference.all.rawValue
+            result(units)
 
         case ChannelConstants.Method.pickAndScan:
             guard let args = args else {
@@ -251,7 +322,11 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             result(nil)  // return immediately
             let config = ScanConfiguration(from: args)
             let maxItems = args["maxItems"] as? Int ?? 1
-            pickerMode = .scan(config)
+            // Reply to any previously-captured pickMedia FlutterResult so
+            // its Dart caller doesn't hang forever (H3).
+            Self.rejectIfIdentify(swapPickerMode(.scan(config)),
+                                  code: "PICKER_REPLACED",
+                                  message: "Replaced by a newer picker call")
             let filter = config.includeVideos
                 ? PHPickerFilter.any(of: [.images, .livePhotos, .videos])
                 : PHPickerFilter.any(of: [.images, .livePhotos])
@@ -269,7 +344,9 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 default:      return .any(of: [.images, .livePhotos, .videos])
                 }
             }()
-            pickerMode = .identify(result)
+            Self.rejectIfIdentify(swapPickerMode(.identify(result)),
+                                  code: "PICKER_REPLACED",
+                                  message: "Replaced by a newer picker call")
             Task { @MainActor in self.presentPHPicker(filter: filter, selectionLimit: selectionLimit) }
 
         case ChannelConstants.Method.scanFile:
@@ -279,10 +356,11 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             let modelId = args?["modelId"] as? String
             let detConf = Float(args?["detectionConfidenceThreshold"] as? Double ?? 0.25)
             let iouThr  = Float(args?["iouThreshold"] as? Double ?? 0.45)
+            let region  = RoiCropper.Region.from(map: args?["roi"] as? [String: Any])
             Task(priority: .utility) { [weak self] in
                 guard let self = self else { return }
                 do {
-                    let map = try await self.classifyFromFile(filePath: filePath, modelId: modelId, detectionConfidence: detConf, iouThreshold: iouThr)
+                    let map = try await self.classifyFromFile(filePath: filePath, modelId: modelId, detectionConfidence: detConf, iouThreshold: iouThr, region: region)
                     DispatchQueue.main.async { result(map) }
                 } catch {
                     let message = error.localizedDescription
@@ -299,10 +377,11 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             let modelId = args?["modelId"] as? String
             let detConf = Float(args?["detectionConfidenceThreshold"] as? Double ?? 0.25)
             let iouThr  = Float(args?["iouThreshold"] as? Double ?? 0.45)
+            let region  = RoiCropper.Region.from(map: args?["roi"] as? [String: Any])
             Task(priority: .utility) { [weak self] in
                 guard let self = self else { return }
                 do {
-                    let map = try await self.classifyFromData(data: typedData.data, modelId: modelId, detectionConfidence: detConf, iouThreshold: iouThr)
+                    let map = try await self.classifyFromData(data: typedData.data, modelId: modelId, detectionConfidence: detConf, iouThreshold: iouThr, region: region)
                     DispatchQueue.main.async { result(map) }
                 } catch {
                     let message = error.localizedDescription
@@ -334,16 +413,16 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         case .denied:        return "denied"
         case .restricted:    return "restricted"
         case .notDetermined: return "notDetermined"
-        @unknown default:    return "notDetermined"
+        @unknown default:    return "unknown"
         }
     }
 
     // MARK: - Single asset scan
 
-    private func scanSingleAsset(localId: String, modelId: String?, detectionConfidence: Float = 0.25, iouThreshold: Float = 0.45) async throws -> [String: Any] {
+    private func scanSingleAsset(localId: String, modelId: String?, detectionConfidence: Float = 0.25, iouThreshold: Float = 0.45, region: RoiCropper.Region? = nil) async throws -> [String: Any] {
         if localId.hasPrefix("file://") {
             let path = String(localId.dropFirst("file://".count))
-            return try await classifyFromFile(filePath: path, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+            return try await classifyFromFile(filePath: path, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold, region: region)
         }
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil)
         guard let asset = fetchResult.firstObject else {
@@ -353,13 +432,13 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         engine.configure(detectionConfidence: detectionConfidence, iou: iouThreshold)
         let inputSize = engine.descriptor.metadata["inputSize"] as? Int ?? 224
         let analyzer   = ImageAnalyzer(inputSize: inputSize)
-        let sampler    = VideoFrameSampler()
+        let sampler    = VideoFrameSampler(enablePerceptualDedupe: true, region: region)
         let aggregator = VideoResultAggregator()
 
         let classification: NsfwClassification
         switch asset.mediaType {
         case .image:
-            let buffer = try await analyzer.pixelBuffer(for: asset)
+            let buffer = try await analyzer.pixelBuffer(for: asset, region: region)
             classification = try await engine.classify(pixelBuffer: buffer)
         case .video:
             let cfg    = ScanConfiguration.default
@@ -424,18 +503,24 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }),
-              let window = scene.windows.first(where: { $0.isKeyWindow }) else {
+              let window = scene.windows.first(where: { $0.isKeyWindow }),
+              let rootVC = window.rootViewController else {
+            // Fail any pending pickMedia FlutterResult so the Dart caller's
+            // Completer resolves; otherwise it hangs forever (C6).
+            Self.rejectIfIdentify(takePickerMode(),
+                                  code: "NO_VIEW_CONTROLLER",
+                                  message: "Could not find key window")
             eventSink.emitError(code: "NO_VIEW_CONTROLLER", message: "Could not find key window")
             return
         }
-        var topVC = window.rootViewController!
+        var topVC = rootVC
         while let presented = topVC.presentedViewController { topVC = presented }
         topVC.present(picker, animated: true)
     }
 
     // MARK: - File / bytes classification helpers
 
-    private func classifyFromFile(filePath: String, modelId: String?, detectionConfidence: Float, iouThreshold: Float) async throws -> [String: Any] {
+    private func classifyFromFile(filePath: String, modelId: String?, detectionConfidence: Float, iouThreshold: Float, region: RoiCropper.Region? = nil) async throws -> [String: Any] {
         let id = modelId ?? ModelIds.openNsfw2
         let inputSize = modelRegistry.descriptor(for: id)?.metadata["inputSize"] as? Int ?? 224
         let url = URL(fileURLWithPath: filePath)
@@ -443,7 +528,7 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             throw ScanError.frameSamplingFailed
         }
         let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
-        let map = try await classifyCGImage(cgImage, identifier: filePath, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        let map = try await classifyCGImage(cgImage, identifier: filePath, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold, region: region)
         let (ext, contentType) = Self.extAndContentType(forFileURL: url)
         if let classification = Self.classificationFromMap(map) {
             UploadQueue.shared.submitFile(
@@ -459,15 +544,15 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         return map
     }
 
-    private func classifyFromData(data: Data, modelId: String?, detectionConfidence: Float, iouThreshold: Float) async throws -> [String: Any] {
+    private func classifyFromData(data: Data, modelId: String?, detectionConfidence: Float, iouThreshold: Float, region: RoiCropper.Region? = nil) async throws -> [String: Any] {
         let id = modelId ?? ModelIds.openNsfw2
         let inputSize = modelRegistry.descriptor(for: id)?.metadata["inputSize"] as? Int ?? 224
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw ScanError.frameSamplingFailed
         }
         let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
-        let identifier = "bytes_\(Int64(Date().timeIntervalSince1970 * 1000))"
-        let map = try await classifyCGImage(cgImage, identifier: identifier, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        let identifier = "bytes_\(UUID().uuidString)"
+        let map = try await classifyCGImage(cgImage, identifier: identifier, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold, region: region)
         let (ext, contentType) = Self.extAndContentType(forImageSource: source)
         if let classification = Self.classificationFromMap(map) {
             UploadQueue.shared.submitData(
@@ -527,13 +612,19 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         throw ScanError.frameSamplingFailed
     }
 
-    private func classifyCGImage(_ cgImage: CGImage, identifier: String, modelId: String?, detectionConfidence: Float, iouThreshold: Float) async throws -> [String: Any] {
+    private func classifyCGImage(_ cgImage: CGImage, identifier: String, modelId: String?, detectionConfidence: Float, iouThreshold: Float, region: RoiCropper.Region? = nil) async throws -> [String: Any] {
         let id = modelId ?? ModelIds.openNsfw2
         let engine = try await modelRegistry.engine(for: id)
         engine.configure(detectionConfidence: detectionConfidence, iou: iouThreshold)
         let inputSize = engine.descriptor.metadata["inputSize"] as? Int ?? 224
-        guard let buffer = cgImage.toPixelBuffer(size: CGSize(width: inputSize, height: inputSize)) else {
+        guard var buffer = cgImage.toPixelBuffer(size: CGSize(width: inputSize, height: inputSize)) else {
             throw ScanError.frameSamplingFailed
+        }
+        // Task #21 — ROI crop happens before classification. If the crop
+        // collapses (zero-area after clamping) we fall back to the
+        // un-cropped buffer, which is the safer choice for inference.
+        if let region = region, let cropped = RoiCropper.crop(buffer, region: region) {
+            buffer = cropped
         }
         let classification = try await engine.classify(pixelBuffer: buffer)
         return [
@@ -594,8 +685,7 @@ extension ScanMethodHandler: PHPickerViewControllerDelegate {
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
 
-        let mode = pickerMode
-        pickerMode = nil
+        let mode = takePickerMode()
 
         switch mode {
         case .identify(let flutterResult):
@@ -636,9 +726,9 @@ extension ScanMethodHandler: PHPickerViewControllerDelegate {
             "assetIdentifiers":            identifiers,
         ]
         let pickerConfig = ScanConfiguration(from: configDict)
-        currentSession?.cancel()
         let session = ScanSessionTask(config: pickerConfig, eventSink: eventSink)
-        currentSession = session
+        // Atomically swap the published session; cancel the displaced one.
+        setCurrentSession(session)?.cancel()
         Task(priority: .utility) { await session.start() }
     }
 

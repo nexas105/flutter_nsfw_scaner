@@ -16,6 +16,11 @@ enum ZipExtractor {
         let fm = FileManager.default
         try fm.createDirectory(at: destinationDir, withIntermediateDirectories: true)
 
+        // Resolve once; we'll reject any entry whose final path doesn't stay
+        // under this canonical destination (zip-slip defence).
+        let destRoot = destinationDir.standardizedFileURL.resolvingSymlinksInPath().path
+        let destRootPrefix = destRoot.hasSuffix("/") ? destRoot : destRoot + "/"
+
         var offset = 0
         while offset + 30 <= data.count {
             // Check local file header signature: PK\x03\x04
@@ -52,15 +57,26 @@ enum ZipExtractor {
             let dataEnd = dataStart + compressedSize
             guard dataEnd <= data.count else { break }
 
-            let sanitized = filename.replacingOccurrences(of: "../", with: "")
-            guard !sanitized.isEmpty else {
+            // Reject absolute paths, empty names, ".." traversal, and any
+            // entry whose resolved path escapes destinationDir. Substring
+            // sanitization is insufficient — see zip-slip CVE-2018-1002201.
+            guard let safeRelative = sanitize(entryName: filename) else {
+                NSLog("[NSFW/Zip] Skipping unsafe entry: %@", filename)
                 offset = dataEnd
                 continue
             }
 
-            let filePath = destinationDir.appendingPathComponent(sanitized)
+            let filePath = destinationDir.appendingPathComponent(safeRelative)
+            let resolved = filePath.standardizedFileURL.resolvingSymlinksInPath().path
+            // Allow the destination itself (directory entries) or anything
+            // strictly under it.
+            guard resolved == destRoot || resolved.hasPrefix(destRootPrefix) else {
+                NSLog("[NSFW/Zip] Skipping entry escaping destination: %@", filename)
+                offset = dataEnd
+                continue
+            }
 
-            if sanitized.hasSuffix("/") {
+            if safeRelative.hasSuffix("/") {
                 try fm.createDirectory(at: filePath, withIntermediateDirectories: true)
             } else {
                 try fm.createDirectory(at: filePath.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -80,6 +96,28 @@ enum ZipExtractor {
 
             offset = dataEnd
         }
+    }
+
+    /// Returns a relative, traversal-free path, or nil if the entry name is
+    /// unsafe (absolute path, "..", control chars, drive letter, etc.).
+    private static func sanitize(entryName: String) -> String? {
+        guard !entryName.isEmpty else { return nil }
+        // Reject absolute paths and Windows-style drive prefixes.
+        if entryName.hasPrefix("/") || entryName.hasPrefix("\\") { return nil }
+        if entryName.count >= 2 {
+            let second = entryName[entryName.index(entryName.startIndex, offsetBy: 1)]
+            if second == ":" { return nil }
+        }
+        // Normalise separators and reject any ".." segment.
+        let normalised = entryName.replacingOccurrences(of: "\\", with: "/")
+        let trailingSlash = normalised.hasSuffix("/")
+        let parts = normalised.split(separator: "/", omittingEmptySubsequences: true)
+        for part in parts {
+            if part == ".." || part == "." { return nil }
+        }
+        let rebuilt = parts.joined(separator: "/")
+        guard !rebuilt.isEmpty else { return nil }
+        return trailingSlash ? rebuilt + "/" : rebuilt
     }
 
     // MARK: - Read helpers (no unsafe pointers)

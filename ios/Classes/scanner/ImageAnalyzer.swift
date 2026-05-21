@@ -107,9 +107,22 @@ final class ImageAnalyzer {
     }
 
     func pixelBuffer(for asset: PHAsset) async throws -> CVPixelBuffer {
+        return try await pixelBuffer(for: asset, region: nil)
+    }
+
+    /// ROI-aware variant. If `region` is non-nil, the fetched image is
+    /// cropped to the normalised rect AFTER initial decode but BEFORE the
+    /// final resize-to-input-size. The crop runs on the BGRA pooled buffer
+    /// (cheaper than re-rendering from CGImage). Falls back to the
+    /// un-cropped buffer if the crop math collapses (e.g. zero-area ROI
+    /// after clamping), which is the safer behaviour for inference.
+    func pixelBuffer(for asset: PHAsset, region: RoiCropper.Region?) async throws -> CVPixelBuffer {
         let cgImage = try await fetchCGImage(for: asset)
         guard let buffer = renderToPooledBuffer(cgImage) else {
             throw ScanError.frameSamplingFailed
+        }
+        if let region = region, let cropped = RoiCropper.crop(buffer, region: region) {
+            return cropped
         }
         return buffer
     }
@@ -170,8 +183,14 @@ final class ImageAnalyzer {
                     resumeOnce(.failure(ScanError.frameSamplingFailed))
                     return
                 }
-                // Skip degraded preview frames — wait for the final image.
-                if let degraded = info?[PHImageResultIsDegradedKey] as? Bool, degraded {
+                // We request `.fastFormat`, which is a single-callback mode —
+                // there is no "final image" coming after a degraded one. If
+                // Photos still flags degraded (rare edge cases on iCloud-only
+                // assets), accept it anyway when the image is present;
+                // skipping would leak the continuation (H4).
+                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if isDegraded && image == nil {
+                    resumeOnce(.failure(ScanError.frameSamplingFailed))
                     return
                 }
                 guard let img = image, let cg = img.cgImage else {
