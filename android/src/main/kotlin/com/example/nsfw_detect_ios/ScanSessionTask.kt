@@ -70,6 +70,22 @@ class ScanSessionTask(
     private val cancelled = AtomicBoolean(false)
     private val lifecycleLock = Any()
 
+    /**
+     * One-shot skip flag set by [requestSkip] (the Dart-facing
+     * `skipCurrentAsset` channel method) and consumed by the next asset
+     * entering the scan loop. Multiple sets between consumptions collapse
+     * to a single skip — matches the public API contract.
+     */
+    private val skipFlag = AtomicBoolean(false)
+
+    /** Public entry point — best-effort, no-op when no scan is running. */
+    fun requestSkip() {
+        skipFlag.set(true)
+    }
+
+    /** Atomically returns + clears the flag. One asset wins per call. */
+    private fun consumeSkipRequest(): Boolean = skipFlag.compareAndSet(true, false)
+
     fun start() {
         synchronized(lifecycleLock) {
             if (cancelled.get()) {
@@ -258,6 +274,35 @@ class ScanSessionTask(
                     for (asset in assets) {
                         // Cancel check before acquiring slot
                         if (!isActive) break
+
+                        // One-shot user skip — NsfwDetector.skipCurrentAsset()
+                        // flips the flag, the next asset entering the loop
+                        // consumes it. Emits an explicit `skipped` result so
+                        // the UI sees the skip event (vs the silent skipIds
+                        // filter that hides the asset entirely).
+                        if (consumeSkipRequest()) {
+                            val count = scannedCount.incrementAndGet()
+                            eventSink.emitResult(
+                                localId = asset.id.toString(),
+                                mediaType = asset.mediaType,
+                                status = "skipped",
+                                scannedAt = System.currentTimeMillis(),
+                                labels = emptyList(),
+                                errorMessage = "skipCurrentAsset",
+                                creationDate = asset.dateAdded * 1000,
+                                durationMs = asset.durationMs,
+                                width = asset.width,
+                                height = asset.height,
+                            )
+                            eventSink.emitProgress(
+                                scannedCount = count,
+                                totalCount = total,
+                                isComplete = count == total,
+                                currentLocalId = asset.id.toString(),
+                                currentMediaType = asset.mediaType,
+                            )
+                            continue
+                        }
 
                         val assetModMs = asset.dateModified * 1000
                         if (cacheActive && fingerprints[asset.id.toString()] == assetModMs) {

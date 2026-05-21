@@ -22,6 +22,28 @@ final class ScanSessionTask: @unchecked Sendable {
     private var _effectiveConcurrency: Int
     private var loadObserver: NSObjectProtocol?
 
+    /// One-shot skip flag set by `requestSkip()` (the Dart-facing
+    /// `skipCurrentAsset` channel method) and consumed by the next asset
+    /// entering the scan loop. Multiple sets between consumptions collapse
+    /// to a single skip — matches the public API contract.
+    private let skipFlag = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    /// Public entry point invoked by `ScanMethodHandler.handle(skipCurrentAsset)`.
+    /// Best-effort: a no-op if the scan has already completed the current
+    /// iteration.
+    func requestSkip() {
+        skipFlag.withLock { $0 = true }
+    }
+
+    /// Atomically returns + clears the skip flag. Called once per
+    /// loop iteration; only one asset can consume a pending skip.
+    fileprivate func consumeSkipRequest() -> Bool {
+        skipFlag.withLock { current in
+            if current { current = false; return true }
+            return false
+        }
+    }
+
     init(config: ScanConfiguration, eventSink: ScanEventSink) {
         self.config    = config
         self.eventSink = eventSink
@@ -284,6 +306,24 @@ final class ScanSessionTask: @unchecked Sendable {
                     if skipIds.contains(asset.localIdentifier) {
                         flushImageBatch()
                         let s = scanned.increment()
+                        batcher.recordProgress(eventSink.buildProgressMap(
+                            scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                        continue
+                    }
+
+                    // One-shot user skip: NsfwDetector.skipCurrentAsset() flips
+                    // a flag on this session; the next asset entering the loop
+                    // consumes it. Emits an explicit `skipped` result so the
+                    // UI knows the skip happened (vs the skipIds path, which
+                    // is silent because callers asked for that asset not to
+                    // appear at all).
+                    if consumeSkipRequest() {
+                        flushImageBatch()
+                        let s = scanned.increment()
+                        batcher.recordResult(eventSink.buildResultMap(
+                            asset: asset, classification: .unknown,
+                            status: "skipped",
+                            errorMessage: "skipCurrentAsset"))
                         batcher.recordProgress(eventSink.buildProgressMap(
                             scanned: s, total: total, isComplete: s == total, currentAsset: asset))
                         continue

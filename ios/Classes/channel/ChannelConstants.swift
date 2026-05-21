@@ -37,6 +37,7 @@ enum ChannelConstants {
         static let prefetchAssets     = "prefetchAssets"
         static let redactBytes        = "redactBytes"
         static let redactFile         = "redactFile"
+        static let skipCurrentAsset   = "skipCurrentAsset"
     }
 
     enum EventKey {

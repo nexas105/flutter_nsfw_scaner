@@ -22,6 +22,10 @@
 - **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
 - **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
 
+### New — Per-asset skip
+
+- **`NsfwDetector.skipCurrentAsset()`** — best-effort fire-and-forget that signals the active scan to skip the next asset entering its loop. Multiple rapid calls collapse to a single skip. Use [cancelScan] to abandon the whole session instead. Emits an explicit `ScanStatus.skipped` result so subscribers see the event. No effect when no scan is running.
+
 ### New — Profile / batch / dedupe helpers
 
 - **`NsfwSafetyProfile.evaluate(ScanResult)` / `evaluateAll(Iterable<ScanResult>)`** — bool helper that asks "would this result be flagged at this profile's threshold?". `safe` / `unknown` categories pass regardless of confidence; NSFW categories must score below `recommendedThreshold`. `failed` / `skipped` results route to manual review (return false).

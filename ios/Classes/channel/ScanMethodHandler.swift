@@ -572,6 +572,14 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 }
             }
 
+        case ChannelConstants.Method.skipCurrentAsset:
+            // Forward to the live session if any. No-op when no scan is
+            // running — matches the Dart-side fire-and-forget contract.
+            stateLock.withLock {
+                _currentSession?.requestSkip()
+            }
+            result(nil)
+
         case ChannelConstants.Method.cachedResult:
             guard let localId = args?["localId"] as? String else {
                 result(FlutterError(code: "INVALID_ARGS", message: "localId required", details: nil))

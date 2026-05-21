@@ -610,6 +610,13 @@ class ScanMethodHandler(
                 act.startActivityForResult(intent, PICKER_REQUEST_CODE)
             }
 
+            ChannelConstants.Method.SKIP_CURRENT_ASSET -> {
+                // Forward to the live session if any. No-op when no scan is
+                // running — matches the Dart-side fire-and-forget contract.
+                currentSession?.requestSkip()
+                result.success(null)
+            }
+
             ChannelConstants.Method.CACHED_RESULT -> {
                 val args = call.arguments as? Map<*, *>
                 val localId = args?.get("localId") as? String

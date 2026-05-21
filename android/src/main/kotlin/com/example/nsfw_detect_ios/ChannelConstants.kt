@@ -41,10 +41,11 @@ object ChannelConstants {
 
         // v2.3.0 — cache lookup + prefetch + redaction (mirrors iOS
         // ChannelConstants.swift).
-        const val CACHED_RESULT   = "cachedResult"
-        const val PREFETCH_ASSETS = "prefetchAssets"
-        const val REDACT_BYTES    = "redactBytes"
-        const val REDACT_FILE     = "redactFile"
+        const val CACHED_RESULT     = "cachedResult"
+        const val PREFETCH_ASSETS   = "prefetchAssets"
+        const val REDACT_BYTES      = "redactBytes"
+        const val REDACT_FILE       = "redactFile"
+        const val SKIP_CURRENT_ASSET = "skipCurrentAsset"
     }
 
     object EventKey {

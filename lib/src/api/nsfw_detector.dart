@@ -664,6 +664,16 @@ class NsfwDetector {
     }
   }
 
+  /// Signals the native scan loop to skip the next asset it would process.
+  ///
+  /// Best-effort, fire-and-forget: one outstanding skip is consumed by the
+  /// next per-asset task that checks the flag. Multiple `skipCurrentAsset`
+  /// calls in quick succession collapse to a single skip — use
+  /// [cancelScan] if you want to abandon the rest of the session entirely.
+  ///
+  /// No effect when no scan is running.
+  Future<void> skipCurrentAsset() => _platform.skipCurrentAsset();
+
   /// Looks up a previously-scanned result from the on-device cache without
   /// triggering a new classification. Returns `null` if the cache has no
   /// entry for the given identifier.

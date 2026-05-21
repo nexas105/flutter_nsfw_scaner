@@ -171,6 +171,14 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
       throw UnimplementedError(
           'cachedResult is not implemented by this platform');
 
+  /// Signal the native scan loop to skip the next asset it would process.
+  /// Best-effort: one outstanding skip is consumed by the next per-asset
+  /// task that checks the flag. No effect when no scan is running.
+  ///
+  /// Default no-op so test fakes don't need to stub this. Real native
+  /// impls forward to the active `ScanSessionTask`.
+  Future<void> skipCurrentAsset() async {}
+
   /// Pre-warm the native asset cache for the given local identifiers so the
   /// next [scanSingleAsset] or library scan can decode them with less I/O
   /// pressure. Default no-op — platforms without a meaningful warm-cache

@@ -166,6 +166,15 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   }
 
   @override
+  Future<void> skipCurrentAsset() async {
+    try {
+      await _methodChannel.invokeMethod<void>('skipCurrentAsset');
+    } on MissingPluginException {
+      // Native side hasn't shipped this yet — silent no-op.
+    }
+  }
+
+  @override
   Future<Map<dynamic, dynamic>?> cachedResult(
     String localIdentifier, {
     String? modelId,
