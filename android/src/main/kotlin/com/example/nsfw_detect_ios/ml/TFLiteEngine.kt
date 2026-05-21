@@ -175,6 +175,20 @@ class TFLiteEngine(
     // MARK: - Asset loading
 
     private fun loadModelBuffer(): ByteBuffer {
+        // Custom-registered model — assetPath is absolute, already validated
+        // by ScanMethodHandler.registerModel (sandbox + existence + magic).
+        descriptor.customAssetPath?.let { custom ->
+            val file = File(custom)
+            if (!file.isFile) throw MLEngineError.ModelNotFound(descriptor.id)
+            val bytes = file.readBytes()
+            validateTFLiteBytes(descriptor.id, bytes)
+            return ByteBuffer.allocateDirect(bytes.size).apply {
+                order(ByteOrder.nativeOrder())
+                put(bytes)
+                rewind()
+            }
+        }
+
         // Downloaded model takes precedence — descriptor said it requires download.
         if (descriptor.requiresDownload) {
             val resourceName = descriptor.bundleResourceName

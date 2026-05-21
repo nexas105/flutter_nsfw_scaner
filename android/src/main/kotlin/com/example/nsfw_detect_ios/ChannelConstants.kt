@@ -46,6 +46,7 @@ object ChannelConstants {
         const val REDACT_BYTES      = "redactBytes"
         const val REDACT_FILE       = "redactFile"
         const val SKIP_CURRENT_ASSET = "skipCurrentAsset"
+        const val REGISTER_MODEL    = "registerModel"
     }
 
     object EventKey {

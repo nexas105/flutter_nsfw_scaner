@@ -27,6 +27,14 @@ data class ModelDescriptorNative(
      * any URL the integrator does not fully control.
      */
     val expectedSha256: String? = null,
+    /**
+     * Absolute filesystem path to a custom-registered .tflite file. When
+     * set, [TFLiteEngine] / [TFLiteDetectorEngine] load from here instead
+     * of searching assets / download dir. Always nil for built-in models.
+     * Always inside the host app sandbox — see
+     * `ScanMethodHandler.registerModel` for the path-validation policy.
+     */
+    val customAssetPath: String? = null,
 ) {
     /** True if the model needs an online download before it can be used. */
     val requiresDownload: Boolean get() = downloadUrl != null
@@ -34,10 +42,12 @@ data class ModelDescriptorNative(
     /**
      * Whether the model is currently usable.
      *
-     * Bundled models are always available. Downloadable models are only
-     * available once their resource lives in [ModelDownloadManager.modelsDirectory].
+     * Custom-registered models are available iff the file exists. Bundled
+     * models are always available. Downloadable models are only available
+     * once their resource lives in [ModelDownloadManager.modelsDirectory].
      */
     fun isAvailable(context: Context): Boolean {
+        if (customAssetPath != null) return java.io.File(customAssetPath).exists()
         if (downloadUrl == null) return true
         val name = bundleResourceName ?: return false
         return ModelDownloadManager.getInstance(context).isDownloaded(name)

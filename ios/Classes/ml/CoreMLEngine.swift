@@ -407,6 +407,13 @@ final class CoreMLEngine: MLEngine {
     }
 
     private static func _findModelURL(named name: String, referenceClass: AnyClass) -> URL? {
+        // -1. Custom-registered model — assetPath is absolute, already
+        // validated by ScanMethodHandler.registerModel (sandbox + existence).
+        // No further extension search: caller pointed at the exact artefact.
+        if let custom = descriptor.customAssetPath {
+            return URL(fileURLWithPath: custom)
+        }
+
         // 0. Check downloaded models directory first
         if let downloadedURL = ModelDownloadManager.shared.localURL(for: name) {
             return downloadedURL

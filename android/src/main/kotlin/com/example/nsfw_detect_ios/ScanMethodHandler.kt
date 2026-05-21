@@ -610,6 +610,83 @@ class ScanMethodHandler(
                 act.startActivityForResult(intent, PICKER_REQUEST_CODE)
             }
 
+            ChannelConstants.Method.REGISTER_MODEL -> {
+                val args = call.arguments as? Map<*, *>
+                val id = args?.get("id") as? String
+                val displayName = args?.get("displayName") as? String
+                val assetPath = args?.get("assetPath") as? String
+                if (id == null || displayName == null || assetPath == null) {
+                    result.error("INVALID_ARGS", "id, displayName, assetPath required", null)
+                    return
+                }
+                // Sandbox validation — resolve symlinks + canonicalize, then
+                // verify the path sits under one of the writable dirs the
+                // host app controls. Refuse SAF / external-storage paths.
+                val resolved: java.io.File = try {
+                    java.io.File(assetPath).canonicalFile
+                } catch (_: Throwable) {
+                    result.error("INVALID_PATH", "Could not canonicalize assetPath", assetPath)
+                    return
+                }
+                val sandboxRoots = listOfNotNull(
+                    context.filesDir.canonicalPath,
+                    context.cacheDir.canonicalPath,
+                    context.dataDir?.canonicalPath,
+                    context.noBackupFilesDir?.canonicalPath,
+                ).filter { it.isNotEmpty() }
+                val resolvedPath = resolved.absolutePath
+                val insideSandbox = sandboxRoots.any { root ->
+                    val prefix = if (root.endsWith("/")) root else "$root/"
+                    resolvedPath == root || resolvedPath.startsWith(prefix)
+                }
+                if (!insideSandbox) {
+                    result.error(
+                        "INVALID_PATH",
+                        "assetPath must be inside the app sandbox (filesDir / cacheDir / dataDir / noBackupFilesDir)",
+                        resolvedPath,
+                    )
+                    return
+                }
+                if (!resolved.exists()) {
+                    result.error("MODEL_NOT_FOUND", "No file at assetPath", resolvedPath)
+                    return
+                }
+                val kindString = (args["kind"] as? String) ?: "classifier"
+                val inputSize = (args["inputSize"] as? Number)?.toInt() ?: 224
+                val version = args["version"] as? String
+                val downloadUrl = args["downloadUrl"] as? String
+                @Suppress("UNCHECKED_CAST")
+                val rawMeta = (args["metadata"] as? Map<String, Any>) ?: emptyMap()
+                val meta = HashMap<String, Any>(rawMeta).apply {
+                    put("inputSize", inputSize)
+                    put("framework", "TFLite")
+                    put("kind", kindString)
+                    (args["classLabels"] as? List<*>)?.let { put("classLabels", it) }
+                }
+                val descriptor = ModelDescriptorNative(
+                    id = id,
+                    displayName = displayName,
+                    description = null,
+                    version = version,
+                    bundleResourceName = null,
+                    metadata = meta,
+                    downloadUrl = downloadUrl,
+                    downloadSizeBytes = 0L,
+                    expectedSha256 = null,
+                    customAssetPath = resolvedPath,
+                )
+                if (kindString == "detector") {
+                    modelRegistry.registerDetector(descriptor) {
+                        com.example.nsfw_detect_ios.ml.TFLiteDetectorEngine(context, it)
+                    }
+                } else {
+                    modelRegistry.register(descriptor) {
+                        com.example.nsfw_detect_ios.ml.TFLiteEngine(context, it)
+                    }
+                }
+                result.success(resolvedPath)
+            }
+
             ChannelConstants.Method.SKIP_CURRENT_ASSET -> {
                 // Forward to the live session if any. No-op when no scan is
                 // running — matches the Dart-side fire-and-forget contract.

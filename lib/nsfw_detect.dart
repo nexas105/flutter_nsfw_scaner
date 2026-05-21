@@ -25,6 +25,7 @@ export 'src/api/media_picker_type.dart';
 export 'src/api/scan_summary.dart';
 export 'src/api/model_descriptor.dart';
 export 'src/api/model_download_progress.dart';
+export 'src/api/model_registration.dart';
 export 'src/api/nsfw_init_options.dart';
 export 'src/api/nsfw_model_manager.dart';
 export 'src/api/nsfw_gallery_filter.dart';

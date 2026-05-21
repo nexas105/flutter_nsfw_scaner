@@ -18,6 +18,13 @@ struct ModelDescriptorNative {
     /// model whose URL points outside infrastructure you control.
     let expectedSha256:     String?
 
+    /// Absolute filesystem path to a custom-registered model artefact
+    /// (.mlmodelc directory or .mlmodel source). When set, [CoreMLEngine]
+    /// uses this directly instead of searching bundle / download paths.
+    /// Always nil for built-in models. Always inside the host app sandbox —
+    /// see `ScanMethodHandler.registerModel` for the path-validation policy.
+    let customAssetPath:    String?
+
     init(
         id: String,
         displayName: String,
@@ -27,7 +34,8 @@ struct ModelDescriptorNative {
         metadata: [String: Any] = [:],
         downloadUrl: String? = nil,
         downloadSizeBytes: Int64 = 0,
-        expectedSha256: String? = nil
+        expectedSha256: String? = nil,
+        customAssetPath: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -38,13 +46,17 @@ struct ModelDescriptorNative {
         self.downloadUrl = downloadUrl
         self.downloadSizeBytes = downloadSizeBytes
         self.expectedSha256 = expectedSha256?.lowercased()
+        self.customAssetPath = customAssetPath
     }
 
     /// Whether this model requires downloading before use
     var requiresDownload: Bool { downloadUrl != nil }
 
-    /// Whether the model is available (bundled or already downloaded)
+    /// Whether the model is available (bundled, downloaded, or custom-registered)
     var isAvailable: Bool {
+        if let custom = customAssetPath {
+            return FileManager.default.fileExists(atPath: custom)
+        }
         if downloadUrl == nil { return true } // Bundled
         guard let name = bundleResourceName else { return false }
         return ModelDownloadManager.shared.isDownloaded(resourceName: name)

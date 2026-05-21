@@ -22,6 +22,14 @@
 - **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
 - **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
 
+### New — Runtime custom model registration
+
+- **`NsfwDetector.registerModel(ModelRegistration)`** — plug your own `.mlmodelc` (iOS) or `.tflite` (Android) artefact into the plugin without forking. Registrations live for the process lifetime; re-register on cold start.
+- **`ModelRegistration`** — value type carrying `id`, `displayName`, `assetPath`, `inputSize`, `kind` (classifier / detector), optional `downloadUrl`, `classLabels`, `version`, `metadata`.
+- **`ModelKind`** — new enum: `classifier` (default) / `detector`. Routes the registered model to the right native engine factory (CoreMLEngine / CoreMLDetectorEngine on iOS; TFLiteEngine / TFLiteDetectorEngine on Android).
+- **Path sandboxing.** The native side resolves `assetPath` against the host app's writable directories — iOS Application Support / Documents / Caches / tmp; Android `filesDir` / `cacheDir` / `dataDir` / `noBackupFilesDir`. Paths outside the sandbox are rejected with `INVALID_PATH`. Missing artefacts surface `MODEL_NOT_FOUND`.
+- **`ModelDescriptorNative.customAssetPath`** (native) — both engines load directly from the custom path when set, bypassing the bundle / download search. TFLite magic-byte validation (`TFL3`) still runs.
+
 ### New — Per-asset skip
 
 - **`NsfwDetector.skipCurrentAsset()`** — best-effort fire-and-forget that signals the active scan to skip the next asset entering its loop. Multiple rapid calls collapse to a single skip. Use [cancelScan] to abandon the whole session instead. Emits an explicit `ScanStatus.skipped` result so subscribers see the event. No effect when no scan is running.

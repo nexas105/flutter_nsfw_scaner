@@ -38,6 +38,7 @@ enum ChannelConstants {
         static let redactBytes        = "redactBytes"
         static let redactFile         = "redactFile"
         static let skipCurrentAsset   = "skipCurrentAsset"
+        static let registerModel      = "registerModel"
     }
 
     enum EventKey {

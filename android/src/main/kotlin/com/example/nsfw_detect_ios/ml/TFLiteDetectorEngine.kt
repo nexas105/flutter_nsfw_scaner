@@ -230,6 +230,20 @@ class TFLiteDetectorEngine(
     // MARK: - Asset loading (mirrors TFLiteEngine.loadModelBuffer)
 
     private fun loadModelBuffer(): ByteBuffer {
+        // Custom-registered detector — bypass the bundle / download search
+        // and read directly from the sandbox-validated absolute path.
+        descriptor.customAssetPath?.let { custom ->
+            val file = File(custom)
+            if (!file.isFile) throw MLEngineError.ModelNotFound(descriptor.id)
+            val bytes = file.readBytes()
+            validateTFLiteBytes(descriptor.id, bytes)
+            return ByteBuffer.allocateDirect(bytes.size).apply {
+                order(ByteOrder.nativeOrder())
+                put(bytes)
+                rewind()
+            }
+        }
+
         if (descriptor.requiresDownload) {
             val resourceName = descriptor.bundleResourceName
                 ?: throw MLEngineError.ModelNotFound(descriptor.id)

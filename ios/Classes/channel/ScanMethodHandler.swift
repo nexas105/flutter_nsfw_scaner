@@ -572,6 +572,77 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 }
             }
 
+        case ChannelConstants.Method.registerModel:
+            guard let id = args?["id"] as? String,
+                  let displayName = args?["displayName"] as? String,
+                  let assetPath = args?["assetPath"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS",
+                                    message: "id, displayName, assetPath required",
+                                    details: nil))
+                return
+            }
+            // Sandbox validation: the assetPath must resolve inside the host
+            // app's writable directories. Refuse arbitrary filesystem paths
+            // so a misuse can't load model bytes from a SAF / picker-granted
+            // location that the host app never inspected.
+            let resolved = URL(fileURLWithPath: assetPath).standardized.resolvingSymlinksInPath()
+            let sandboxRoots: [String] = [
+                FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.standardizedFileURL.resolvingSymlinksInPath().path ?? "",
+                FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.standardizedFileURL.resolvingSymlinksInPath().path ?? "",
+                FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.standardizedFileURL.resolvingSymlinksInPath().path ?? "",
+                FileManager.default.temporaryDirectory.standardizedFileURL.resolvingSymlinksInPath().path,
+            ].filter { !$0.isEmpty }
+            let resolvedPath = resolved.path
+            let insideSandbox = sandboxRoots.contains { root in
+                let prefix = root.hasSuffix("/") ? root : root + "/"
+                return resolvedPath == root || resolvedPath.hasPrefix(prefix)
+            }
+            if !insideSandbox {
+                result(FlutterError(code: "INVALID_PATH",
+                                    message: "assetPath must be inside the app sandbox (Application Support / Documents / Caches / tmp)",
+                                    details: resolvedPath))
+                return
+            }
+            if !FileManager.default.fileExists(atPath: resolvedPath) {
+                result(FlutterError(code: "MODEL_NOT_FOUND",
+                                    message: "No file/directory at assetPath",
+                                    details: resolvedPath))
+                return
+            }
+            let kindString = (args?["kind"] as? String) ?? "classifier"
+            let inputSize  = (args?["inputSize"] as? Int) ?? 224
+            let version    = args?["version"] as? String
+            let downloadUrl = args?["downloadUrl"] as? String
+            var meta: [String: Any] = (args?["metadata"] as? [String: Any]) ?? [:]
+            meta["inputSize"] = inputSize
+            meta["framework"] = "CoreML"
+            meta["kind"]      = kindString
+            if let labels = args?["classLabels"] as? [String] {
+                meta["classLabels"] = labels
+            }
+            let descriptor = ModelDescriptorNative(
+                id: id,
+                displayName: displayName,
+                description: nil,
+                version: version,
+                bundleResourceName: nil,
+                metadata: meta,
+                downloadUrl: downloadUrl,
+                downloadSizeBytes: 0,
+                expectedSha256: nil,
+                customAssetPath: resolvedPath
+            )
+            if kindString == "detector" {
+                modelRegistry.register(detectorDescriptor: descriptor) {
+                    CoreMLDetectorEngine(descriptor: $0)
+                }
+            } else {
+                modelRegistry.register(descriptor: descriptor) {
+                    CoreMLEngine(descriptor: $0)
+                }
+            }
+            result(resolvedPath)
+
         case ChannelConstants.Method.skipCurrentAsset:
             // Forward to the live session if any. No-op when no scan is
             // running — matches the Dart-side fire-and-forget contract.

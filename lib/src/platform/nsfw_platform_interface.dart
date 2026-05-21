@@ -161,6 +161,12 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
 
   // v2.3.0 — cache lookup, prefetch, native redaction.
 
+  /// Register a custom model descriptor at runtime. Returns the resolved
+  /// asset path the native side will load from. Default throws.
+  Future<String> registerModel(Map<String, Object?> registration) =>
+      throw UnimplementedError(
+          'registerModel is not implemented by this platform');
+
   /// Look up a cached scan record for [localIdentifier] without triggering a
   /// re-scan. Returns the wire-shape map (mirrors [scanSingleAsset]) when a
   /// row exists, or `null` on miss. Default throws.

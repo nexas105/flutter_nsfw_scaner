@@ -181,6 +181,56 @@ void main() {
     });
   });
 
+  group('ModelRegistration', () {
+    test('toChannelMap omits null fields and carries metadata', () {
+      const r = ModelRegistration(
+        id: 'custom_x',
+        displayName: 'Custom X',
+        assetPath: '/data/data/com.example.app/files/x.tflite',
+        inputSize: 384,
+        kind: ModelKind.detector,
+        downloadUrl: 'https://example.com/x.tflite',
+        version: '1.2',
+        metadata: {'note': 'fine-tuned'},
+      );
+      final map = r.toChannelMap();
+      expect(map['id'], 'custom_x');
+      expect(map['assetPath'], '/data/data/com.example.app/files/x.tflite');
+      expect(map['inputSize'], 384);
+      expect(map['kind'], 'detector');
+      expect(map['downloadUrl'], 'https://example.com/x.tflite');
+      expect(map['version'], '1.2');
+      expect(map['metadata'], {'note': 'fine-tuned'});
+      expect(map.containsKey('classLabels'), false);
+    });
+
+    test('asserts on empty id / displayName / assetPath', () {
+      // Empty id rejected at construction (assert + debug build).
+      expect(
+        () => ModelRegistration(id: '', displayName: 'x', assetPath: '/x'),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('copyWith preserves untouched fields', () {
+      const a = ModelRegistration(
+        id: 'a', displayName: 'A', assetPath: '/p', inputSize: 224,
+      );
+      final b = a.copyWith(inputSize: 384);
+      expect(b.id, 'a');
+      expect(b.displayName, 'A');
+      expect(b.assetPath, '/p');
+      expect(b.inputSize, 384);
+      expect(b == a, false);
+    });
+
+    test('ModelKind.fromString defaults to classifier for unknown input', () {
+      expect(ModelKind.fromString(null), ModelKind.classifier);
+      expect(ModelKind.fromString('detector'), ModelKind.detector);
+      expect(ModelKind.fromString('bogus'), ModelKind.classifier);
+    });
+  });
+
   group('findDuplicates', () {
     test('returns clusters of size >= 2 and drops singletons', () async {
       // Three media items, two with identical hashes (forced via loader),

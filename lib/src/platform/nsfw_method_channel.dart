@@ -166,6 +166,18 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   }
 
   @override
+  Future<String> registerModel(Map<String, Object?> registration) async {
+    final result = await _methodChannel.invokeMethod<String>(
+      'registerModel',
+      registration,
+    );
+    if (result == null || result.isEmpty) {
+      throw StateError('registerModel returned no resolved path');
+    }
+    return result;
+  }
+
+  @override
   Future<void> skipCurrentAsset() async {
     try {
       await _methodChannel.invokeMethod<void>('skipCurrentAsset');

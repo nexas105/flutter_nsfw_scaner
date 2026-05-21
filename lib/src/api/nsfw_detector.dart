@@ -8,6 +8,7 @@ import 'package:flutter/painting.dart'
 import 'body_part_detection.dart';
 import 'frame_stream_scanner.dart';
 import 'media_item.dart';
+import 'model_registration.dart';
 import 'redaction_mode.dart';
 import 'model_download_progress.dart';
 import 'nsfw_init_options.dart';
@@ -663,6 +664,37 @@ class NsfwDetector {
       client.close(force: true);
     }
   }
+
+  /// Register a custom ML model at runtime so its [registration.id] can be
+  /// used with any of the scan APIs (`modelId:` parameter,
+  /// `ScanConfiguration.modelId`, `NsfwInitOptions.preloadModels`).
+  ///
+  /// Registrations live for the process lifetime only — re-register on cold
+  /// start. The native side resolves [registration.assetPath] against the
+  /// host app's sandboxed writable directories (iOS Application Support /
+  /// Documents / Caches; Android `filesDir` / `cacheDir`) and rejects paths
+  /// that escape the sandbox.
+  ///
+  /// Returns the absolute resolved path the engine will load from — useful
+  /// for diagnostics. Throws on invalid path / duplicate id / missing
+  /// artefact.
+  ///
+  /// ```dart
+  /// final tflitePath = '${(await getApplicationSupportDirectory()).path}/my_model.tflite';
+  /// // ...copy the model bytes there...
+  /// await NsfwDetector.instance.registerModel(ModelRegistration(
+  ///   id: 'my_custom_model',
+  ///   displayName: 'My fine-tuned NSFW',
+  ///   assetPath: tflitePath,
+  ///   inputSize: 224,
+  /// ));
+  /// final result = await NsfwDetector.instance.scanFile(
+  ///   '/path/to/image.jpg',
+  ///   modelId: 'my_custom_model',
+  /// );
+  /// ```
+  Future<String> registerModel(ModelRegistration registration) =>
+      _platform.registerModel(registration.toChannelMap());
 
   /// Signals the native scan loop to skip the next asset it would process.
   ///
