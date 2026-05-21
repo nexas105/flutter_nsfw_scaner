@@ -1,15 +1,30 @@
+import CryptoKit
 import Foundation
+import os
 
 /// Downloads and manages on-demand ML model files.
 /// Models are stored in Application Support/nsfw_models/ and persist across launches.
 final class ModelDownloadManager {
+
+    // MARK: - Security policy
+    //
+    // Hard caps applied to every download. Defense-in-depth for hosts the
+    // app integrator may not fully control (e.g. user-supplied URLs via
+    // `setModelDownloadUrl`). Tuned wide enough for the largest bundled
+    // descriptor (~150 MB Falconsai .mlmodelc.zip) plus headroom, tight
+    // enough that a zip bomb or accidental 4 GB blob can't blow past the
+    // user's free disk before we notice.
+    static let maxDownloadBytes:    Int64  = 500_000_000
+    static let maxExtractedBytes:   Int64  = 600_000_000
+    static let maxArchiveEntries:   Int    = 4096
+    static let maxCompressionRatio: Double = 200.0
 
     static let shared = ModelDownloadManager()
     private init() {
         try? FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
     }
 
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var activeDownloads: [String: Task<URL, Error>] = [:]
 
     /// Directory where downloaded models are stored
@@ -35,10 +50,16 @@ final class ModelDownloadManager {
 
     /// Download a model .zip from a URL, extract .mlmodelc, store locally.
     /// Progress is reported via the callback (0.0 to 1.0).
+    ///
+    /// - Parameter expectedSha256: when set, the downloaded archive's SHA-256
+    ///   must match (lowercase hex) before extraction is attempted. Mismatch
+    ///   deletes the temp file and throws `integrityMismatch`. Use this for
+    ///   any URL the integrator does not fully control.
     func download(
         modelId: String,
         resourceName: String,
         from url: URL,
+        expectedSha256: String? = nil,
         progress: @escaping (Double) -> Void
     ) async throws -> URL {
         // Already downloaded?
@@ -47,31 +68,39 @@ final class ModelDownloadManager {
             return existing
         }
 
+        // Reject non-HTTPS up front. http:// would be silently downgrade-able
+        // by anyone on the network path; file:// and friends bypass URLSession
+        // streaming guarantees. Integrators with a genuine need for plaintext
+        // can pre-stage models on disk via `setModelDownloadUrl` + manual
+        // copy. (Not configurable yet — keep the door bolted by default.)
+        guard url.scheme?.lowercased() == "https" else {
+            throw ModelDownloadError.insecureScheme(url.scheme ?? "<none>")
+        }
+
         // Already downloading? Reuse task.
-        lock.lock()
-        if let existing = activeDownloads[modelId] {
-            lock.unlock()
-            return try await existing.value
-        }
-
-        let task = Task<URL, Error> {
-            // Yield once so the spawning code below has a chance to publish
-            // this Task to `activeDownloads` before any cleanup can fire.
-            // Without this, a synchronously-throwing performDownload would
-            // run the defer before `activeDownloads[modelId] = task`,
-            // permanently stranding the (now-completed) Task in the map (C9).
-            await Task.yield()
-            defer {
-                lock.lock()
-                activeDownloads.removeValue(forKey: modelId)
-                lock.unlock()
+        let existingOrNew: Task<URL, Error> = lock.withLock {
+            if let existing = activeDownloads[modelId] { return existing }
+            let task = Task<URL, Error> {
+                // Yield once so the spawning code below has a chance to publish
+                // this Task to `activeDownloads` before any cleanup can fire.
+                // Without this, a synchronously-throwing performDownload would
+                // run the defer before `activeDownloads[modelId] = task`,
+                // permanently stranding the (now-completed) Task in the map (C9).
+                await Task.yield()
+                defer {
+                    lock.withLock { _ = activeDownloads.removeValue(forKey: modelId) }
+                }
+                return try await performDownload(
+                    resourceName: resourceName,
+                    from: url,
+                    expectedSha256: expectedSha256,
+                    progress: progress
+                )
             }
-            return try await performDownload(resourceName: resourceName, from: url, progress: progress)
+            activeDownloads[modelId] = task
+            return task
         }
-        activeDownloads[modelId] = task
-        lock.unlock()
-
-        return try await task.value
+        return try await existingOrNew.value
     }
 
     /// Delete a downloaded model to free space
@@ -101,19 +130,53 @@ final class ModelDownloadManager {
     private func performDownload(
         resourceName: String,
         from url: URL,
+        expectedSha256: String?,
         progress: @escaping (Double) -> Void
     ) async throws -> URL {
         NSLog("[NSFW] Downloading model: %@ from %@", resourceName, url.absoluteString)
 
-        let delegate = DownloadDelegate(onProgress: progress)
+        let delegate = DownloadDelegate(onProgress: progress,
+                                        maxBytes: Self.maxDownloadBytes)
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
 
         let (tempURL, response) = try await session.download(from: url, delegate: delegate)
+        // URLSession moves `tempURL` out from under us once this scope ends —
+        // copy to our own staging file so the post-download checks operate on
+        // a stable path even if the call site retries.
+        defer { try? FileManager.default.removeItem(at: tempURL) }
 
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw ModelDownloadError.httpError(code)
+        }
+
+        // Content-Length pre-check (defense-in-depth; the delegate also
+        // enforces a hard cap on bytes actually received in case a server
+        // lies about the header).
+        if http.expectedContentLength > 0,
+           http.expectedContentLength > Self.maxDownloadBytes {
+            throw ModelDownloadError.tooLarge(http.expectedContentLength)
+        }
+        // Confirm what landed on disk respects the cap. The delegate
+        // should have aborted earlier, but the file is the source of truth.
+        let downloadedSize = (try? FileManager.default
+            .attributesOfItem(atPath: tempURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+        if downloadedSize > Self.maxDownloadBytes {
+            throw ModelDownloadError.tooLarge(downloadedSize)
+        }
+        if delegate.aborted {
+            throw ModelDownloadError.tooLarge(downloadedSize)
+        }
+
+        // Optional pinned-hash verification. Hashing 150 MB on a modern
+        // iPhone is ~0.4 s — acceptable for a model fetch that already
+        // takes seconds.
+        if let pin = expectedSha256?.lowercased(), !pin.isEmpty {
+            let actual = try Self.sha256Hex(of: tempURL)
+            guard actual == pin else {
+                throw ModelDownloadError.integrityMismatch(expected: pin, actual: actual)
+            }
         }
 
         let destURL = modelsDirectory.appendingPathComponent("\(resourceName).mlmodelc")
@@ -123,20 +186,25 @@ final class ModelDownloadManager {
             try FileManager.default.removeItem(at: destURL)
         }
 
-        // Extract ZIP → .mlmodelc directory
+        // Extract ZIP → .mlmodelc directory. The previous version fell back
+        // to `moveItem(tempURL → destURL)` on extraction failure under the
+        // theory the download might be "already an mlmodelc". That can't
+        // work — .mlmodelc is a directory bundle, not a file, so the fallback
+        // produced a file masquerading as a bundle that CoreML later refused
+        // to load. Surface the real error instead.
         let extractDir = modelsDirectory.appendingPathComponent("_extract_\(resourceName)")
         if FileManager.default.fileExists(atPath: extractDir.path) {
             try FileManager.default.removeItem(at: extractDir)
         }
-
         do {
-            try ZipExtractor.extract(tempURL, to: extractDir)
+            try ZipExtractor.extract(tempURL,
+                                     to: extractDir,
+                                     maxTotalBytes: Self.maxExtractedBytes,
+                                     maxEntries: Self.maxArchiveEntries,
+                                     maxCompressionRatio: Self.maxCompressionRatio)
         } catch {
-            NSLog("[NSFW] ZIP extraction failed: %@, trying as raw mlmodelc", error.localizedDescription)
-            // Maybe it's already an mlmodelc directory (not zipped)
-            try FileManager.default.moveItem(at: tempURL, to: destURL)
-            progress(1.0)
-            return destURL
+            try? FileManager.default.removeItem(at: extractDir)
+            throw ModelDownloadError.extractionFailed
         }
 
         // Find the .mlmodelc inside the extracted directory
@@ -154,6 +222,20 @@ final class ModelDownloadManager {
         let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(directorySize(destURL)), countStyle: .file)
         NSLog("[NSFW] Model ready: %@ (%@)", resourceName, sizeStr)
         return destURL
+    }
+
+    /// Stream-hash a file with SHA-256. 64 KB chunks — peak memory bounded.
+    private static func sha256Hex(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while autoreleasepool(invoking: {
+            let chunk = (try? handle.read(upToCount: 65_536)) ?? Data()
+            if chunk.isEmpty { return false }
+            hasher.update(data: chunk)
+            return true
+        }) {}
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func findMLModelC(in directory: URL) throws -> URL? {
@@ -189,16 +271,30 @@ final class ModelDownloadManager {
 
 // MARK: - URLSession Download Delegate
 
-private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     let onProgress: (Double) -> Void
+    let maxBytes:   Int64
+    /// Flipped to `true` when we cancel the task for exceeding `maxBytes`.
+    /// `performDownload` checks this to distinguish a legitimate 200-byte
+    /// download from one that was cut short by us.
+    private(set) var aborted = false
 
-    init(onProgress: @escaping (Double) -> Void) {
+    init(onProgress: @escaping (Double) -> Void, maxBytes: Int64) {
         self.onProgress = onProgress
+        self.maxBytes   = maxBytes
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
+        if totalBytesWritten > maxBytes {
+            // A lying / misconfigured server can advertise a small
+            // Content-Length and stream gigabytes. Cap the actual bytes
+            // received and cancel so URLSession unwinds.
+            aborted = true
+            downloadTask.cancel()
+            return
+        }
         guard totalBytesExpectedToWrite > 0 else { return }
         let frac = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
         DispatchQueue.main.async { self.onProgress(frac) }
@@ -215,11 +311,22 @@ private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
 enum ModelDownloadError: Error, LocalizedError {
     case httpError(Int)
     case extractionFailed
+    case insecureScheme(String)
+    case tooLarge(Int64)
+    case integrityMismatch(expected: String, actual: String)
 
     var errorDescription: String? {
         switch self {
-        case .httpError(let code): return "Model download failed (HTTP \(code))"
-        case .extractionFailed: return "Failed to extract model archive"
+        case .httpError(let code):
+            return "Model download failed (HTTP \(code))"
+        case .extractionFailed:
+            return "Failed to extract model archive"
+        case .insecureScheme(let scheme):
+            return "Refusing to download model over \(scheme)://. Use https://."
+        case .tooLarge(let bytes):
+            return "Model download exceeded the \(ModelDownloadManager.maxDownloadBytes)-byte cap (\(bytes) bytes)."
+        case .integrityMismatch(let expected, let actual):
+            return "Model archive SHA-256 mismatch — expected \(expected), got \(actual)."
         }
     }
 }

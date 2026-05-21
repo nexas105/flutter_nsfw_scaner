@@ -30,7 +30,10 @@ final class VideoFrameSampler {
 
     func sample(asset: PHAsset, config: ScanConfiguration, inputSize: Int = 224) async throws -> [CVPixelBuffer] {
         let avAsset = try await loadAVAsset(for: asset)
-        let duration = avAsset.duration.seconds
+        // iOS 16 deprecated the synchronous `.duration` accessor in favour of
+        // the async `load(.duration)` API.
+        let cmDuration = try await avAsset.load(.duration)
+        let duration = cmDuration.seconds
         guard duration > 0 else { return [] }
 
         let times = computeSampleTimes(duration: duration, config: config)
@@ -128,16 +131,14 @@ final class VideoFrameSampler {
         let dedupeThreshold = Self.perceptualDedupeHammingThreshold
 
         return try await withCheckedThrowingContinuation { continuation in
-            // Synchronized access — the callback fires on an arbitrary serial queue,
-            // but multiple invocations can overlap if the generator uses >1 thread.
+            // Synchronized state — the callback fires on an arbitrary serial
+            // queue, but multiple invocations can overlap if the generator
+            // uses >1 thread. The accumulator's class-level @unchecked
+            // Sendable conformance lets the @Sendable callback capture it
+            // (CVPixelBuffer arrays aren't Sendable themselves).
+            let acc = FrameAccumulator()
             let lock = NSLock()
-            var buffers:   [CVPixelBuffer] = []
-            var completed  = 0
-            var failed     = 0
-            var skippedAsDuplicate = 0
-            var lastHash:  UInt64? = nil
-            var hasResumed = false
-            let total      = times.count
+            let total = times.count
 
             generator.generateCGImagesAsynchronously(forTimes: times) { _, cgImage, _, result, error in
                 lock.lock()
@@ -154,43 +155,56 @@ final class VideoFrameSampler {
                         }
                         // Perceptual dedupe — drop near-duplicate frames.
                         if dedupeEnabled, let hash = PerceptualHash.dHash(buffer) {
-                            if let prev = lastHash,
+                            if let prev = acc.lastHash,
                                PerceptualHash.hammingDistance(prev, hash) <= dedupeThreshold {
-                                skippedAsDuplicate += 1
+                                acc.skippedAsDuplicate += 1
                             } else {
-                                lastHash = hash
-                                buffers.append(buffer)
+                                acc.lastHash = hash
+                                acc.buffers.append(buffer)
                             }
                         } else {
-                            buffers.append(buffer)
+                            acc.buffers.append(buffer)
                         }
                     } else {
-                        failed += 1
+                        acc.failed += 1
                     }
                 case .failed:
-                    failed += 1
+                    acc.failed += 1
                     if let e = error {
                         NSLog("[NSFW] VideoFrameSampler: frame failed: %@", e.localizedDescription)
                     }
                 case .cancelled:
-                    failed += 1
+                    acc.failed += 1
                 @unknown default:
-                    failed += 1
+                    acc.failed += 1
                 }
 
-                completed += 1
-                if completed == total && !hasResumed {
-                    hasResumed = true
-                    if buffers.isEmpty && failed == total {
+                acc.completed += 1
+                if acc.completed == total && !acc.hasResumed {
+                    acc.hasResumed = true
+                    if acc.buffers.isEmpty && acc.failed == total {
                         NSLog("[NSFW] VideoFrameSampler: all %d frames failed", total)
                     }
-                    if skippedAsDuplicate > 0 {
+                    if acc.skippedAsDuplicate > 0 {
                         NSLog("[NSFW] VideoFrameSampler: dedupe skipped %d/%d frames",
-                              skippedAsDuplicate, total)
+                              acc.skippedAsDuplicate, total)
                     }
-                    continuation.resume(returning: buffers)
+                    continuation.resume(returning: acc.buffers)
                 }
             }
         }
     }
+}
+
+/// Mutable per-call accumulator for `extractFrames`'s @Sendable callback.
+/// Class-level `@unchecked Sendable` lets the closure capture the reference
+/// without tripping Swift 6 strict-concurrency on the non-Sendable element
+/// type (`CVPixelBuffer`). Access is serialised externally via `NSLock`.
+private final class FrameAccumulator: @unchecked Sendable {
+    var buffers: [CVPixelBuffer] = []
+    var completed = 0
+    var failed = 0
+    var skippedAsDuplicate = 0
+    var lastHash: UInt64? = nil
+    var hasResumed = false
 }

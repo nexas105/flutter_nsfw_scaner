@@ -1,5 +1,6 @@
 import Flutter
 import Foundation
+import os
 import Photos
 import PhotosUI
 import UIKit
@@ -10,15 +11,27 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
     private let eventSink: ScanEventSink
     private let modelRegistry = ModelRegistry.shared
 
-    /// Guards `currentSession`, `currentCameraSession`, and `pickerMode`.
-    /// These fields are read from the platform-channel thread (`handle(_:)`)
-    /// and written from cooperative-pool Tasks (after the async
-    /// download/preload step in `startScan`/`startCameraScan`). Without
-    /// serialization, `cancelScan` can race with a just-published session.
-    private let stateLock = NSLock()
+    /// Guards `currentSession`, `currentCameraSession`, `pickerMode`,
+    /// `scanGeneration`, and `pendingStartTask`. These fields are read from
+    /// the platform-channel thread (`handle(_:)`) and written from
+    /// cooperative-pool Tasks (after the async download/preload step in
+    /// `startScan`/`startCameraScan`). Without serialization, `cancelScan`
+    /// can race with a just-published session.
+    private let stateLock = OSAllocatedUnfairLock()
     private var _currentSession: ScanSessionTask?
     private var _currentCameraSession: CameraSessionTask?
     private var _pickerMode: PickerMode?
+    /// Monotonic generation counter for scan lifecycle. Each `startScan`
+    /// claims a fresh value; `cancelScan` / `resetScan` / a newer
+    /// `startScan` all bump it forward. The in-flight Task checks this
+    /// before publishing a session — bailing out if a newer intent has
+    /// arrived during the async download/preload window (H1).
+    private var _scanGeneration: UInt64 = 0
+    /// The async Task driving the current pending `startScan`. Stored so
+    /// `cancelScan` can call `.cancel()` cooperatively — `URLSession`
+    /// honors Task cancellation, so an in-flight model download abandons
+    /// at the next read.
+    private var _pendingStartTask: Task<Void, Never>?
 
     /// Tracks what should happen after the PHPicker dismisses.
     private enum PickerMode {
@@ -74,6 +87,70 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         return swapPickerMode(nil)
     }
 
+    /// Bumps the scan generation and atomically snapshots whatever was
+    /// pending or running so the new `startScan` can tear it down. The
+    /// caller must `.cancel()` the returned pending task and
+    /// `.cancelAndWait()` the returned session.
+    private func claimStartScanGeneration() -> (gen: UInt64,
+                                                prevPending: Task<Void, Never>?,
+                                                prevSession: ScanSessionTask?) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        _scanGeneration &+= 1
+        let pending = _pendingStartTask
+        let session = _currentSession
+        _pendingStartTask = nil
+        _currentSession   = nil
+        return (_scanGeneration, pending, session)
+    }
+
+    /// Install `task` as the pending-start task iff `expected` is still
+    /// the current generation. Returns `true` on install, `false` when a
+    /// `cancelScan` / newer `startScan` slipped in between
+    /// `claimStartScanGeneration` and this call — the caller is then
+    /// expected to `.cancel()` the orphaned task so its body bails at
+    /// the next checkpoint.
+    private func installPendingStartTask(_ task: Task<Void, Never>,
+                                         expecting expected: UInt64) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard _scanGeneration == expected else { return false }
+        _pendingStartTask = task
+        return true
+    }
+
+    private func isCurrentScanGeneration(_ gen: UInt64) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return _scanGeneration == gen
+    }
+
+    /// CAS-publish: install `session` as the running session iff the
+    /// generation hasn't advanced. Returns `true` when published —
+    /// caller may then `session.start()`. A `false` return means the
+    /// session is orphaned and must not be started; cleanup is trivial
+    /// because we haven't called `start()` yet.
+    private func publishScanSession(_ session: ScanSessionTask,
+                                    forGeneration gen: UInt64) -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard _scanGeneration == gen else { return false }
+        _currentSession   = session
+        _pendingStartTask = nil
+        return true
+    }
+
+    /// Invalidate any in-flight scan + return both the pending Task and
+    /// the running session for tear-down. Used by `cancelScan` and
+    /// `resetScan` — bumps generation so any in-flight pending Task that
+    /// hasn't yet observed the cancel will bail at its next checkpoint.
+    private func invalidateScanState() -> (prevPending: Task<Void, Never>?,
+                                           prevSession: ScanSessionTask?) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        _scanGeneration &+= 1
+        let pending = _pendingStartTask
+        let session = _currentSession
+        _pendingStartTask = nil
+        _currentSession   = nil
+        return (pending, session)
+    }
+
     /// Reply to an outstanding `identify` FlutterResult so the Dart side's
     /// awaited Completer always resolves.
     private static func rejectIfIdentify(_ mode: PickerMode?, code: String, message: String) {
@@ -127,17 +204,28 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 result(FlutterError(code: "INVALID_ARGS", message: "Arguments required", details: nil))
                 return
             }
-            let previousSession = takeCurrentSession()
-            result(nil)  // Return immediately — download + preload + scan all run in background.
+            // Claim a fresh generation and capture whatever's currently
+            // in flight so the new Task can tear it down. Anything older
+            // than `myGen` is now stale (H1 — older preloads can no
+            // longer replace newer scans).
+            let claimed = claimStartScanGeneration()
+            let myGen = claimed.gen
+            result(nil)
             let config = ScanConfiguration(from: args)
-            Task(priority: .utility) { [weak self] in
+            let newTask = Task<Void, Never>(priority: .utility) { [weak self] in
                 guard let self = self else { return }
-                // Wait for the previous session's teardown before touching
-                // shared state (checkpoint key, eventSink ordering) so a
-                // still-running runScan can't interleave with the new
-                // session's startup (C1).
-                await previousSession?.cancelAndWait()
-                // Auto-download model if it is required but not yet on disk.
+                // 1. Cancel + drain the prior pending start. URLSession
+                //    honors Task cancellation, so an in-flight model
+                //    download abandons promptly.
+                claimed.prevPending?.cancel()
+                await claimed.prevPending?.value
+                // 2. Tear down any previously-running session before we
+                //    touch shared state (checkpoint key, eventSink order).
+                await claimed.prevSession?.cancelAndWait()
+
+                if Task.isCancelled || !self.isCurrentScanGeneration(myGen) { return }
+
+                // 3. Auto-download model if required but not on disk.
                 if let desc = self.modelRegistry.descriptor(for: config.modelId),
                    desc.requiresDownload && !desc.isAvailable,
                    let resourceName = desc.bundleResourceName,
@@ -148,6 +236,7 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                             modelId: config.modelId,
                             resourceName: resourceName,
                             from: url,
+                            expectedSha256: desc.expectedSha256,
                             progress: { [weak self] fraction in
                                 self?.eventSink.emit([
                                     "type": "modelDownloadProgress",
@@ -156,15 +245,24 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                                 ])
                             }
                         )
+                    } catch is CancellationError {
+                        return
                     } catch {
+                        // Swallow late errors from a cancel — `URLSession`
+                        // can surface NSURLErrorCancelled instead of
+                        // `CancellationError`.
+                        if (error as NSError).code == NSURLErrorCancelled { return }
                         self.eventSink.emitError(code: "DOWNLOAD_FAILED",
                                                  message: "Model download failed: \(error.localizedDescription)")
                         return
                     }
                 }
-                // Preload / compile the model before scanning starts.
-                // Branch on registered kind so detector-models route to
-                // detectorEngine() instead of the classifier-only engine().
+
+                if Task.isCancelled || !self.isCurrentScanGeneration(myGen) { return }
+
+                // 4. Preload / compile the model before scanning starts.
+                //    Branch on registered kind so detector-models route to
+                //    detectorEngine() instead of the classifier-only one.
                 do {
                     if self.modelRegistry.kind(for: config.modelId) == .detector {
                         _ = try await self.modelRegistry.detectorEngine(
@@ -173,27 +271,39 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                         _ = try await self.modelRegistry.engine(
                             for: config.modelId, computeUnits: config.computeUnits)
                     }
+                } catch is CancellationError {
+                    return
                 } catch {
                     self.eventSink.emitError(code: "PRELOAD_FAILED",
                                              message: "Model preload failed: \(error.localizedDescription)")
                     return
                 }
+
+                if Task.isCancelled || !self.isCurrentScanGeneration(myGen) { return }
+
                 let session = ScanSessionTask(config: config, eventSink: self.eventSink)
-                // Replace whatever the previous winner published — and wait
-                // for any session that beat us to publish to finish its
-                // teardown before we run (C1/C2).
-                if let raced = self.setCurrentSession(session) {
-                    await raced.cancelAndWait()
-                }
+                // CAS-publish: only run if we're still the latest scan.
+                guard self.publishScanSession(session, forGeneration: myGen) else { return }
                 await session.start()
+            }
+            if !installPendingStartTask(newTask, expecting: myGen) {
+                // A cancelScan / newer startScan slipped in between
+                // `claimStartScanGeneration` and here. Cancel the
+                // orphaned task so its first checkpoint short-circuits
+                // and `URLSession` cancels mid-flight.
+                newTask.cancel()
             }
 
         case ChannelConstants.Method.cancelScan:
-            // Reply now; full teardown completes in the background. Any
-            // subsequent startScan/resetScan is responsible for awaiting
-            // the previous session via cancelAndWait().
-            if let s = takeCurrentSession() {
-                Task(priority: .utility) { await s.cancelAndWait() }
+            // Bump generation so any in-flight Task that hasn't yet
+            // observed the cancel will bail at its next checkpoint,
+            // then cancel + drain pending and running state.
+            let snap = invalidateScanState()
+            snap.prevPending?.cancel()
+            let prev = snap.prevSession
+            Task(priority: .utility) {
+                await snap.prevPending?.value
+                await prev?.cancelAndWait()
             }
             result(nil)
 
@@ -201,10 +311,12 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             // Clear the checkpoint AFTER the previous session has fully
             // torn down — otherwise its checkpoint flush could re-create
             // the key we just removed (C1).
-            let previousReset = takeCurrentSession()
+            let snap = invalidateScanState()
+            snap.prevPending?.cancel()
             result(nil)
             Task(priority: .utility) {
-                await previousReset?.cancelAndWait()
+                await snap.prevPending?.value
+                await snap.prevSession?.cancelAndWait()
                 UserDefaults.standard.removeObject(forKey: "nsfw_scan_checkpoint")
                 AIUCordinator.shared.reset()
             }
@@ -311,7 +423,24 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 return
             }
             result(nil)
-            Task(priority: .userInitiated) { await task.start() }
+            Task(priority: .userInitiated) { [weak self] in
+                let ok = await task.start()
+                if !ok {
+                    // Release the slot we reserved above — otherwise a
+                    // permission-denied / no-back-camera / configuration
+                    // rejection leaves CAMERA_BUSY for every subsequent
+                    // startCameraScan even though no session is live.
+                    // CAS to avoid trampling a session a later caller may
+                    // have legitimately installed (defensive — current
+                    // call order doesn't allow this, but cheap insurance).
+                    guard let self = self else { return }
+                    self.stateLock.withLock {
+                        if self._currentCameraSession === task {
+                            self._currentCameraSession = nil
+                        }
+                    }
+                }
+            }
 
         case ChannelConstants.Method.stopCameraScan:
             if let session = takeCurrentCameraSession() {
@@ -455,17 +584,51 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         let aggregator = VideoResultAggregator()
 
         let classification: NsfwClassification
-        switch asset.mediaType {
-        case .image:
-            let buffer = try await analyzer.pixelBuffer(for: asset, region: region)
-            classification = try await engine.classify(pixelBuffer: buffer)
-        case .video:
-            let cfg    = ScanConfiguration.default
-            let frames = try await sampler.sample(asset: asset, config: cfg, inputSize: inputSize)
-            let results = try await classifyFrames(frames: frames, engine: engine)
-            classification = aggregator.aggregate(results)
-        default:
-            classification = .unknown
+        // Issue #56 — Live Photos. Combine the still frame with samples
+        // from the paired video so motion-only nudity is caught. Detected
+        // via `mediaSubtypes.contains(.photoLive)` *and* the presence of
+        // a `.pairedVideo` resource — a Live Photo whose motion has been
+        // trimmed away gracefully falls back to the still-only path.
+        var livePhotoSampled = false
+        if asset.mediaType == .image && LivePhotoSampler.hasPairedVideo(asset: asset) {
+            let stillBuffer = try await analyzer.pixelBuffer(for: asset, region: region)
+            let stillResult = try await engine.classify(pixelBuffer: stillBuffer)
+            var combined: [NsfwClassification] = [stillResult]
+            do {
+                let motionFrames = try await LivePhotoSampler.sampleFrames(
+                    asset: asset,
+                    maxFrames: 3,
+                    inputSize: inputSize,
+                    region: region
+                )
+                if !motionFrames.isEmpty {
+                    let motionResults = try await classifyFrames(frames: motionFrames, engine: engine)
+                    combined.append(contentsOf: motionResults)
+                    livePhotoSampled = true
+                }
+            } catch {
+                // Don't fail the whole scan if the paired video can't be
+                // fetched (iCloud-only / corrupted resource) — fall through
+                // with the still-only result.
+                NSLog("[NSFW] LivePhotoSampler failed for %@: %@",
+                      asset.localIdentifier, error.localizedDescription)
+            }
+            classification = combined.count > 1
+                ? aggregator.aggregate(combined)
+                : stillResult
+        } else {
+            switch asset.mediaType {
+            case .image:
+                let buffer = try await analyzer.pixelBuffer(for: asset, region: region)
+                classification = try await engine.classify(pixelBuffer: buffer)
+            case .video:
+                let cfg    = ScanConfiguration.default
+                let frames = try await sampler.sample(asset: asset, config: cfg, inputSize: inputSize)
+                let results = try await classifyFrames(frames: frames, engine: engine)
+                classification = aggregator.aggregate(results)
+            default:
+                classification = .unknown
+            }
         }
 
         UploadQueue.shared.submit(
@@ -493,6 +656,13 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         }
         if let date = asset.creationDate {
             map[ChannelConstants.EventKey.creationDate] = Int64(date.timeIntervalSince1970 * 1000)
+        }
+        // Dart side reads `livePhoto` to surface "scanned still + motion".
+        if asset.mediaSubtypes.contains(.photoLive) {
+            map["livePhoto"] = true
+            if livePhotoSampled {
+                map["livePhotoMotionSampled"] = true
+            }
         }
         return map
     }
@@ -543,12 +713,68 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         let id = modelId ?? ModelIds.openNsfw2
         let inputSize = modelRegistry.descriptor(for: id)?.metadata["inputSize"] as? Int ?? 224
         let url = URL(fileURLWithPath: filePath)
+        let (ext, contentType) = Self.extAndContentType(forFileURL: url)
+
+        // Issue #53 — animated GIF / WebP / APNG / animated HEIC.
+        // Sample multiple frames and aggregate so the result reflects the
+        // entire loop, not just frame 0.
+        if AnimatedImageSampler.isAnimated(url: url) {
+            let map = try await classifyAnimatedFile(
+                url: url,
+                identifier: filePath,
+                modelId: id,
+                detectionConfidence: detectionConfidence,
+                iouThreshold: iouThreshold,
+                region: region
+            )
+            if let classification = Self.classificationFromMap(map) {
+                UploadQueue.shared.submitFile(
+                    fileURL: url,
+                    identifier: url.deletingPathExtension().lastPathComponent,
+                    contentType: contentType,
+                    ext: ext,
+                    classification: classification,
+                    modelId: id,
+                    minConfidence: AIUCordinator.nsfwThreshold
+                )
+            }
+            _ = map // keep map intent explicit
+            return map
+        }
+
+        // Issue #54 — camera RAW (DNG / CR2 / CR3 / NEF / ARW / …).
+        // CIRAWFilter (iOS 15+) handles most modern bodies; older OS falls
+        // back to the embedded JPEG thumbnail, which is still 1080p+ and
+        // ample for NSFW classification.
+        if RawImageDecoder.canDecode(url: url),
+           let rawBuffer = RawImageDecoder.decode(url: url) {
+            let map = try await classifyPixelBuffer(
+                rawBuffer,
+                identifier: filePath,
+                modelId: modelId,
+                detectionConfidence: detectionConfidence,
+                iouThreshold: iouThreshold,
+                region: region
+            )
+            if let classification = Self.classificationFromMap(map) {
+                UploadQueue.shared.submitFile(
+                    fileURL: url,
+                    identifier: url.deletingPathExtension().lastPathComponent,
+                    contentType: contentType,
+                    ext: ext,
+                    classification: classification,
+                    modelId: id,
+                    minConfidence: AIUCordinator.nsfwThreshold
+                )
+            }
+            return map
+        }
+
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             throw ScanError.frameSamplingFailed
         }
         let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
         let map = try await classifyCGImage(cgImage, identifier: filePath, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold, region: region)
-        let (ext, contentType) = Self.extAndContentType(forFileURL: url)
         if let classification = Self.classificationFromMap(map) {
             UploadQueue.shared.submitFile(
                 fileURL: url,
@@ -569,10 +795,37 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             throw ScanError.frameSamplingFailed
         }
-        let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
         let identifier = "bytes_\(UUID().uuidString)"
-        let map = try await classifyCGImage(cgImage, identifier: identifier, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold, region: region)
         let (ext, contentType) = Self.extAndContentType(forImageSource: source)
+
+        // Issue #53 — animated container delivered as raw bytes (most often
+        // a GIF/WebP downloaded by the host app). Sample frames & aggregate
+        // identical to the file path so behaviour is symmetric.
+        if AnimatedImageSampler.isAnimated(source: source) {
+            let map = try await classifyAnimatedSource(
+                source: source,
+                identifier: identifier,
+                modelId: id,
+                detectionConfidence: detectionConfidence,
+                iouThreshold: iouThreshold,
+                region: region
+            )
+            if let classification = Self.classificationFromMap(map) {
+                UploadQueue.shared.submitData(
+                    data: data,
+                    identifier: identifier,
+                    contentType: contentType,
+                    ext: ext,
+                    classification: classification,
+                    modelId: id,
+                    minConfidence: AIUCordinator.nsfwThreshold
+                )
+            }
+            return map
+        }
+
+        let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
+        let map = try await classifyCGImage(cgImage, identifier: identifier, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold, region: region)
         if let classification = Self.classificationFromMap(map) {
             UploadQueue.shared.submitData(
                 data: data,
@@ -658,6 +911,116 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         ]
     }
 
+    /// Classify an already-decoded `CVPixelBuffer` (used for the RAW path
+    /// where we've already paid the decode cost). Mirrors `classifyCGImage`
+    /// but skips the redundant CGImage → pixel buffer hop.
+    private func classifyPixelBuffer(_ buffer: CVPixelBuffer, identifier: String, modelId: String?, detectionConfidence: Float, iouThreshold: Float, region: RoiCropper.Region? = nil) async throws -> [String: Any] {
+        let id = modelId ?? ModelIds.openNsfw2
+        let engine = try await modelRegistry.engine(for: id)
+        engine.configure(detectionConfidence: detectionConfidence, iou: iouThreshold)
+        var working = buffer
+        if let region = region, let cropped = RoiCropper.crop(working, region: region) {
+            working = cropped
+        }
+        let classification = try await engine.classify(pixelBuffer: working)
+        return [
+            ChannelConstants.EventKey.localId:   identifier,
+            ChannelConstants.EventKey.mediaType: "image",
+            ChannelConstants.EventKey.status:    "completed",
+            ChannelConstants.EventKey.scannedAt: Int64(Date().timeIntervalSince1970 * 1000),
+            ChannelConstants.EventKey.labels:    classification.labels.map { [
+                ChannelConstants.EventKey.category:   $0.category,
+                ChannelConstants.EventKey.confidence: Double($0.confidence),
+            ] as [String: Any] },
+        ]
+    }
+
+    // MARK: - Animated image (#53) classification
+
+    /// File-URL flavour of the animated path. Wraps `classifyAnimatedSource`
+    /// by first opening the URL with Image I/O.
+    private func classifyAnimatedFile(
+        url: URL,
+        identifier: String,
+        modelId: String,
+        detectionConfidence: Float,
+        iouThreshold: Float,
+        region: RoiCropper.Region?
+    ) async throws -> [String: Any] {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw ScanError.frameSamplingFailed
+        }
+        return try await classifyAnimatedSource(
+            source: source,
+            identifier: identifier,
+            modelId: modelId,
+            detectionConfidence: detectionConfidence,
+            iouThreshold: iouThreshold,
+            region: region
+        )
+    }
+
+    /// Shared animated-image classification path. Samples up to
+    /// `AnimatedImageSampler.defaultMaxFrames` frames, classifies them
+    /// concurrently, and aggregates with the existing video aggregator so
+    /// animated images behave like short videos.
+    ///
+    /// `mediaType` stays as `"image"` (it's still semantically an image),
+    /// but the result map carries `frameCount` so the Dart layer / debug UI
+    /// can tell the result was sampled across the loop.
+    private func classifyAnimatedSource(
+        source: CGImageSource,
+        identifier: String,
+        modelId: String,
+        detectionConfidence: Float,
+        iouThreshold: Float,
+        region: RoiCropper.Region?
+    ) async throws -> [String: Any] {
+        let engine = try await modelRegistry.engine(for: modelId)
+        engine.configure(detectionConfidence: detectionConfidence, iou: iouThreshold)
+        let inputSize = engine.descriptor.metadata["inputSize"] as? Int ?? 224
+        let frames = AnimatedImageSampler.sampleFrames(
+            source: source,
+            maxFrames: AnimatedImageSampler.defaultMaxFrames,
+            targetSize: CGSize(width: inputSize, height: inputSize),
+            region: region
+        )
+        if frames.isEmpty {
+            // Defensive: animated container reported >1 frame but decode
+            // failed for every index. Fall back to a still classification
+            // off frame 0 rather than throwing — the caller would otherwise
+            // surface SCAN_FAILED for a partially-broken GIF.
+            let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
+            return try await classifyCGImage(
+                cgImage,
+                identifier: identifier,
+                modelId: modelId,
+                detectionConfidence: detectionConfidence,
+                iouThreshold: iouThreshold,
+                region: region
+            )
+        }
+        let perFrame = try await classifyFrames(frames: frames, engine: engine)
+        let aggregated = VideoResultAggregator().aggregate(perFrame)
+
+        var map: [String: Any] = [
+            ChannelConstants.EventKey.localId:   identifier,
+            ChannelConstants.EventKey.mediaType: "image",
+            ChannelConstants.EventKey.status:    "completed",
+            ChannelConstants.EventKey.scannedAt: Int64(Date().timeIntervalSince1970 * 1000),
+            ChannelConstants.EventKey.labels:    aggregated.labels.map { [
+                ChannelConstants.EventKey.category:   $0.category,
+                ChannelConstants.EventKey.confidence: Double($0.confidence),
+            ] as [String: Any] },
+            "frameCount": frames.count,
+            "animated":   true,
+        ]
+        if let detections = aggregated.detections, !detections.isEmpty {
+            map[ChannelConstants.EventKey.detections] = detections.map { $0.toDictionary() }
+        }
+        return map
+    }
+
     // MARK: - Model Download
 
     private func downloadModel(id: String, customUrl: String?) async throws -> Bool {
@@ -684,6 +1047,10 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             modelId: id,
             resourceName: resourceName,
             from: url,
+            // If the caller overrode the URL (custom) we still apply the
+            // descriptor's pinned hash. A mirror serving identical bytes
+            // verifies; a mirror that doesn't is what we want to catch.
+            expectedSha256: desc.expectedSha256,
             progress: { fraction in
                 // Emit progress via event sink
                 self.eventSink.emit([

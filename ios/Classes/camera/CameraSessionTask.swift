@@ -9,7 +9,12 @@ import Foundation
 /// IOS-CAM-01 lands the start lifecycle: permission gate, device input,
 /// session preset selection. IOS-CAM-02 attaches `AVCaptureVideoDataOutput`.
 /// IOS-CAM-08 adds `stop()`.
-final class CameraSessionTask: NSObject {
+/// Thread-safety: all mutable state (`session`, `videoOutput`, `deviceInput`,
+/// `isRunning`) is mutated exclusively on `outputQueue`. The published
+/// session-preview hop runs on `MainActor`. `@unchecked Sendable` is correct
+/// because the queue+actor discipline replaces what the type system would
+/// otherwise check.
+final class CameraSessionTask: NSObject, @unchecked Sendable {
 
     private let config: CameraConfiguration
     private let eventSink: ScanEventSink
@@ -31,23 +36,38 @@ final class CameraSessionTask: NSObject {
 
     // MARK: - Lifecycle
 
-    func start() async {
-        // Permission gate — IOS-CAM-07. Bails silently after emitting the
-        // appropriate stream event if the host can't (or won't) grant access.
-        guard await ensureCameraAuthorized() else { return }
+    /// Returns `true` once the session is running and ready to deliver
+    /// sample buffers. Returns `false` when the camera could not be brought
+    /// up (permission denied, no back camera, configuration rejected) —
+    /// the caller is expected to release the slot it reserved in
+    /// `ScanMethodHandler.startCameraScan` so a future call can succeed.
+    /// An appropriate error event has already been emitted by the time this
+    /// returns false; the caller does NOT need to surface a second one.
+    @discardableResult
+    func start() async -> Bool {
+        // Permission gate — IOS-CAM-07. Bails after emitting the appropriate
+        // stream event if the host can't (or won't) grant access.
+        guard await ensureCameraAuthorized() else { return false }
 
         // Configure AND start on the dedicated output queue. Apple's docs
         // require `startRunning` to share the queue used for
         // `beginConfiguration`/`commitConfiguration`; running it off-queue
         // races with `removeInput/removeOutput` during stop() (H11).
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+        let configured: Bool = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             outputQueue.async { [weak self] in
-                guard let self = self else { cont.resume(); return }
-                self.configureSession()
-                self.session.startRunning()
-                self.isRunning = true
-                cont.resume()
+                guard let self = self else { cont.resume(returning: false); return }
+                let ok = self.configureSession()
+                if ok {
+                    self.session.startRunning()
+                    self.isRunning = true
+                }
+                cont.resume(returning: ok)
             }
+        }
+
+        guard configured else {
+            // No need to publish the session for preview — it's not live.
+            return false
         }
 
         // WIDGET-01 cross-phase contract — publish the configured session so
@@ -58,6 +78,7 @@ final class CameraSessionTask: NSObject {
         await MainActor.run {
             CameraPreviewRegistry.shared.set(session: publishedSession)
         }
+        return true
     }
 
     /// Tear down the capture session, release the device input, drain any
@@ -98,7 +119,12 @@ final class CameraSessionTask: NSObject {
         await processor.drainInflight(timeoutMs: 2000)
     }
 
-    private func configureSession() {
+    /// Returns `true` when a device input was successfully added and the
+    /// session is ready for `startRunning()`; `false` otherwise. The caller
+    /// MUST NOT call `startRunning()` when this returns `false` — doing so
+    /// flips `isRunning` to true with no live input, leaving the camera slot
+    /// permanently squatted in `ScanMethodHandler`.
+    private func configureSession() -> Bool {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
@@ -122,14 +148,20 @@ final class CameraSessionTask: NSObject {
                 ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
                 ChannelConstants.EventKey.message:   "No camera device available for position .back",
             ])
-            return
+            return false
         }
-        if session.canAddInput(input) {
-            session.addInput(input)
-            deviceInput = input
+        guard session.canAddInput(input) else {
+            eventSink.emit([
+                ChannelConstants.EventKey.eventType: ChannelConstants.EventType.cameraError,
+                ChannelConstants.EventKey.message:   "Camera input rejected by capture session",
+            ])
+            return false
         }
+        session.addInput(input)
+        deviceInput = input
 
         attachVideoDataOutput()  // IOS-CAM-02 fills this in.
+        return true
     }
 
     /// Maps Dart `CameraResolution` → `AVCaptureSession.Preset`, then bumps

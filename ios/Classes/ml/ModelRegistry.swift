@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 typealias MLEngineFactory          = (ModelDescriptorNative) -> MLEngine
 typealias MLDetectorEngineFactory  = (ModelDescriptorNative) -> MLDetectorEngine
@@ -24,7 +25,7 @@ final class ModelRegistry {
     private var kinds:       [String: ModelKind]             = [:]
     private var loaded:      [String: MLEngine]              = [:]
     private var loadedDetectors: [String: MLDetectorEngine]  = [:]
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
 
     // MARK: - Registration
 
@@ -32,10 +33,11 @@ final class ModelRegistry {
         descriptor: ModelDescriptorNative,
         factory: @escaping MLEngineFactory
     ) {
-        lock.lock(); defer { lock.unlock() }
-        descriptors[descriptor.id] = descriptor
-        factories[descriptor.id]   = factory
-        kinds[descriptor.id]       = .classifier
+        lock.withLock {
+            descriptors[descriptor.id] = descriptor
+            factories[descriptor.id]   = factory
+            kinds[descriptor.id]       = .classifier
+        }
     }
 
     /// Register an object-detection (`MLDetectorEngine`) model. The descriptor
@@ -46,27 +48,25 @@ final class ModelRegistry {
         detectorDescriptor descriptor: ModelDescriptorNative,
         factory: @escaping MLDetectorEngineFactory
     ) {
-        lock.lock(); defer { lock.unlock() }
-        descriptors[descriptor.id]       = descriptor
-        detectorFactories[descriptor.id] = factory
-        kinds[descriptor.id]             = .detector
+        lock.withLock {
+            descriptors[descriptor.id]       = descriptor
+            detectorFactories[descriptor.id] = factory
+            kinds[descriptor.id]             = .detector
+        }
     }
 
     func allDescriptors() -> [ModelDescriptorNative] {
-        lock.lock(); defer { lock.unlock() }
-        return Array(descriptors.values)
+        lock.withLock { Array(descriptors.values) }
     }
 
     func descriptor(for id: String) -> ModelDescriptorNative? {
-        lock.lock(); defer { lock.unlock() }
-        return descriptors[id]
+        lock.withLock { descriptors[id] }
     }
 
     /// Returns whether `id` is registered as a classifier or detector model.
     /// `nil` if the id is unknown.
     func kind(for id: String) -> ModelKind? {
-        lock.lock(); defer { lock.unlock() }
-        return kinds[id]
+        lock.withLock { kinds[id] }
     }
 
     // MARK: - Access
@@ -79,39 +79,40 @@ final class ModelRegistry {
     /// If a cached engine exists with a different `loadedComputeUnits`, it is
     /// unloaded and recreated so the new preference takes effect.
     func engine(for id: String, computeUnits: ComputeUnitsPreference) async throws -> MLEngine {
-        lock.lock()
-        if let cached = loaded[id] {
-            if cached.loadedComputeUnits == computeUnits {
-                lock.unlock()
-                return cached
-            }
-            // Mismatch → drop cached engine and rebuild below.
+        // 1) Hit the cache, or evict on compute-units mismatch.
+        let cachedHit = lock.withLock { () -> MLEngine? in
+            guard let cached = loaded[id] else { return nil }
+            if cached.loadedComputeUnits == computeUnits { return cached }
             loaded.removeValue(forKey: id)
-            lock.unlock()
-            cached.unload()
-            lock.lock()
+            return nil
+        }
+        if let cached = cachedHit { return cached }
+
+        // Note: an evicted-but-cached engine that we just dropped from the
+        // dictionary is unloaded below by whoever held the reference. The
+        // explicit `cached.unload()` was racy with concurrent callers and is
+        // not strictly needed — `MLEngine.deinit` runs unload itself.
+
+        // 2) Resolve factory + descriptor.
+        let (factory, descriptor): (MLEngineFactory, ModelDescriptorNative) = try lock.withLock {
+            guard let f = factories[id], let d = descriptors[id] else {
+                throw MLEngineError.modelNotFound(id)
+            }
+            return (f, d)
         }
 
-        guard let factory    = factories[id],
-              let descriptor = descriptors[id] else {
-            lock.unlock()
-            throw MLEngineError.modelNotFound(id)
-        }
-        lock.unlock()
-
-        // Check if download required
+        // 3) Refuse load when the asset isn't on disk yet.
         if descriptor.requiresDownload && !descriptor.isAvailable {
             throw MLEngineError.modelNotDownloaded(id)
         }
 
+        // 4) Build + load OUTSIDE the lock (CoreML compile can take seconds).
         let engine = factory(descriptor)
         engine.setPreferredComputeUnits(computeUnits)
         try await engine.load()
 
-        lock.lock()
-        loaded[id] = engine
-        lock.unlock()
-
+        // 5) Publish.
+        lock.withLock { loaded[id] = engine }
         return engine
     }
 
@@ -127,24 +128,20 @@ final class ModelRegistry {
     /// classifier path: cache by id, evict on compute-units mismatch, refuse
     /// to instantiate for an undownloaded model.
     func detectorEngine(for id: String, computeUnits: ComputeUnitsPreference = .all) async throws -> MLDetectorEngine {
-        lock.lock()
-        if let cached = loadedDetectors[id] {
-            if cached.loadedComputeUnits == computeUnits {
-                lock.unlock()
-                return cached
-            }
+        let cachedHit = lock.withLock { () -> MLDetectorEngine? in
+            guard let cached = loadedDetectors[id] else { return nil }
+            if cached.loadedComputeUnits == computeUnits { return cached }
             loadedDetectors.removeValue(forKey: id)
-            lock.unlock()
-            cached.unload()
-            lock.lock()
+            return nil
         }
+        if let cached = cachedHit { return cached }
 
-        guard let factory    = detectorFactories[id],
-              let descriptor = descriptors[id] else {
-            lock.unlock()
-            throw MLEngineError.modelNotFound(id)
+        let (factory, descriptor): (MLDetectorEngineFactory, ModelDescriptorNative) = try lock.withLock {
+            guard let f = detectorFactories[id], let d = descriptors[id] else {
+                throw MLEngineError.modelNotFound(id)
+            }
+            return (f, d)
         }
-        lock.unlock()
 
         if descriptor.requiresDownload && !descriptor.isAvailable {
             throw MLEngineError.modelNotDownloaded(id)
@@ -154,30 +151,39 @@ final class ModelRegistry {
         engine.setPreferredComputeUnits(computeUnits)
         try await engine.load()
 
-        lock.lock()
-        loadedDetectors[id] = engine
-        lock.unlock()
-
+        lock.withLock { loadedDetectors[id] = engine }
         return engine
     }
 
+    /// Inspect-only: returns the compute-units the engine for `id` is
+    /// currently loaded with, or `nil` if it isn't loaded yet. Does NOT
+    /// trigger a load — used by the method-channel `getComputeUnits`
+    /// diagnostic (Task #20).
+    func currentComputeUnits(for id: String) -> ComputeUnitsPreference? {
+        lock.withLock {
+            if let engine = loaded[id]          { return engine.loadedComputeUnits }
+            if let det    = loadedDetectors[id] { return det.loadedComputeUnits }
+            return nil
+        }
+    }
+
     func unloadAll() {
-        lock.lock()
-        let classifiers = Array(loaded.values)
-        let detectors   = Array(loadedDetectors.values)
-        loaded.removeAll()
-        loadedDetectors.removeAll()
-        lock.unlock()
+        let (classifiers, detectors): ([MLEngine], [MLDetectorEngine]) = lock.withLock {
+            let c = Array(loaded.values)
+            let d = Array(loadedDetectors.values)
+            loaded.removeAll()
+            loadedDetectors.removeAll()
+            return (c, d)
+        }
         classifiers.forEach { $0.unload() }
         detectors.forEach   { $0.unload() }
     }
 
     /// Unload a specific model to free memory (e.g. before loading a different one)
     func unload(_ id: String) {
-        lock.lock()
-        let cls = loaded.removeValue(forKey: id)
-        let det = loadedDetectors.removeValue(forKey: id)
-        lock.unlock()
+        let (cls, det) = lock.withLock {
+            (loaded.removeValue(forKey: id), loadedDetectors.removeValue(forKey: id))
+        }
         cls?.unload()
         det?.unload()
     }
@@ -254,27 +260,24 @@ final class ModelRegistry {
     /// Call this before the model is needed.
     func setModelDownloadUrl(_ url: String, for modelId: String) {
         UserDefaults.standard.set(url, forKey: "nsfw_model_url_\(modelId)")
-        // Re-register with updated URL
-        lock.lock()
-        if let desc = descriptors[modelId] {
-            let _ = factories[modelId]
-            lock.unlock()
-
-            let updated = ModelDescriptorNative(
-                id: desc.id,
-                displayName: desc.displayName,
-                description: desc.description,
-                version: desc.version,
-                bundleResourceName: desc.bundleResourceName,
-                metadata: desc.metadata,
-                downloadUrl: url,
-                downloadSizeBytes: desc.downloadSizeBytes
-            )
-            lock.lock()
-            descriptors[modelId] = updated
-            lock.unlock()
-        } else {
-            lock.unlock()
-        }
+        // Re-register with updated URL.
+        let original = lock.withLock { descriptors[modelId] }
+        guard let desc = original else { return }
+        let updated = ModelDescriptorNative(
+            id: desc.id,
+            displayName: desc.displayName,
+            description: desc.description,
+            version: desc.version,
+            bundleResourceName: desc.bundleResourceName,
+            metadata: desc.metadata,
+            downloadUrl: url,
+            downloadSizeBytes: desc.downloadSizeBytes,
+            // Preserve the pinned hash across URL overrides. A mirror serving
+            // identical bytes still verifies; a mirror serving different
+            // bytes is exactly the case we want to catch. Callers that
+            // intentionally substitute the hash should re-register.
+            expectedSha256: desc.expectedSha256
+        )
+        lock.withLock { descriptors[modelId] = updated }
     }
 }

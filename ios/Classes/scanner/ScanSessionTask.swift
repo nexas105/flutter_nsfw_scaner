@@ -3,7 +3,13 @@ import Photos
 import os
 
 /// Represents a running full-library scan. Cancellable.
-final class ScanSessionTask {
+///
+/// Thread-safety: `_effectiveConcurrency` is guarded by `loadLock`; `task`,
+/// `loadObserver` are mutated exclusively on the calling actor (the
+/// platform-channel thread that builds the session). `@unchecked Sendable`
+/// is correct because the lock+single-writer discipline replaces what the
+/// type system would otherwise check.
+final class ScanSessionTask: @unchecked Sendable {
 
     private let config: ScanConfiguration
     private let eventSink: ScanEventSink
@@ -12,7 +18,7 @@ final class ScanSessionTask {
     /// Effective concurrency for this scan after DeviceLoadMonitor multipliers
     /// (low-power + thermal) have been applied. Recomputed live whenever the
     /// monitor posts a change. Reads guarded by `loadLock`.
-    private let loadLock = NSLock()
+    private let loadLock = OSAllocatedUnfairLock()
     private var _effectiveConcurrency: Int
     private var loadObserver: NSObjectProtocol?
 
@@ -43,10 +49,11 @@ final class ScanSessionTask {
         ) { [weak self] _ in
             guard let self = self else { return }
             let updated = DeviceLoadMonitor.shared.scaledWorkers(base: base)
-            self.loadLock.lock()
-            let previous = self._effectiveConcurrency
-            self._effectiveConcurrency = updated
-            self.loadLock.unlock()
+            let previous: Int = self.loadLock.withLock {
+                let p = self._effectiveConcurrency
+                self._effectiveConcurrency = updated
+                return p
+            }
             if previous != updated {
                 NSLog("[NSFW] DeviceLoadMonitor: concurrency %d → %d (factor=%.2f)",
                       previous, updated,
@@ -80,8 +87,7 @@ final class ScanSessionTask {
 
     /// Live, throttle-aware concurrency. Always ≥ 1.
     private var effectiveConcurrency: Int {
-        loadLock.lock(); defer { loadLock.unlock() }
-        return max(1, _effectiveConcurrency)
+        loadLock.withLock { max(1, _effectiveConcurrency) }
     }
 
     // MARK: - Core scan loop

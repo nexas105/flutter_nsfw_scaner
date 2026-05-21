@@ -2,11 +2,21 @@ import Foundation
 import CoreML
 import Vision
 import CoreVideo
+import os
 
 /// CoreML + Vision inference engine.
 /// Uses VNCoreMLRequest for efficient on-device classification.
 /// Compatible with iOS 14.0+.
 final class CoreMLEngine: MLEngine {
+
+    /// Dedicated os_log category for CoreML lifecycle / compute-unit events.
+    /// Visible in Console.app under subsystem `com.nsfw_detect_ios.CoreML`.
+    private static let log = OSLog(subsystem: "com.nsfw_detect_ios", category: "NSFW.CoreML")
+
+    /// Window after `batchDisabled` was set during which a single recovery
+    /// attempt is allowed. If the trial succeeds, batch mode is fully
+    /// re-enabled; on failure the timer is reset. See Task #19.
+    private static let batchRecoveryWindow: TimeInterval = 5 * 60  // 5 minutes
 
     let descriptor: ModelDescriptorNative
 
@@ -20,6 +30,9 @@ final class CoreMLEngine: MLEngine {
     /// Counts consecutive batch failures — disables batch after 2 to protect the session.
     private var consecutiveBatchFailures = 0
     private var batchDisabled = false
+    /// Wall-clock timestamp of the most recent batch failure. Used by the
+    /// 5-minute recovery window — see `tryBatchRecoveryIfNeeded()`.
+    private var lastBatchFailureAt: Date?
 
     /// Preferred compute units; consulted at `load()` time.
     private var preferredComputeUnits: ComputeUnitsPreference = .all
@@ -31,9 +44,9 @@ final class CoreMLEngine: MLEngine {
     /// Built once at load() time; nil-ed in unload(). Guarded by `requestLock`
     /// because VNCoreMLRequest is not safe to use concurrently.
     private var cachedRequest: VNCoreMLRequest?
-    private let requestLock = NSLock()
+    private let requestLock = OSAllocatedUnfairLock()
 
-    private let loadLock = NSLock()
+    private let loadLock = OSAllocatedUnfairLock()
 
     init(descriptor: ModelDescriptorNative) {
         self.descriptor = descriptor
@@ -53,10 +66,10 @@ final class CoreMLEngine: MLEngine {
 
     func load() async throws {
         // Guard: already loaded
-        loadLock.lock()
-        if visionModel != nil { loadLock.unlock(); return }
-        let desiredUnits = preferredComputeUnits
-        loadLock.unlock()
+        let earlyDesiredUnits: ComputeUnitsPreference? = loadLock.withLock {
+            visionModel == nil ? preferredComputeUnits : nil
+        }
+        guard let desiredUnits = earlyDesiredUnits else { return }
 
         guard let resourceName = descriptor.bundleResourceName else {
             NSLog("[NSFW] Model has no bundleResourceName: %@", descriptor.id)
@@ -93,10 +106,28 @@ final class CoreMLEngine: MLEngine {
         config.computeUnits = desiredUnits.mlComputeUnits
 
         NSLog("[NSFW] Loading MLModel (computeUnits=%@)...", desiredUnits.rawValue)
-        let loadedModel = try await MLModel.load(contentsOf: compiledURL, configuration: config)
+        // Surface compute-units selection on the os_log path too (#20) so
+        // diagnostics-tooling can correlate inference behaviour with
+        // engine selection without parsing NSLog stderr.
+        os_log("Loading MLModel — desired computeUnits=%{public}@",
+               log: CoreMLEngine.log, type: .info, desiredUnits.rawValue)
+        let loadedModel: MLModel
+        do {
+            loadedModel = try await MLModel.load(contentsOf: compiledURL, configuration: config)
+        } catch {
+            // Apple silently downgrades unsupported compute-units selections
+            // (e.g. .cpuAndNeuralEngine on the simulator), but a hard load
+            // error on the desired selection is worth a loud breadcrumb.
+            os_log("MLModel.load failed for computeUnits=%{public}@ — %{public}@",
+                   log: CoreMLEngine.log, type: .error,
+                   desiredUnits.rawValue, error.localizedDescription)
+            throw error
+        }
         NSLog("[NSFW] Creating VNCoreMLModel...")
         let model = try VNCoreMLModel(for: loadedModel)
         NSLog("[NSFW] Model ready!")
+        os_log("MLModel ready — actual computeUnits=%{public}@",
+               log: CoreMLEngine.log, type: .info, desiredUnits.rawValue)
 
         // Build a single reusable Vision request so the per-image fallback
         // path doesn't allocate one per call.
@@ -112,95 +143,119 @@ final class CoreMLEngine: MLEngine {
         NSLog("[NSFW] Batch feature names — input: %@, output: %@",
               inName ?? "nil", outName ?? "nil")
 
-        loadLock.lock()
-        visionModel              = model
-        self.mlModel             = loadedModel
-        inputFeatureName         = inName
-        outputFeatureName        = outName
-        cachedRequest            = req
-        actualLoadedComputeUnits = desiredUnits
-        loadLock.unlock()
+        loadLock.withLock {
+            visionModel              = model
+            self.mlModel             = loadedModel
+            inputFeatureName         = inName
+            outputFeatureName        = outName
+            cachedRequest            = req
+            actualLoadedComputeUnits = desiredUnits
+        }
     }
 
     func unload() {
-        loadLock.lock()
-        visionModel      = nil
-        mlModel          = nil
-        inputFeatureName = nil
-        outputFeatureName = nil
-        cachedRequest    = nil
-        loadLock.unlock()
+        loadLock.withLock {
+            visionModel      = nil
+            mlModel          = nil
+            inputFeatureName = nil
+            outputFeatureName = nil
+            cachedRequest    = nil
+        }
     }
 
     func classify(pixelBuffer: CVPixelBuffer) async throws -> NsfwClassification {
-        loadLock.lock()
-        let request = cachedRequest
-        loadLock.unlock()
-
+        let request = loadLock.withLock { cachedRequest }
         guard let request = request else { throw MLEngineError.notLoaded }
 
-        // VNCoreMLRequest is not safe to use concurrently — serialize.
-        requestLock.lock()
-        defer { requestLock.unlock() }
+        // VNCoreMLRequest is not safe to use concurrently — serialize via the
+        // request lock. The locked region is fully synchronous (no await),
+        // so holding `os_unfair_lock` across it is safe.
+        // `withLockUnchecked` (vs `withLock`) skips the Sendable check on
+        // body+result. Required here because CVPixelBuffer isn't Sendable —
+        // the lock provides the exclusive access guarantee instead.
+        return try requestLock.withLockUnchecked { () throws -> NsfwClassification in
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+            try handler.perform([request])
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
-        try handler.perform([request])
+            guard let results = request.results, !results.isEmpty else { return .unknown }
 
-        guard let results = request.results, !results.isEmpty else { return .unknown }
-
-        // Case 1: Model outputs VNClassificationObservation (classifier models).
-        //
-        // Vision passes through whatever values the underlying model emits as
-        // `confidence`. ViT classifiers (Falconsai, AdamCodd) converted with
-        // coremltools' `classifier_config` emit RAW LOGITS — not probabilities,
-        // so values can be negative or > 1.0 (e.g. nudity=3.57, safe=-2.40).
-        // Apply softmax client-side so the rest of the pipeline (gallery
-        // filter, `isNsfw`, UI percentages) can rely on `[0, 1]`.
-        if let classificationResults = results as? [VNClassificationObservation] {
-            let raws  = classificationResults.map { Float($0.confidence) }
-            let probs = Self.softmax(raws)
-            let labels = zip(classificationResults, probs)
-                .sorted { $0.1 > $1.1 }
-                .map { (obs, prob) in
-                    NsfwClassification.Label(
-                        category:   NsfwClassification.canonicalCategory(obs.identifier),
-                        confidence: prob
-                    )
-                }
-            return NsfwClassification(labels: labels)
-        }
-
-        // Case 2: Model outputs VNCoreMLFeatureValueObservation with MultiArray
-        // (e.g. OpenNSFW2: [1, 2] array where index 0 = SFW, index 1 = NSFW)
-        if let featureResult = results.first as? VNCoreMLFeatureValueObservation,
-           let multiArray = featureResult.featureValue.multiArrayValue {
-            let labels = self.parseMultiArrayOutput(multiArray)
-            if !labels.isEmpty {
+            // Case 1: classifier models emit `VNClassificationObservation`.
+            // Vision passes through raw logits for ViT classifiers
+            // (Falconsai/AdamCodd) — apply softmax client-side so downstream
+            // consumers see [0, 1].
+            if let classificationResults = results as? [VNClassificationObservation] {
+                let raws  = classificationResults.map { Float($0.confidence) }
+                let probs = Self.softmax(raws)
+                let labels = zip(classificationResults, probs)
+                    .sorted { $0.1 > $1.1 }
+                    .map { (obs, prob) in
+                        NsfwClassification.Label(
+                            category:   NsfwClassification.canonicalCategory(obs.identifier),
+                            confidence: prob
+                        )
+                    }
                 return NsfwClassification(labels: labels)
             }
-        }
 
-        return .unknown
+            // Case 2: feature-value outputs with MultiArray (e.g. OpenNSFW2:
+            // [1, 2] where index 0 = SFW, index 1 = NSFW).
+            if let featureResult = results.first as? VNCoreMLFeatureValueObservation,
+               let multiArray = featureResult.featureValue.multiArrayValue {
+                let labels = self.parseMultiArrayOutput(multiArray)
+                if !labels.isEmpty {
+                    return NsfwClassification(labels: labels)
+                }
+            }
+
+            return .unknown
+        }
     }
 
     // MARK: - Batch inference
 
     /// Submits all pixel buffers to the model in a single MLModel.predictions(from:) call,
-    /// bypassing the per-image Vision overhead. Falls back to the serial Vision path after
-    /// two consecutive failures so a session is never silently broken.
+    /// bypassing the per-image Vision overhead.
+    ///
+    /// Failure modes:
+    ///   • After 2 consecutive failures, batch mode is disabled and the
+    ///     failure timestamp is recorded.
+    ///   • While disabled, the engine periodically (every 5 min — see
+    ///     `batchRecoveryWindow`) allows ONE trial batch through. If the
+    ///     trial succeeds, batch mode is fully re-enabled. If it fails,
+    ///     the timer is reset for another 5-minute window.
+    ///
+    /// All counter / timer / `batchDisabled` mutations go through
+    /// `loadLock` so concurrent callers can't double-trigger or race on
+    /// the recovery trial.
     func classifyBatch(_ buffers: [CVPixelBuffer]) async throws -> [NsfwClassification] {
         guard !buffers.isEmpty else { return [] }
 
-        loadLock.lock()
-        let model      = mlModel
-        let inName     = inputFeatureName
-        let outName    = outputFeatureName
-        let disabled   = batchDisabled
-        loadLock.unlock()
+        // Snapshot of relevant state. The recovery-trial flag is computed
+        // under the same lock so we never see a stale "disabled" while
+        // another thread is mid-recovery.
+        let snapshot: (MLModel?, String?, String?, Bool, Bool) = loadLock.withLock {
+            let recoveryTrial: Bool = {
+                guard batchDisabled, let last = lastBatchFailureAt else { return false }
+                return Date().timeIntervalSince(last) >= Self.batchRecoveryWindow
+            }()
+            return (mlModel, inputFeatureName, outputFeatureName, batchDisabled, recoveryTrial)
+        }
+        let model = snapshot.0
+        let inName = snapshot.1
+        let outName = snapshot.2
+        let disabled = snapshot.3
+        let isRecoveryTrial = snapshot.4
 
-        // Kill switch or missing feature names → fall through to serial Vision path
-        guard !disabled, let model = model, let inName = inName, let outName = outName else {
+        // Kill switch or missing feature names → fall through to serial Vision path.
+        // Exception: if a recovery trial is due, attempt the batch anyway.
+        let shouldAttemptBatch = (!disabled || isRecoveryTrial)
+        guard shouldAttemptBatch, let model = model, let inName = inName, let outName = outName else {
             return try await serialClassifyBatch(buffers)
+        }
+
+        if isRecoveryTrial {
+            os_log("Batch recovery: 5-min window elapsed, attempting trial batch",
+                   log: CoreMLEngine.log, type: .info)
         }
 
         do {
@@ -220,21 +275,42 @@ final class CoreMLEngine: MLEngine {
                 return labels.isEmpty ? .unknown : NsfwClassification(labels: labels)
             }
 
-            loadLock.lock()
-            consecutiveBatchFailures = 0
-            loadLock.unlock()
-
+            // Success: clear the failure counter and (if this was a trial)
+            // re-enable batch mode.
+            loadLock.withLock {
+                consecutiveBatchFailures = 0
+                if isRecoveryTrial {
+                    batchDisabled      = false
+                    lastBatchFailureAt = nil
+                    NSLog("[NSFW] Batch recovery succeeded — batch mode re-enabled")
+                    os_log("Batch recovery succeeded — batch mode re-enabled",
+                           log: CoreMLEngine.log, type: .info)
+                }
+            }
             return results
 
         } catch {
-            loadLock.lock()
-            consecutiveBatchFailures += 1
-            if consecutiveBatchFailures >= 2 {
-                batchDisabled = true
-                NSLog("[NSFW] Batch prediction disabled after 2 failures — reverting to Vision path")
+            // Trial failed → keep batch disabled and reset the timer
+            // (lastBatchFailureAt = Date()) so another 5 minutes pass.
+            // First-time failures bump the counter; ≥2 → disable mode.
+            loadLock.withLock {
+                consecutiveBatchFailures += 1
+                lastBatchFailureAt = Date()
+                if isRecoveryTrial {
+                    NSLog("[NSFW] Batch recovery FAILED — staying on Vision path; will retry in %.0f min",
+                          Self.batchRecoveryWindow / 60.0)
+                    os_log("Batch recovery failed — Vision path retained, next retry in %{public}.0f minutes",
+                           log: CoreMLEngine.log, type: .error,
+                           Self.batchRecoveryWindow / 60.0)
+                } else if consecutiveBatchFailures >= 2 {
+                    batchDisabled = true
+                    NSLog("[NSFW] Batch prediction disabled after 2 failures — reverting to Vision path (recovery in %.0f min)",
+                          Self.batchRecoveryWindow / 60.0)
+                    os_log("Batch prediction disabled after 2 failures — recovery scheduled in %{public}.0f minutes",
+                           log: CoreMLEngine.log, type: .error,
+                           Self.batchRecoveryWindow / 60.0)
+                }
             }
-            loadLock.unlock()
-
             NSLog("[NSFW] Batch failed (size %d): %@ — falling back to per-asset", buffers.count, error.localizedDescription)
             return try await serialClassifyBatch(buffers)
         }
