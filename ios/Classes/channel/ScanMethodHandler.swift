@@ -34,6 +34,13 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
     /// at the next read.
     private var _pendingStartTask: Task<Void, Never>?
 
+    /// Lazily-allocated PHCachingImageManager used by the public
+    /// `prefetchAssets` channel method. Kept alive for the handler lifetime
+    /// so `startCachingImages` calls aren't reaped when the case block
+    /// returns. Separate from the scan-internal prefetch window in
+    /// `ScanSessionTask` so external prefetches don't fight the live scan.
+    private var prefetchManager: PHCachingImageManager?
+
     /// Tracks what should happen after the PHPicker dismisses.
     private enum PickerMode {
         case scan(ScanConfiguration)
@@ -565,9 +572,136 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 }
             }
 
+        case ChannelConstants.Method.cachedResult:
+            guard let localId = args?["localId"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS", message: "localId required", details: nil))
+                return
+            }
+            let modelId = (args?["modelId"] as? String) ?? ModelIds.openNsfw2
+            ScanCache.shared.openIfNeeded()
+            guard let rec = ScanCache.shared.cachedRecordAnyDate(
+                localIdentifier: localId, modelId: modelId
+            ) else {
+                result(nil)
+                return
+            }
+            var map: [String: Any] = [
+                ChannelConstants.EventKey.localId: localId,
+                ChannelConstants.EventKey.mediaType: "unknown",
+                ChannelConstants.EventKey.status: "completed",
+                ChannelConstants.EventKey.scannedAt: rec.scannedAtMs,
+                "fromCache": true,
+            ]
+            if let data = rec.labelsJson.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                map[ChannelConstants.EventKey.labels] = parsed
+            } else {
+                map[ChannelConstants.EventKey.labels] = [] as [Any]
+            }
+            if let detJson = rec.detectionsJson,
+               let data = detJson.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               !parsed.isEmpty {
+                map[ChannelConstants.EventKey.detections] = parsed
+            }
+            result(map)
+
+        case ChannelConstants.Method.prefetchAssets:
+            let ids = (args?["localIds"] as? [String]) ?? []
+            if !ids.isEmpty {
+                if prefetchManager == nil {
+                    prefetchManager = PHCachingImageManager()
+                }
+                let fetch = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+                var assets: [PHAsset] = []
+                fetch.enumerateObjects { asset, _, _ in assets.append(asset) }
+                if !assets.isEmpty {
+                    let opts = ImageAnalyzer.makeRequestOptions()
+                    prefetchManager?.startCachingImages(
+                        for: assets,
+                        targetSize: CGSize(width: 224, height: 224),
+                        contentMode: .aspectFill,
+                        options: opts
+                    )
+                }
+            }
+            result(nil)
+
+        case ChannelConstants.Method.redactBytes:
+            guard let typedData = args?["bytes"] as? FlutterStandardTypedData else {
+                result(FlutterError(code: "INVALID_ARGS", message: "bytes required", details: nil))
+                return
+            }
+            let detections = (args?["detections"] as? [[String: Any]]) ?? []
+            let modeStr = (args?["mode"] as? String) ?? "blur"
+            let intensity = (args?["intensity"] as? Double) ?? 1.0
+            let outputFormat = (args?["outputFormat"] as? String) ?? "jpeg"
+            let mode = MediaRedactor.Mode(rawValue: modeStr) ?? .blur
+            let boxes = detections.compactMap { Self.parseBox(from: $0) }
+            Task(priority: .userInitiated) {
+                do {
+                    let out = try MediaRedactor.redact(
+                        data: typedData.data,
+                        boxes: boxes,
+                        mode: mode,
+                        intensity: intensity,
+                        outputFormat: outputFormat
+                    )
+                    DispatchQueue.main.async {
+                        result(FlutterStandardTypedData(bytes: out))
+                    }
+                } catch {
+                    let message = error.localizedDescription
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "REDACT_FAILED", message: message, details: nil))
+                    }
+                }
+            }
+
+        case ChannelConstants.Method.redactFile:
+            guard let inputPath = args?["inputPath"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS", message: "inputPath required", details: nil))
+                return
+            }
+            let outputPath = args?["outputPath"] as? String
+            let detections = (args?["detections"] as? [[String: Any]]) ?? []
+            let modeStr = (args?["mode"] as? String) ?? "blur"
+            let intensity = (args?["intensity"] as? Double) ?? 1.0
+            let mode = MediaRedactor.Mode(rawValue: modeStr) ?? .blur
+            let boxes = detections.compactMap { Self.parseBox(from: $0) }
+            Task(priority: .utility) {
+                do {
+                    let outURL = try MediaRedactor.redactFile(
+                        at: URL(fileURLWithPath: inputPath),
+                        boxes: boxes,
+                        mode: mode,
+                        intensity: intensity,
+                        outputURL: outputPath.map { URL(fileURLWithPath: $0) }
+                    )
+                    DispatchQueue.main.async { result(outURL.path) }
+                } catch {
+                    let message = error.localizedDescription
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "REDACT_FAILED", message: message, details: nil))
+                    }
+                }
+            }
+
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    /// Parses a wire-shape detection map (as emitted by Dart's
+    /// `BodyPartDetection.toMap`) into a `MediaRedactor.Box`. Returns nil
+    /// when the `box` key is missing or malformed.
+    private static func parseBox(from dict: [String: Any]) -> MediaRedactor.Box? {
+        guard let boxMap = dict["box"] as? [String: Any] else { return nil }
+        let x = (boxMap["x"] as? Double) ?? (boxMap["x"] as? NSNumber)?.doubleValue ?? 0
+        let y = (boxMap["y"] as? Double) ?? (boxMap["y"] as? NSNumber)?.doubleValue ?? 0
+        let w = (boxMap["width"] as? Double) ?? (boxMap["width"] as? NSNumber)?.doubleValue ?? 0
+        let h = (boxMap["height"] as? Double) ?? (boxMap["height"] as? NSNumber)?.doubleValue ?? 0
+        return MediaRedactor.Box(x: x, y: y, width: w, height: h)
     }
 
     // MARK: - Permission

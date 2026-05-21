@@ -166,6 +166,93 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   }
 
   @override
+  Future<Map<dynamic, dynamic>?> cachedResult(
+    String localIdentifier, {
+    String? modelId,
+  }) async {
+    try {
+      final result = await _methodChannel.invokeMapMethod<dynamic, dynamic>(
+        'cachedResult',
+        {
+          'localId': localIdentifier,
+          if (modelId != null) 'modelId': modelId,
+        },
+      );
+      return result;
+    } on MissingPluginException {
+      // Platform hasn't shipped this yet — degrade gracefully to a miss.
+      return null;
+    }
+  }
+
+  @override
+  Future<void> prefetchAssets(
+    List<String> localIdentifiers, {
+    String? modelId,
+  }) async {
+    if (localIdentifiers.isEmpty) return;
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'prefetchAssets',
+        {
+          'localIds': localIdentifiers,
+          if (modelId != null) 'modelId': modelId,
+        },
+      );
+    } on MissingPluginException {
+      // No-op: platforms without a warm-cache impl just skip prefetching.
+    }
+  }
+
+  @override
+  Future<Uint8List> redactBytes({
+    required Uint8List bytes,
+    required List<Map<String, Object?>> detections,
+    required String mode,
+    required double intensity,
+    String? outputFormat,
+  }) async {
+    final result = await _methodChannel.invokeMethod<Uint8List>(
+      'redactBytes',
+      {
+        'bytes': bytes,
+        'detections': detections,
+        'mode': mode,
+        'intensity': intensity,
+        if (outputFormat != null) 'outputFormat': outputFormat,
+      },
+    );
+    if (result == null) {
+      throw StateError('redactBytes returned null from the platform channel');
+    }
+    return result;
+  }
+
+  @override
+  Future<String> redactFile({
+    required String inputPath,
+    required List<Map<String, Object?>> detections,
+    required String mode,
+    required double intensity,
+    String? outputPath,
+  }) async {
+    final result = await _methodChannel.invokeMethod<String>(
+      'redactFile',
+      {
+        'inputPath': inputPath,
+        'detections': detections,
+        'mode': mode,
+        'intensity': intensity,
+        if (outputPath != null) 'outputPath': outputPath,
+      },
+    );
+    if (result == null || result.isEmpty) {
+      throw StateError('redactFile returned no output path');
+    }
+    return result;
+  }
+
+  @override
   Future<void> startCameraScan(CameraConfiguration config) async {
     await _methodChannel.invokeMethod<void>(
       'startCameraScan',

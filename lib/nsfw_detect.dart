@@ -29,6 +29,7 @@ export 'src/api/nsfw_init_options.dart';
 export 'src/api/nsfw_model_manager.dart';
 export 'src/api/nsfw_gallery_filter.dart';
 export 'src/api/perceptual_cache.dart';
+export 'src/api/redaction_mode.dart';
 export 'src/api/camera_configuration.dart';
 export 'src/api/camera_frame_result.dart';
 export 'src/api/camera_scan_session.dart';

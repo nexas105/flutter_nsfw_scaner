@@ -30,6 +30,13 @@ enum ChannelConstants {
         /// modelId is currently loaded with (or `.all` if not yet loaded).
         /// See Task #20 / CoreMLEngine.loadedComputeUnits.
         static let getComputeUnits    = "getComputeUnits"
+
+        // v2.3.0 — cache lookup + prefetch + redaction (mirrors Android
+        // ChannelConstants.Method).
+        static let cachedResult       = "cachedResult"
+        static let prefetchAssets     = "prefetchAssets"
+        static let redactBytes        = "redactBytes"
+        static let redactFile         = "redactFile"
     }
 
     enum EventKey {

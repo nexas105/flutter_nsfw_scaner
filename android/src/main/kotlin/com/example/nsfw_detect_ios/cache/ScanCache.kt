@@ -139,6 +139,39 @@ class ScanCache private constructor(context: Context) :
         val detectionsJson: String? = null,
     )
 
+    /**
+     * Returns the most-recently-stored cached record for `(localId, modelId)`
+     * regardless of modification date. Pendant to
+     * `ScanCache.swift::cachedRecordAnyDate`. The caller is responsible for
+     * deciding whether the record is still fresh.
+     *
+     * Used by the public `cachedResult(localId)` API on the Dart side.
+     */
+    fun cachedRecordAnyDate(localIdentifier: String, modelId: String): CachedRecord? {
+        flush()
+        return try {
+            readableDatabase.rawQuery(
+                """
+                SELECT labels_json, scanned_at_ms, detections_json FROM scans
+                WHERE local_identifier = ? AND model_id = ?
+                ORDER BY scanned_at_ms DESC LIMIT 1;
+                """.trimIndent(),
+                arrayOf(localIdentifier, modelId)
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    CachedRecord(
+                        labelsJson = c.getString(0),
+                        scannedAtMs = c.getLong(1),
+                        detectionsJson = if (c.isNull(2)) null else c.getString(2),
+                    )
+                } else null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "cachedRecordAnyDate failed: ${e.message}")
+            null
+        }
+    }
+
     /** Returns the cached record only when (localId, modelId, modDate) match. */
     fun cachedRecord(localIdentifier: String, modelId: String, modificationDateMs: Long): CachedRecord? {
         flush()

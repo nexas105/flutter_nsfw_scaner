@@ -1,3 +1,43 @@
+## 2.3.0 — unreleased
+
+> Public-API extensions for image-provider scanning, URL scanning, cache lookup, native prefetch, and detection-aware redaction. All additive — existing 2.2.x code keeps working unchanged.
+
+### New — Headless scan inputs
+
+- **`NsfwDetector.scanImageProvider(ImageProvider, {confidenceThreshold, modelId, region, configuration})`** — scans any Flutter `ImageProvider` (`NetworkImage` / `MemoryImage` / `FileImage` / `AssetImage` / custom). Resolves the provider, encodes to PNG bytes once, then delegates to `scanBytes`. Gallery tiles, hero images, and chat bubbles can be gated without the caller writing their own resolve-and-encode dance.
+- **`NsfwDetector.scanUrl(Uri, {headers, timeout, confidenceThreshold, modelId, region, maxBytes})`** — fetches a remote image over HTTP/HTTPS and scans the response body. Streams the body with a hard `maxBytes` cap (default 32 MB) so a malicious server can't OOM the caller. Rejects non-http(s) schemes via `ArgumentError`; surfaces non-2xx as `HttpException`; honours `Duration` timeout on connect + read.
+
+### New — Cache lookup
+
+- **`NsfwDetector.cachedResult(localIdentifier, {modelId, confidenceThreshold})`** — returns a previously-scanned result from the on-device SQLite cache without triggering a re-classification. `null` on miss. Returned `ScanResult` carries `fromCache = true`.
+- **`NsfwDetector.cacheUpdates`** (stream) — `Stream<ScanResult>` derived from the existing native scan event channel, filtered to per-asset result events. Apps can subscribe once to keep gallery badges in sync without polling the cache.
+
+### New — Asset prefetch
+
+- **`NsfwDetector.prefetchAssets(List<String> localIdentifiers, {modelId})`** — pre-warms the native asset cache so subsequent `scanAsset` / `startScan` calls hit warm I/O. iOS seeds `PHCachingImageManager`; Android touches the underlying URI input stream to warm the OS page cache. Best-effort; safe to call with hundreds of ids.
+
+### New — Detection-aware redaction
+
+- **`NsfwDetector.redactBytes(Uint8List bytes, ScanResult result, {mode, intensity, outputFormat})`** — returns a redacted copy of `bytes`. When `result.detections` is non-empty, only the per-detection bounding boxes are redacted; otherwise the whole image is redacted (classifier-only fallback). `intensity` clamped to `[0, 1]`. `outputFormat` defaults to `"jpeg"` (`"png"` available).
+- **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
+- **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
+
+### Fixes — code-review hardening
+
+- **iOS** `ImageAnalyzer`: PhotoKit fetches gated by 30 s wall-clock timeout + `OSAllocatedUnfairLock<Bool>` resume-once across both `requestImage` / `requestImageDataAndOrientation` callbacks. No more hanging scans for iCloud-offline assets and no double-resume races if PhotoKit ever delivers multiple callbacks.
+- **iOS** `ScanSessionTask`: explicit `Task.checkCancellation()` before the video sampler — cancelled scans no longer burn CPU on frame extraction.
+- **iOS** `ScanMethodHandler`: `loadFileRepresentation` continuation wrapped in a task-group timeout + resume-once lock. Picker flow can't deadlock on iCloud-only items.
+- **iOS** `ScanEventSink.emit`: reads the current sink under the lock inside `main.async` instead of a stale capture, closing the listen → cancel → re-listen race that could invoke a dead sink.
+- **iOS** `ZipExtractor`: `readExact` now distinguishes "EOF at start" (returns nil) from "EOF mid-record" (throws `ZipError.truncated`). Replaces the prior `nil : nil` tautology that silently accepted truncated archives.
+- **Android** `TFLiteEngine` / `TFLiteDetectorEngine`: full inference pipeline (resize + buffer fill + `interpreter.run`) now lives inside `runMutex.withLock` with leak-safe scaled-bitmap recycle. Closes the concurrent-resize Bitmap leak and the not-thread-safe interpreter race.
+- **Android** `AIUCordinator`: bounded OkHttp timeouts (connect 10 s, write / read 30 s, call 60 s) replace the 0-ms infinite defaults that pinned worker threads on flaky cellular.
+- **Android** `ScanCheckpoint`: dirty-flag short-circuits no-op `serialise + writeText` passes; write failures restore the flag so the next opportunity retries.
+- **Android** `ScanSessionTask.cancel()`: now also cancels scope children so a future child coroutine outside `runScan` can't survive the host Activity.
+- **Android** `MediaPermission`: `READ_MEDIA_VIDEO` added to the API 33+ request set and status resolution. Closes the silently-zero-videos gap on Android 13/14.
+- **Dart** `NsfwDetector._resolveThreshold`: `assert` replaced with `ArgumentError.value` so out-of-range thresholds throw in release-mode too.
+- **Dart** `NsfwInitOptions.defaultThreshold`: aligned from `0.7` to `0.75` across all four constructors to match the docs and migration-guide examples.
+- **Dart** `ModelDownloadProgress`: `==` / `hashCode` added — `@immutable` value type now behaves correctly in `Set` / `Map`.
+
 ## 2.2.0 — 2026-05-21
 
 > v2.2.0 is a developer-experience release: a proper init/preload lifecycle, presets for common moderation tunings, batch + boolean shortcut APIs, a drop-in moderation gate widget, public JSON for `ScanResult`, and a high-level `NsfwModelManager` for download and warm-up.

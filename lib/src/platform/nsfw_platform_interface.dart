@@ -158,6 +158,52 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
 
   /// Clear the persistent scan-result cache. Default no-op.
   Future<void> clearScanCache({String? modelId}) async {}
+
+  // v2.3.0 — cache lookup, prefetch, native redaction.
+
+  /// Look up a cached scan record for [localIdentifier] without triggering a
+  /// re-scan. Returns the wire-shape map (mirrors [scanSingleAsset]) when a
+  /// row exists, or `null` on miss. Default throws.
+  Future<Map<dynamic, dynamic>?> cachedResult(
+    String localIdentifier, {
+    String? modelId,
+  }) =>
+      throw UnimplementedError(
+          'cachedResult is not implemented by this platform');
+
+  /// Pre-warm the native asset cache for the given local identifiers so the
+  /// next [scanSingleAsset] or library scan can decode them with less I/O
+  /// pressure. Default no-op — platforms without a meaningful warm-cache
+  /// implementation just return.
+  Future<void> prefetchAssets(
+    List<String> localIdentifiers, {
+    String? modelId,
+  }) async {}
+
+  /// Redact the supplied image bytes against the given detection list. Mode
+  /// strings: `"blur"`, `"pixelate"`, `"blackBox"`. Default throws.
+  Future<Uint8List> redactBytes({
+    required Uint8List bytes,
+    required List<Map<String, Object?>> detections,
+    required String mode,
+    required double intensity,
+    String? outputFormat,
+  }) =>
+      throw UnimplementedError(
+          'redactBytes is not implemented by this platform');
+
+  /// Redact an image file on disk. [outputPath] when null writes to a sibling
+  /// temporary file. Returns the on-disk path of the redacted output. Default
+  /// throws.
+  Future<String> redactFile({
+    required String inputPath,
+    required List<Map<String, Object?>> detections,
+    required String mode,
+    required double intensity,
+    String? outputPath,
+  }) =>
+      throw UnimplementedError(
+          'redactFile is not implemented by this platform');
 }
 
 /// Exposed so NsfwDetector can detect the uninitialized state.

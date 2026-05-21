@@ -205,6 +205,46 @@ final class ScanCache {
         let detectionsJson: String?
     }
 
+    /// Returns the most-recently-stored cached record for (localId, modelId)
+    /// regardless of modification date. The caller is responsible for deciding
+    /// whether the record is still fresh enough to use. Returned record carries
+    /// the original modificationDateMs so callers can compare against the
+    /// current asset metadata themselves.
+    ///
+    /// Used by the public `cachedResult(localId)` API on the Dart side, where
+    /// the caller typically wants "show whatever the cache has" rather than
+    /// the strict-freshness contract of the internal scan path.
+    func cachedRecordAnyDate(localIdentifier: String, modelId: String) -> CachedRecord? {
+        return queue.sync {
+            guard opened, let db = db else { return nil }
+            var stmt: OpaquePointer?
+            let sql = """
+                SELECT labels_json, scanned_at_ms, detections_json FROM scans
+                WHERE local_identifier = ? AND model_id = ?
+                ORDER BY scanned_at_ms DESC LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, localIdentifier, -1, Self.SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, modelId, -1, Self.SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW,
+               let cstr = sqlite3_column_text(stmt, 0) {
+                let detectionsJson: String?
+                if let detCstr = sqlite3_column_text(stmt, 2) {
+                    detectionsJson = String(cString: detCstr)
+                } else {
+                    detectionsJson = nil
+                }
+                return CachedRecord(
+                    labelsJson: String(cString: cstr),
+                    scannedAtMs: sqlite3_column_int64(stmt, 1),
+                    detectionsJson: detectionsJson
+                )
+            }
+            return nil
+        }
+    }
+
     /// Returns the cached record if it matches (localId, modelId, modDate).
     /// A different modificationDateMs is treated as a miss — the asset must be re-scanned.
     func cachedRecord(localIdentifier: String, modelId: String, modificationDateMs: Int64) -> CachedRecord? {

@@ -610,8 +610,147 @@ class ScanMethodHandler(
                 act.startActivityForResult(intent, PICKER_REQUEST_CODE)
             }
 
+            ChannelConstants.Method.CACHED_RESULT -> {
+                val args = call.arguments as? Map<*, *>
+                val localId = args?.get("localId") as? String
+                if (localId == null) {
+                    result.error("INVALID_ARGS", "localId required", null)
+                    return
+                }
+                val modelId = (args["modelId"] as? String) ?: ModelIds.OPEN_NSFW_2
+                CoroutineScope(Dispatchers.IO).launch {
+                    val rec = ScanCache.getInstance(context)
+                        .cachedRecordAnyDate(localId, modelId)
+                    if (rec == null) {
+                        withContext(Dispatchers.Main) { result.success(null) }
+                        return@launch
+                    }
+                    val labelsList = ScanCache.decodeLabels(rec.labelsJson).map { (cat, conf) ->
+                        mapOf("category" to cat, "confidence" to conf.toDouble())
+                    }
+                    val detectionsList = ScanCache.decodeDetections(rec.detectionsJson)
+                    val map = HashMap<String, Any?>().apply {
+                        put(ChannelConstants.EventKey.LOCAL_ID, localId)
+                        put(ChannelConstants.EventKey.MEDIA_TYPE, "unknown")
+                        put(ChannelConstants.EventKey.STATUS, "completed")
+                        put(ChannelConstants.EventKey.SCANNED_AT, rec.scannedAtMs)
+                        put(ChannelConstants.EventKey.LABELS, labelsList)
+                        put("fromCache", true)
+                        if (!detectionsList.isNullOrEmpty()) {
+                            put(ChannelConstants.EventKey.DETECTIONS, detectionsList)
+                        }
+                    }
+                    withContext(Dispatchers.Main) { result.success(map) }
+                }
+            }
+
+            ChannelConstants.Method.PREFETCH_ASSETS -> {
+                // Android has no PHCachingImageManager equivalent. We do a
+                // best-effort: touch each URI's input stream so the OS page
+                // cache warms the underlying file. Cheap, vendor-agnostic,
+                // and avoids spinning up bitmap decodes for thousands of
+                // items.
+                val args = call.arguments as? Map<*, *>
+                @Suppress("UNCHECKED_CAST")
+                val ids = (args?.get("localIds") as? List<String>) ?: emptyList()
+                if (ids.isEmpty()) { result.success(null); return }
+                CoroutineScope(Dispatchers.IO).launch {
+                    for (id in ids.take(256)) { // cap to keep this best-effort
+                        val uri = try {
+                            android.net.Uri.parse(id)
+                        } catch (_: Throwable) { continue }
+                        try {
+                            context.contentResolver.openInputStream(uri)?.use { stream ->
+                                // Read first 64 KB — enough to seed the
+                                // filesystem cache without paying for full
+                                // decode.
+                                val buf = ByteArray(64 * 1024)
+                                stream.read(buf)
+                            }
+                        } catch (_: Throwable) { /* best-effort */ }
+                    }
+                    withContext(Dispatchers.Main) { result.success(null) }
+                }
+            }
+
+            ChannelConstants.Method.REDACT_BYTES -> {
+                val args = call.arguments as? Map<*, *>
+                val bytes = args?.get("bytes") as? ByteArray
+                if (bytes == null) {
+                    result.error("INVALID_ARGS", "bytes required", null); return
+                }
+                @Suppress("UNCHECKED_CAST")
+                val detections =
+                    (args["detections"] as? List<Map<String, Any?>>) ?: emptyList()
+                val modeStr = args["mode"] as? String
+                val intensity = ((args["intensity"] as? Number)?.toFloat()) ?: 1f
+                val outputFormat = (args["outputFormat"] as? String) ?: "jpeg"
+                val mode = com.example.nsfw_detect_ios.redaction.MediaRedactor.fromString(modeStr)
+                val boxes = parseBoxes(detections)
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val out = com.example.nsfw_detect_ios.redaction.MediaRedactor
+                            .redactBytes(bytes, boxes, mode, intensity, outputFormat)
+                        withContext(Dispatchers.Main) { result.success(out) }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            result.error("REDACT_FAILED", e.message, null)
+                        }
+                    }
+                }
+            }
+
+            ChannelConstants.Method.REDACT_FILE -> {
+                val args = call.arguments as? Map<*, *>
+                val inputPath = args?.get("inputPath") as? String
+                if (inputPath == null) {
+                    result.error("INVALID_ARGS", "inputPath required", null); return
+                }
+                val outputPath = args["outputPath"] as? String
+                @Suppress("UNCHECKED_CAST")
+                val detections =
+                    (args["detections"] as? List<Map<String, Any?>>) ?: emptyList()
+                val modeStr = args["mode"] as? String
+                val intensity = ((args["intensity"] as? Number)?.toFloat()) ?: 1f
+                val mode = com.example.nsfw_detect_ios.redaction.MediaRedactor.fromString(modeStr)
+                val boxes = parseBoxes(detections)
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val outPath = com.example.nsfw_detect_ios.redaction.MediaRedactor
+                            .redactFile(inputPath, boxes, mode, intensity, outputPath)
+                        withContext(Dispatchers.Main) { result.success(outPath) }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            result.error("REDACT_FAILED", e.message, null)
+                        }
+                    }
+                }
+            }
+
             else -> result.notImplemented()
         }
+    }
+
+    /**
+     * Parses a list of wire-shape detection maps (as emitted by Dart's
+     * `BodyPartDetection.toMap`) into the redactor's normalized-box shape.
+     * Missing/malformed entries are dropped — the redactor handles an empty
+     * box list by falling back to whole-image redaction.
+     */
+    private fun parseBoxes(
+        detections: List<Map<String, Any?>>
+    ): List<com.example.nsfw_detect_ios.redaction.MediaRedactor.Box> {
+        val out = ArrayList<com.example.nsfw_detect_ios.redaction.MediaRedactor.Box>(detections.size)
+        for (det in detections) {
+            @Suppress("UNCHECKED_CAST")
+            val box = det["box"] as? Map<String, Any?> ?: continue
+            val x = (box["x"] as? Number)?.toFloat() ?: continue
+            val y = (box["y"] as? Number)?.toFloat() ?: continue
+            val w = (box["width"] as? Number)?.toFloat() ?: continue
+            val h = (box["height"] as? Number)?.toFloat() ?: continue
+            out.add(com.example.nsfw_detect_ios.redaction.MediaRedactor.Box(x, y, w, h))
+        }
+        return out
     }
 
     private fun handlePickMediaResult(resultCode: Int, data: Intent?): Boolean {

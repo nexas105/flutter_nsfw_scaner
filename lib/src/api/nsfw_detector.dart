@@ -1,6 +1,12 @@
 import 'dart:async';
+import 'dart:io' show File, HttpClient, HttpException;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter/painting.dart'
+    show ImageConfiguration, ImageProvider, ImageStream, ImageStreamListener;
+import 'body_part_detection.dart';
 import 'frame_stream_scanner.dart';
+import 'redaction_mode.dart';
 import 'model_download_progress.dart';
 import 'nsfw_init_options.dart';
 import 'nsfw_model_manager.dart';
@@ -571,6 +577,236 @@ class NsfwDetector {
       roi: region?.toJson(),
     );
     return ScanResult.fromMap(map, confidenceThreshold: t);
+  }
+
+  /// Scans any Flutter [ImageProvider] — `NetworkImage`, `MemoryImage`,
+  /// `FileImage`, `AssetImage`, or your own subclass.
+  ///
+  /// Resolves the provider, encodes the frame to PNG bytes once, then
+  /// delegates to [scanBytes]. Useful when your UI already holds an
+  /// `ImageProvider` (gallery tiles, chat bubbles, hero images) and you want
+  /// to gate the same image you're about to render.
+  ///
+  /// [configuration] controls device-pixel-ratio / locale resolution of
+  /// providers that branch on it (typically the default is fine).
+  Future<ScanResult> scanImageProvider(
+    ImageProvider provider, {
+    String? modelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+    ImageConfiguration configuration = ImageConfiguration.empty,
+  }) async {
+    final bytes = await _resolveImageProviderBytes(provider, configuration);
+    return scanBytes(
+      bytes,
+      modelId: modelId,
+      confidenceThreshold: confidenceThreshold,
+      region: region,
+    );
+  }
+
+  /// Fetches a remote image over HTTP/HTTPS and scans the response body.
+  ///
+  /// Convenience wrapper for chat / messaging / link-preview flows that want
+  /// to gate a URL before rendering. Streams the response with a hard byte
+  /// cap ([maxBytes], default 32 MB) so a malicious server can't OOM the
+  /// caller.
+  ///
+  /// Throws [ArgumentError] for non-http(s) schemes, [HttpException] on a
+  /// non-2xx response, [TimeoutException] when [timeout] elapses, and
+  /// [StateError] when the payload exceeds [maxBytes].
+  Future<ScanResult> scanUrl(
+    Uri url, {
+    Map<String, String>? headers,
+    Duration timeout = const Duration(seconds: 30),
+    String? modelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+    int maxBytes = 32 * 1024 * 1024,
+  }) async {
+    if (url.scheme != 'http' && url.scheme != 'https') {
+      throw ArgumentError.value(
+        url,
+        'url',
+        'only http and https schemes are supported',
+      );
+    }
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final req = await client.getUrl(url).timeout(timeout);
+      headers?.forEach((k, v) => req.headers.add(k, v));
+      final response = await req.close().timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException(
+          'HTTP ${response.statusCode} fetching $url',
+          uri: url,
+        );
+      }
+      final builder = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(timeout)) {
+        builder.add(chunk);
+        if (builder.length > maxBytes) {
+          throw StateError(
+            'Remote payload exceeds $maxBytes bytes for $url — aborting',
+          );
+        }
+      }
+      return scanBytes(
+        builder.takeBytes(),
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Looks up a previously-scanned result from the on-device cache without
+  /// triggering a new classification. Returns `null` if the cache has no
+  /// entry for the given identifier.
+  ///
+  /// The returned [ScanResult] is marked with `fromCache = true`. Note that
+  /// the cache does not invalidate on asset edits — if you need
+  /// freshness-aware semantics, re-scan and compare against the returned
+  /// `scannedAt` timestamp yourself.
+  Future<ScanResult?> cachedResult(
+    String localIdentifier, {
+    String? modelId,
+    double? confidenceThreshold,
+  }) async {
+    final map = await _platform.cachedResult(
+      localIdentifier,
+      modelId: modelId,
+    );
+    if (map == null) return null;
+    final t = await _resolveThreshold(confidenceThreshold);
+    return ScanResult.fromMap(map, confidenceThreshold: t);
+  }
+
+  /// Stream of [ScanResult] objects derived from the native scan event
+  /// channel — every completed per-asset result (library scans, pickAndScan)
+  /// surfaces here, so apps can subscribe once and update gallery badges
+  /// without polling the cache themselves.
+  ///
+  /// Each subscription gets a fresh underlying stream. Cancel the
+  /// subscription when done to free the channel.
+  Stream<ScanResult> get cacheUpdates {
+    return _platform.scanEventStream
+        .where((event) => event['type'] == 'result')
+        .map((event) => ScanResult.fromMap(
+              event,
+              confidenceThreshold: _defaultThreshold,
+            ));
+  }
+
+  /// Pre-warms native asset decoding for the given identifiers so subsequent
+  /// [scanAsset] or [startScan] calls hit warm I/O paths. On iOS this seeds
+  /// `PHCachingImageManager`; on Android it touches the MediaStore thumbnail
+  /// cache. Safe to call with a large list — the native side bounds the
+  /// number of in-flight prefetches.
+  ///
+  /// Best-effort: silently no-ops on platforms without a warm-cache impl.
+  Future<void> prefetchAssets(
+    List<String> localIdentifiers, {
+    String? modelId,
+  }) {
+    return _platform.prefetchAssets(localIdentifiers, modelId: modelId);
+  }
+
+  /// Returns a redacted copy of [bytes]. Detection-mode scans yield per-box
+  /// redactions; classifier-only scans (no detections) fall back to redacting
+  /// the entire image.
+  ///
+  /// [intensity] is clamped to `[0.0, 1.0]`. [outputFormat] defaults to
+  /// `"jpeg"` (smaller) — pass `"png"` for lossless output. Throws when the
+  /// native side fails to decode / encode.
+  Future<Uint8List> redactBytes(
+    Uint8List bytes,
+    ScanResult result, {
+    RedactionMode mode = RedactionMode.blur,
+    double intensity = 1.0,
+    String outputFormat = 'jpeg',
+  }) {
+    return _platform.redactBytes(
+      bytes: bytes,
+      detections: _detectionsToWire(result.detections),
+      mode: mode.wireValue,
+      intensity: intensity.clamp(0.0, 1.0).toDouble(),
+      outputFormat: outputFormat,
+    );
+  }
+
+  /// Redacts the image file at [inputPath] and writes the redacted copy to
+  /// [outputPath] (or a sibling temp file when omitted). Returns the on-disk
+  /// path of the redacted output as a [File].
+  Future<File> redactFile(
+    File input,
+    ScanResult result, {
+    File? outputFile,
+    RedactionMode mode = RedactionMode.blur,
+    double intensity = 1.0,
+  }) async {
+    final outPath = await _platform.redactFile(
+      inputPath: input.path,
+      detections: _detectionsToWire(result.detections),
+      mode: mode.wireValue,
+      intensity: intensity.clamp(0.0, 1.0).toDouble(),
+      outputPath: outputFile?.path,
+    );
+    return File(outPath);
+  }
+
+  /// Convert Dart detections back to wire-shape maps for the channel call.
+  /// Mirrors the native handlers' decoding contract — `box` is normalised
+  /// `{x, y, width, height}` in `[0, 1]`.
+  static List<Map<String, Object?>> _detectionsToWire(
+    List<BodyPartDetection>? detections,
+  ) {
+    if (detections == null) return const [];
+    return detections.map((d) => d.toMap()).cast<Map<String, Object?>>().toList(
+          growable: false,
+        );
+  }
+
+  /// Resolves an [ImageProvider] to PNG bytes via the Flutter image pipeline.
+  /// Listener removal happens once (success OR error) — leaking the listener
+  /// would keep the provider alive after the scan returns.
+  static Future<Uint8List> _resolveImageProviderBytes(
+    ImageProvider provider,
+    ImageConfiguration configuration,
+  ) {
+    final completer = Completer<Uint8List>();
+    final ImageStream stream = provider.resolve(configuration);
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) async {
+        stream.removeListener(listener);
+        try {
+          final data =
+              await info.image.toByteData(format: ui.ImageByteFormat.png);
+          if (data == null) {
+            completer.completeError(
+              StateError('ImageProvider produced no encodable bytes'),
+            );
+            return;
+          }
+          if (!completer.isCompleted) {
+            completer.complete(data.buffer.asUint8List());
+          }
+        } finally {
+          info.image.dispose();
+        }
+      },
+      onError: (error, stack) {
+        stream.removeListener(listener);
+        if (!completer.isCompleted) {
+          completer.completeError(error, stack);
+        }
+      },
+    );
+    stream.addListener(listener);
+    return completer.future;
   }
 
   /// Boolean shortcut over [scanFile] — returns whether the file crosses the

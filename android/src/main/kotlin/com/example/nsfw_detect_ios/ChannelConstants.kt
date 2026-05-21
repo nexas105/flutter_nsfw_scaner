@@ -38,6 +38,13 @@ object ChannelConstants {
          * The Dart agent has not wired this up yet (#20).
          */
         const val GET_DELEGATE_INFO = "getDelegateInfo"
+
+        // v2.3.0 — cache lookup + prefetch + redaction (mirrors iOS
+        // ChannelConstants.swift).
+        const val CACHED_RESULT   = "cachedResult"
+        const val PREFETCH_ASSETS = "prefetchAssets"
+        const val REDACT_BYTES    = "redactBytes"
+        const val REDACT_FILE     = "redactFile"
     }
 
     object EventKey {
