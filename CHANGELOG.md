@@ -1,3 +1,41 @@
+## 2.5.0 — 2026-05-21
+
+> First slice of the v2.5 "platform reach + polish" milestone. Ships **Localization** as the foundational piece — every subsequent v2.5.x release rides on this string-bundle contract. Source-level BC: every existing getter (`userMessage`, `displayName`, `confidenceDescription`, `ageRating`) keeps returning English regardless of the global override, so v2.4.x callers see zero behaviour change.
+
+### New — Localization
+
+- **`NsfwLocalizations` abstract bundle.** Plain-Dart interface (no `flutter_localizations` codegen, no `.arb` files, no new deps) carrying every user-facing string the plugin's non-widget helpers can produce: permission-status hints, NSFW category names, confidence buckets, and safety-profile age ratings. Why this shape: the i18n surface is small (≈20 strings), stable, and not bound to widget contexts — surfacing through a pluggable Dart class lets headless / log / Isolate callers get a localized string without booting `MaterialApp.localizationsDelegates`.
+- **Bundled implementations:** `NsfwLocalizationsEn` (default), `NsfwLocalizationsDe`, `NsfwLocalizationsEs`, `NsfwLocalizationsFr`, `NsfwLocalizationsJa`. Hand-translated, BCP-47 tagged.
+- **`NsfwLocalizations.current`** — app-wide static. Reassign once at startup (`NsfwLocalizations.current = const NsfwLocalizationsDe();`) for global override; reads are synchronous.
+- **`NsfwLocalizations.resolve(tag)`** — picks a bundled impl by BCP-47 tag. Case-insensitive, region subtag is ignored (`de_DE` → German, `es-MX` → Spanish). Unknown / empty tags fall back to English.
+- **`PhotoLibraryPermissionStatus.localizedMessage([locale])`** — defaults to `NsfwLocalizations.current`; pass an explicit bundle to override per call. The legacy `userMessage` getter still returns English.
+- **`NsfwCategory.localizedName([locale])`** — same pattern; legacy `displayName` stays English.
+- **`ScanResult.localizedConfidenceDescription([locale])`** — same pattern; legacy `confidenceDescription` stays English.
+- **`NsfwSafetyProfile.localizedAgeRating([locale])`** — same pattern; legacy `ageRating` field stays English.
+
+### Override hook for additional languages
+
+Host apps that need a language outside the bundled five subclass `NsfwLocalizations`, fill in the abstract getters, and install at startup:
+
+```dart
+class NsfwLocalizationsPtBr extends NsfwLocalizations {
+  const NsfwLocalizationsPtBr();
+  @override String get languageCode => 'pt-BR';
+  @override String get permissionAuthorized => 'Acesso total à biblioteca';
+  // … the remaining 19 strings
+}
+
+void main() {
+  NsfwLocalizations.current = const NsfwLocalizationsPtBr();
+  runApp(const MyApp());
+}
+```
+
+Widget-level string overrides (button labels, scaffold copy in
+`NsfwPermissionsView` / `NsfwGalleryView` / `NsfwScanControls` / etc.)
+are NOT covered by this release — they get a dedicated v2.5.x follow-up
+so the diff stays reviewable.
+
 ## 2.4.0 — 2026-05-21
 
 > Six v2.4 features plus a critical iOS-side download hotfix. Existing 2.3.x callers keep working unchanged; everything below is additive (or, in the case of the iOS hang, a transparent runtime fix).

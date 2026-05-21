@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../l10n/nsfw_localizations.dart';
 import 'body_part_detection.dart';
 import 'media_item.dart';
 import 'nsfw_label.dart';
@@ -174,15 +175,21 @@ class ScanResult {
   /// populated for [ScanMode.detection] runs.
   bool get hasDetections => detections != null && detections!.isNotEmpty;
 
-  /// Human-readable bucket for [topConfidence] — for logs, debug UIs, or
-  /// user-facing strings ("Very high" / "High" / "Moderate" / "Low" / "Very low").
-  /// Not localized; wrap in your own i18n layer if needed.
-  String get confidenceDescription {
-    if (topConfidence >= 0.9) return 'Very high';
-    if (topConfidence >= 0.75) return 'High';
-    if (topConfidence >= 0.6) return 'Moderate';
-    if (topConfidence >= 0.4) return 'Low';
-    return 'Very low';
+  /// English bucket string for [topConfidence] — kept for source-level
+  /// compatibility with v2.4.x and earlier. Prefer
+  /// [localizedConfidenceDescription] for user-facing strings.
+  String get confidenceDescription =>
+      localizedConfidenceDescription(const NsfwLocalizationsEn());
+
+  /// Localized bucket string for [topConfidence]. Defaults to
+  /// [NsfwLocalizations.current]; pass an explicit [locale] to override.
+  String localizedConfidenceDescription([NsfwLocalizations? locale]) {
+    final l = locale ?? NsfwLocalizations.current;
+    if (topConfidence >= 0.9) return l.confidenceVeryHigh;
+    if (topConfidence >= 0.75) return l.confidenceHigh;
+    if (topConfidence >= 0.6) return l.confidenceModerate;
+    if (topConfidence >= 0.4) return l.confidenceLow;
+    return l.confidenceVeryLow;
   }
 
   /// Priority order used in [ScanResult.fromMap] to break confidence ties so

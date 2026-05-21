@@ -1,3 +1,4 @@
+import '../l10n/nsfw_localizations.dart';
 import 'camera_configuration.dart';
 import 'scan_configuration.dart';
 import 'scan_mode.dart';
@@ -44,9 +45,21 @@ enum NsfwSafetyProfile {
   /// The NSFW confidence threshold associated with this profile.
   final double recommendedThreshold;
 
-  /// Short age-rating label (`'all-ages'` / `'teen'` / `'adult'`). Not
-  /// localized — wrap in your own i18n layer if you surface this to users.
+  /// Short English age-rating label (`'all-ages'` / `'teen'` / `'adult'`).
+  /// Kept for source-level compatibility with v2.4.x and earlier. Prefer
+  /// [localizedAgeRating] when surfacing this to users.
   final String ageRating;
+
+  /// Localized age-rating label. Defaults to [NsfwLocalizations.current];
+  /// pass an explicit [locale] to override per call.
+  String localizedAgeRating([NsfwLocalizations? locale]) {
+    final l = locale ?? NsfwLocalizations.current;
+    return switch (this) {
+      NsfwSafetyProfile.kidSafe => l.ageRatingAllAges,
+      NsfwSafetyProfile.teen => l.ageRatingTeen,
+      NsfwSafetyProfile.adult => l.ageRatingAdult,
+    };
+  }
 
   /// Builds a [ScanConfiguration] from this profile. Any `overrides`
   /// passed in win over the profile's defaults.

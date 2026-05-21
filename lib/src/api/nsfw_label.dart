@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import '../l10n/nsfw_localizations.dart';
+
 enum NsfwCategory {
   safe,
   suggestive,
@@ -7,13 +9,24 @@ enum NsfwCategory {
   explicitNudity,
   unknown;
 
-  String get displayName => switch (this) {
-        NsfwCategory.safe => 'Safe',
-        NsfwCategory.suggestive => 'Suggestive',
-        NsfwCategory.nudity => 'Nudity',
-        NsfwCategory.explicitNudity => 'Explicit Nudity',
-        NsfwCategory.unknown => 'Unknown',
-      };
+  /// English label, kept for source-level compatibility with v2.4.x and
+  /// earlier. New code should prefer [localizedName] so user-facing
+  /// strings honour [NsfwLocalizations.current].
+  String get displayName =>
+      localizedName(const NsfwLocalizationsEn());
+
+  /// Localized display name. Defaults to [NsfwLocalizations.current];
+  /// pass an explicit [locale] to override per call.
+  String localizedName([NsfwLocalizations? locale]) {
+    final l = locale ?? NsfwLocalizations.current;
+    return switch (this) {
+      NsfwCategory.safe => l.categorySafe,
+      NsfwCategory.suggestive => l.categorySuggestive,
+      NsfwCategory.nudity => l.categoryNudity,
+      NsfwCategory.explicitNudity => l.categoryExplicitNudity,
+      NsfwCategory.unknown => l.categoryUnknown,
+    };
+  }
 
   bool get isNsfw => this == NsfwCategory.nudity || this == NsfwCategory.explicitNudity;
   bool get isSafe => this == NsfwCategory.safe;

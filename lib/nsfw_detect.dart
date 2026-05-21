@@ -27,6 +27,7 @@ export 'src/api/scan_decision.dart';
 export 'src/api/scan_summary.dart';
 export 'src/api/decision_store.dart';
 export 'src/api/telemetry_event.dart';
+export 'src/l10n/nsfw_localizations.dart';
 export 'src/api/model_descriptor.dart';
 export 'src/api/model_download_progress.dart';
 export 'src/api/model_registration.dart';

@@ -4,6 +4,7 @@ import '../api/camera_configuration.dart';
 import '../api/model_descriptor.dart';
 import '../api/permissions/permission_kind.dart';
 import '../api/scan_configuration.dart';
+import '../l10n/nsfw_localizations.dart';
 
 enum PhotoLibraryPermissionStatus {
   authorized,
@@ -32,19 +33,28 @@ enum PhotoLibraryPermissionStatus {
       this == PhotoLibraryPermissionStatus.denied ||
       this == PhotoLibraryPermissionStatus.restricted;
 
-  /// Short non-localized hint string for debug UIs / logs. Wrap in your own
-  /// i18n layer when surfacing this to end users.
-  String get userMessage => switch (this) {
-        PhotoLibraryPermissionStatus.authorized => 'Full photo library access',
-        PhotoLibraryPermissionStatus.limited =>
-          'Limited access — only selected items are scannable',
-        PhotoLibraryPermissionStatus.denied =>
-          'Access denied — enable photo permission in Settings',
-        PhotoLibraryPermissionStatus.restricted =>
-          'Access restricted by device policy',
-        PhotoLibraryPermissionStatus.notDetermined =>
-          'Permission has not been requested yet',
-      };
+  /// English hint string for debug UIs / logs. Equivalent to calling
+  /// [localizedMessage] with [NsfwLocalizationsEn] regardless of
+  /// [NsfwLocalizations.current]. Kept for source-level compatibility
+  /// with callers from v2.4.x and earlier.
+  String get userMessage =>
+      localizedMessage(const NsfwLocalizationsEn());
+
+  /// Localized hint string. Defaults to [NsfwLocalizations.current], so
+  /// `status.localizedMessage()` honours the app-wide language override
+  /// set at startup. Pass an explicit [locale] to ignore the global and
+  /// pick a specific bundle inline.
+  String localizedMessage([NsfwLocalizations? locale]) {
+    final l = locale ?? NsfwLocalizations.current;
+    return switch (this) {
+      PhotoLibraryPermissionStatus.authorized => l.permissionAuthorized,
+      PhotoLibraryPermissionStatus.limited => l.permissionLimited,
+      PhotoLibraryPermissionStatus.denied => l.permissionDenied,
+      PhotoLibraryPermissionStatus.restricted => l.permissionRestricted,
+      PhotoLibraryPermissionStatus.notDetermined =>
+        l.permissionNotDetermined,
+    };
+  }
 }
 
 /// Platform-interface contract for nsfw_detect.
