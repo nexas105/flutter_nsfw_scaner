@@ -1,3 +1,55 @@
+## 2.4.0 — 2026-05-21
+
+> Six v2.4 features plus a critical iOS-side download hotfix. Existing 2.3.x callers keep working unchanged; everything below is additive (or, in the case of the iOS hang, a transparent runtime fix).
+
+### Fixes — iOS model download hang under iOS 17/18
+
+- **`ModelDownloadManager` rewrite.** The iOS-15 async `URLSession.download(from:delegate:)` API silently hangs under iOS 17/18 when the session is built with a session-level `URLSessionDownloadDelegate` AND a per-task delegate is also passed: the awaited continuation never resumes, progress callbacks fire normally, but the download never finishes and no error is thrown. Replaced with the classic `downloadTask` + `withCheckedThrowingContinuation` pattern. Single-shot `completion` closure resolves the continuation from `didFinishDownloadingTo` (success) or `didCompleteWithError` (failure). Temp file is moved out of URLSession's slot *inside* the delegate callback so the staged URL stays valid for size / SHA-256 / extraction. URLSession callbacks pinned to a dedicated serial `OperationQueue` to avoid cooperative-pool deadlock. `withTaskCancellationHandler` wires Swift-task cancellation back into the URLSessionDownloadTask. **If you were on 2.3.0 and downloads silently froze on iOS 17/18 — this is the fix.**
+
+### New — Per-category thresholds
+
+- **`ScanConfiguration.thresholdsByCategory: Map<NsfwCategory, double>?`** — lets product code express "block explicit aggressively (0.5) but tolerate suggestive (0.95)" without re-classifying. `ScanResult.isNsfw` and the category shortcuts (`hasNudity` / `hasExplicitContent` / `isSuggestive`) walk each NSFW-priority label against its per-category threshold and fall back to the scalar `confidenceThreshold` for unmapped categories.
+- **`ScanResult.thresholdsByCategory`** — propagates through `ScanSession` so per-asset events get evaluated under the configured policy, and through `ScanResult.toJson` / `fromJson` so persisted results re-evaluate consistently.
+- **`ScanResult.withThresholds(...)`** — returns a copy with a new policy without re-running inference. Unknown category names are dropped and out-of-range values are clamped on parse so persisted maps stay forward-safe.
+
+### New — Telemetry hooks
+
+- **`NsfwDetector.onTelemetryEvent: TelemetryHandler?`** — single sink for structured events covering every scan / download / lifecycle transition. Carries timing, modelId, top-category, and a `0..9` confidence decile bucket so analytics rollups stay PII-free by default. `localId` only attaches when `NsfwDetector.includeLocalIdsInTelemetry = true`.
+- **Event variants.** `scanStarted`, `scanCompleted` (per session result), `scanFinished`, `classifyTime` (one-shot scans), `modelLoaded` (preloadModel), `downloadStarted` / `downloadProgress` / `downloadFinished`, `cancelHonored`, `backgroundSweepChanged`. Handler runs inline with the scan pipeline — exceptions are swallowed so a buggy sink can never break scanning. Pipe through an Isolate / queue for heavyweight processing.
+
+### New — Persistent scan-decisions store
+
+- **`DecisionStore` subsystem** — moderator-override store keyed by `localIdentifier`. `ScanDecision.allow` forces `isNsfw=false`, `ScanDecision.block` forces `isNsfw=true`, regardless of what the classifier says. Decisions populate `ScanResult.userDecision` on every scan emitted by the detector.
+- **`InMemoryDecisionStore`** — process-lifetime default, no native deps.
+- **`SharedPreferencesDecisionStore`** — persistent across cold starts, serialises the full map as JSON so arbitrary `localId` strings (pipes, newlines, Unicode) round-trip safely. Adds `shared_preferences ^2.2.0` as a runtime dependency.
+- **`NsfwDetector.decisions` + `useDecisionStore(...)`** — getter exposes the active store; setter swaps in a different backing impl and disposes the old one. Per-scan lookups read from an in-memory cache primed from the store and kept in sync via `store.changes`, so the sync path stays fast even when backed by async storage.
+- **`ScanResult.withUserDecision(...)` + `userDecision` field** — applied automatically by `ScanSession` for library scans + `pickAndScan`, and by every one-shot scan (`scanAsset` / `scanFile` / `scanBytes` / `scanUrl` / `scanImageProvider`) when the platform-returned `localIdentifier` matches a stored entry. Camera live mode is intentionally not wired: frames lack a persistent identifier to key decisions to.
+
+### New — Detect-then-classify pipeline
+
+- **`ScanMode.detectThenClassify`** — new enum value (wire-stable `"detectThenClassify"`). Runs the body-part detector first, classifies every emitted crop with the NSFW classifier, attaches per-box labels to each `BodyPartDetection`. Strictly stronger signal than detector-only (graded confidence per region) and classifier-only (per-region attribution).
+- **`BodyPartDetection.labels: List<NsfwLabel>?`** — optional, populated by the new pipeline. `null` for plain detection / classification runs.
+- **`NsfwDetector.scanBytesDetectThenClassify(...)` + `scanFileDetectThenClassify(...)`** — public entry points. Implementation is Dart-side (1 detector call + N classifier calls per image; cropping via dart:ui) so the feature ships today without native engine changes; a native one-shot endpoint is a v2.5 optimisation.
+
+### New — Evaluation harness + golden set
+
+- **`tools/eval/`** — CLI + Dart library that runs labelled image datasets through `scanFile` and produces per-category precision / recall / F1 reports.
+- **`lib/eval_metrics.dart`** — pure tallying with macro / weighted F1, confusion matrix, JSON + Markdown rendering.
+- **`lib/eval_dataset.dart`** — JSON manifest reader. Malformed rows are skipped with a one-line reason.
+- **`lib/eval_runner.dart`** — orchestrator with an injectable scan dispatcher (typedef `ScanByPath`) so the runner is testable against scripted results.
+- **`bin/run.dart`** — `dart run tools/eval/bin/run.dart <dataset.json> --model <id> --out report.md`. `--format json` for machine-readable output.
+- **`fixtures/smoke_dataset.json`** — tiny canonical fixture. Solid-colour PNGs that any classifier rounds as `safe`, so the harness machinery can be smoke-tested on every dev box without bundling real-world content.
+
+### New — False-positive regression suite
+
+- **`tools/eval/lib/fp_regression.dart`** — sub-bullet of the eval harness. `EvalItem.subcategory` (optional) tags each safe-set item with its edge-case bucket (`beach_photo`, `art_nude`, `baby_bath`, `anime`, …). `runFpRegression` filters to `truth == safe`, tallies false-positives per subcategory, produces `FpRegressionReport` with overall rate, per-bucket breakdown, capped example collection.
+- **Baseline + tolerance support** — pass `{subcategory: baselineRate}` and a `tolerance` (default 5 pp); `report.exceeded` returns only the buckets that drifted above `baseline + tolerance` so CI can fail with a focused diagnostic instead of "metrics changed somewhere."
+
+### Misc
+
+- `NsfwScanSession` accepts an optional `telemetrySink` + `decisionLookup` in its constructor; both are wired automatically by `NsfwDetector.startScan` / `pickAndScan`.
+- `pubspec.yaml`: adds `shared_preferences ^2.2.0` (runtime) and `shared_preferences_platform_interface ^2.4.0` (dev) for the DecisionStore tests' `InMemorySharedPreferencesAsync`.
+
 ## 2.3.0 — 2026-05-21
 
 > Public-API extensions for image-provider scanning, URL scanning, cache lookup, native prefetch, and detection-aware redaction. All additive — existing 2.2.x code keeps working unchanged.
