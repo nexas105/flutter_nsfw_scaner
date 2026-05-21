@@ -217,7 +217,8 @@ class ScanSession {
       }
     }
     final result = ScanResult.fromMap(event,
-        confidenceThreshold: _config.confidenceThreshold);
+        confidenceThreshold: _config.confidenceThreshold,
+        thresholdsByCategory: _config.thresholdsByCategory);
 
     // Dart-side filter: honour includeOnlyAssetIds (wins) / skipAssetIds even
     // when the native implementation hasn't applied the lists itself. This

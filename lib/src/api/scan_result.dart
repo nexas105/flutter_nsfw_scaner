@@ -66,6 +66,16 @@ class ScanResult {
   /// callers that ignore this field keep working).
   final List<BodyPartDetection>? detections;
 
+  /// Optional per-category overrides for [confidenceThreshold]. When non-null,
+  /// [isNsfw] (and the category-specific shortcuts [hasNudity],
+  /// [hasExplicitContent], [isSuggestive]) walk every NSFW-priority label and
+  /// compare its confidence against the threshold for that label's category,
+  /// falling back to the scalar [confidenceThreshold] for unmapped categories.
+  ///
+  /// Lets product code express "block explicit aggressively (0.5) but tolerate
+  /// suggestive (0.95)" without re-classifying.
+  final Map<NsfwCategory, double>? thresholdsByCategory;
+
   const ScanResult({
     required this.item,
     required this.status,
@@ -75,6 +85,7 @@ class ScanResult {
     this.errorMessage,
     this.fromCache = false,
     this.detections,
+    this.thresholdsByCategory,
   });
 
   /// Highest-priority category reported for this item.
@@ -84,11 +95,29 @@ class ScanResult {
   /// Confidence score for [topCategory].
   double get topConfidence => labels.isNotEmpty ? labels.first.confidence : 0.0;
 
-  /// Whether this item crosses [confidenceThreshold] for an NSFW category.
-  bool get isNsfw =>
-      status == ScanStatus.completed &&
-      topCategory.isNsfw &&
-      topConfidence >= confidenceThreshold;
+  /// Threshold applied to a label of [category]. Honours
+  /// [thresholdsByCategory] when set; otherwise the scalar
+  /// [confidenceThreshold].
+  double thresholdFor(NsfwCategory category) =>
+      thresholdsByCategory?[category] ?? confidenceThreshold;
+
+  /// Whether this item crosses its applicable threshold for an NSFW category.
+  ///
+  /// When [thresholdsByCategory] is set, walks every NSFW-priority label and
+  /// returns true as soon as one crosses its per-category threshold — so an
+  /// explicit-at-0.6 label can flag the result even when the top label is a
+  /// suggestive-at-0.9 sitting under its own 0.95 threshold.
+  bool get isNsfw {
+    if (status != ScanStatus.completed) return false;
+    if (thresholdsByCategory == null) {
+      return topCategory.isNsfw && topConfidence >= confidenceThreshold;
+    }
+    for (final label in labels) {
+      if (!label.category.isNsfw) continue;
+      if (label.confidence >= thresholdFor(label.category)) return true;
+    }
+    return false;
+  }
 
   /// Whether the item completed classification and did not cross the NSFW
   /// threshold.
@@ -100,26 +129,33 @@ class ScanResult {
       labels.where((l) => l.category == category).firstOrNull?.confidence ??
       0.0;
 
-  /// True when the top category is [NsfwCategory.nudity] above threshold.
-  bool get hasNudity =>
-      status == ScanStatus.completed &&
-      topCategory == NsfwCategory.nudity &&
-      topConfidence >= confidenceThreshold;
+  /// Returns true when the highest-confidence label of [category] crosses its
+  /// per-category threshold (or scalar fallback). Used by category-specific
+  /// shortcuts so per-category thresholds work uniformly.
+  bool _categoryCrossed(NsfwCategory category) {
+    if (status != ScanStatus.completed) return false;
+    if (thresholdsByCategory == null) {
+      // Legacy behaviour: only the top label was considered. Preserved so
+      // existing callers see the same answer when no per-category map is set.
+      return topCategory == category &&
+          topConfidence >= confidenceThreshold;
+    }
+    final conf = confidenceFor(category);
+    return conf > 0 && conf >= thresholdFor(category);
+  }
 
-  /// True when the top category is [NsfwCategory.explicitNudity] above
+  /// True when at least one [NsfwCategory.nudity] label crosses its threshold.
+  bool get hasNudity => _categoryCrossed(NsfwCategory.nudity);
+
+  /// True when at least one [NsfwCategory.explicitNudity] label crosses its
   /// threshold. Stricter signal than [isNsfw].
   bool get hasExplicitContent =>
-      status == ScanStatus.completed &&
-      topCategory == NsfwCategory.explicitNudity &&
-      topConfidence >= confidenceThreshold;
+      _categoryCrossed(NsfwCategory.explicitNudity);
 
-  /// True when the top category is [NsfwCategory.suggestive] above threshold.
-  /// Treated as a separate signal from [isNsfw] because some products allow
-  /// suggestive content but block nudity.
-  bool get isSuggestive =>
-      status == ScanStatus.completed &&
-      topCategory == NsfwCategory.suggestive &&
-      topConfidence >= confidenceThreshold;
+  /// True when at least one [NsfwCategory.suggestive] label crosses its
+  /// threshold. Treated as a separate signal from [isNsfw] because some
+  /// products allow suggestive content but block nudity.
+  bool get isSuggestive => _categoryCrossed(NsfwCategory.suggestive);
 
   /// True when at least one body-part detection box is present. Only
   /// populated for [ScanMode.detection] runs.
@@ -188,21 +224,43 @@ class ScanResult {
     bool fromCache = false,
     List<BodyPartDetection>? detections,
     DateTime? scannedAt,
+    Map<NsfwCategory, double>? thresholdsByCategory,
+    List<NsfwLabel>? labels,
   }) =>
       ScanResult(
         item: MediaItem(localIdentifier: localIdentifier, type: type),
         status: status,
-        labels: [NsfwLabel(category: category, confidence: confidence)],
+        labels: labels ??
+            [NsfwLabel(category: category, confidence: confidence)],
         scannedAt: scannedAt ?? DateTime.now(),
         confidenceThreshold: confidenceThreshold,
         fromCache: fromCache,
         detections: detections,
+        thresholdsByCategory: thresholdsByCategory,
+      );
+
+  /// Returns a copy with a new set of per-category thresholds (or none).
+  /// Lets callers evaluate the same raw model output under different policies
+  /// without re-running inference. `null` clears the override and reverts to
+  /// scalar [confidenceThreshold] semantics.
+  ScanResult withThresholds(Map<NsfwCategory, double>? thresholdsByCategory) =>
+      ScanResult(
+        item: item,
+        status: status,
+        labels: labels,
+        scannedAt: scannedAt,
+        confidenceThreshold: confidenceThreshold,
+        errorMessage: errorMessage,
+        fromCache: fromCache,
+        detections: detections,
+        thresholdsByCategory: thresholdsByCategory,
       );
 
   /// Parses a method-channel result emitted by the native scanner.
   factory ScanResult.fromMap(
     Map<dynamic, dynamic> map, {
     double confidenceThreshold = 0.7,
+    Map<NsfwCategory, double>? thresholdsByCategory,
   }) {
     final rawLabels = (map['labels'] as List<dynamic>?) ?? [];
     // Sort by NSFW priority FIRST, then confidence within each tier — a
@@ -241,7 +299,37 @@ class ScanResult {
       errorMessage: map['errorMessage'] as String?,
       fromCache: map['fromCache'] == true,
       detections: detections,
+      thresholdsByCategory: thresholdsByCategory ??
+          _thresholdsFromMap(map['thresholdsByCategory']),
     );
+  }
+
+  /// Parses `{categoryName: threshold}` shaped maps from method-channel or
+  /// JSON payloads. Unknown categories are skipped; out-of-range values are
+  /// clamped into `[0.0, 1.0]`. Returns null when the input does not yield
+  /// at least one valid entry.
+  static Map<NsfwCategory, double>? _thresholdsFromMap(Object? raw) {
+    if (raw is! Map) return null;
+    final out = <NsfwCategory, double>{};
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String || value is! num) continue;
+      final category = NsfwCategory.values.firstWhere(
+        (c) => c.name == key,
+        orElse: () => NsfwCategory.unknown,
+      );
+      if (category == NsfwCategory.unknown && key != 'unknown') continue;
+      out[category] = value.toDouble().clamp(0.0, 1.0);
+    }
+    return out.isEmpty ? null : out;
+  }
+
+  static Map<String, double>? _thresholdsToMap(
+    Map<NsfwCategory, double>? thresholds,
+  ) {
+    if (thresholds == null || thresholds.isEmpty) return null;
+    return {for (final e in thresholds.entries) e.key.name: e.value};
   }
 
   /// Serialises the result back to a method-channel-shaped map. Round-trip
@@ -256,6 +344,8 @@ class ScanResult {
         if (fromCache) 'fromCache': true,
         if (detections != null)
           'detections': detections!.map((d) => d.toMap()).toList(),
+        if (_thresholdsToMap(thresholdsByCategory) != null)
+          'thresholdsByCategory': _thresholdsToMap(thresholdsByCategory),
       };
 
   /// Public JSON-safe serialisation suitable for `jsonEncode` /
@@ -272,6 +362,8 @@ class ScanResult {
         json,
         confidenceThreshold:
             (json['confidenceThreshold'] as num?)?.toDouble() ?? 0.7,
+        thresholdsByCategory:
+            _thresholdsFromMap(json['thresholdsByCategory']),
       );
 
   @override

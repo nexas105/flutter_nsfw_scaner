@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'nsfw_label.dart';
 import 'scan_mode.dart';
 import 'scan_region.dart';
 
@@ -106,6 +107,25 @@ class ScanConfiguration {
   /// Combined precedence with [skipAssetIds]: include-only wins.
   final Set<String> includeOnlyAssetIds;
 
+  /// Optional per-category overrides for [confidenceThreshold]. When set,
+  /// `ScanResult.isNsfw` (and the category-specific shortcut getters
+  /// `hasNudity` / `hasExplicitContent` / `isSuggestive`) walk each label
+  /// against the threshold for its own category instead of the scalar
+  /// [confidenceThreshold]. Missing categories fall back to the scalar.
+  ///
+  /// Common shape:
+  ///
+  /// ```dart
+  /// thresholdsByCategory: {
+  ///   NsfwCategory.explicitNudity: 0.5,  // strict — flag early
+  ///   NsfwCategory.nudity: 0.7,
+  ///   NsfwCategory.suggestive: 0.95,     // tolerate — only flag near-certain
+  /// }
+  /// ```
+  ///
+  /// Values are clamped at construction to `[0.0, 1.0]`.
+  final Map<NsfwCategory, double>? thresholdsByCategory;
+
   const ScanConfiguration({
     this.modelId = ModelIds.openNsfw2,
     this.confidenceThreshold = 0.7,
@@ -128,6 +148,7 @@ class ScanConfiguration {
     this.region,
     this.skipAssetIds = const {},
     this.includeOnlyAssetIds = const {},
+    this.thresholdsByCategory,
   })  : assert(
           confidenceThreshold >= 0.0 && confidenceThreshold <= 1.0,
           'confidenceThreshold must be in [0.0, 1.0]',
@@ -240,6 +261,7 @@ class ScanConfiguration {
     ScanRegion? region,
     Set<String>? skipAssetIds,
     Set<String>? includeOnlyAssetIds,
+    Map<NsfwCategory, double>? thresholdsByCategory,
   }) =>
       ScanConfiguration(
         modelId: modelId ?? this.modelId,
@@ -265,6 +287,8 @@ class ScanConfiguration {
         region: region ?? this.region,
         skipAssetIds: skipAssetIds ?? this.skipAssetIds,
         includeOnlyAssetIds: includeOnlyAssetIds ?? this.includeOnlyAssetIds,
+        thresholdsByCategory:
+            thresholdsByCategory ?? this.thresholdsByCategory,
       );
 
   /// Converts this configuration into the method-channel payload expected by
@@ -295,6 +319,34 @@ class ScanConfiguration {
           'includeOnlyAssetIds': includeOnlyAssetIds.toList(),
       };
 
+  /// Serialises [thresholdsByCategory] as a `{categoryName: threshold}` map.
+  /// Symmetric helper used by both [toJson] and [ScanResult.toJson].
+  static Map<String, double>? _thresholdsToJson(
+    Map<NsfwCategory, double>? thresholds,
+  ) {
+    if (thresholds == null || thresholds.isEmpty) return null;
+    return {for (final e in thresholds.entries) e.key.name: e.value};
+  }
+
+  /// Inverse of [_thresholdsToJson]. Unknown category names are skipped.
+  static Map<NsfwCategory, double>? _thresholdsFromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final out = <NsfwCategory, double>{};
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final value = entry.value;
+      if (key is! String || value is! num) continue;
+      final category = NsfwCategory.values.firstWhere(
+        (c) => c.name == key,
+        orElse: () => NsfwCategory.unknown,
+      );
+      if (category == NsfwCategory.unknown && key != 'unknown') continue;
+      final clamped = value.toDouble().clamp(0.0, 1.0);
+      out[category] = clamped;
+    }
+    return out.isEmpty ? null : out;
+  }
+
   /// Serialises the configuration to a JSON-safe map. Symmetric with
   /// [ScanConfiguration.fromJson]. Use this for persistence (e.g.
   /// `shared_preferences`).
@@ -322,6 +374,8 @@ class ScanConfiguration {
         if (skipAssetIds.isNotEmpty) 'skipAssetIds': skipAssetIds.toList(),
         if (includeOnlyAssetIds.isNotEmpty)
           'includeOnlyAssetIds': includeOnlyAssetIds.toList(),
+        if (_thresholdsToJson(thresholdsByCategory) != null)
+          'thresholdsByCategory': _thresholdsToJson(thresholdsByCategory),
       };
 
   /// Restores a configuration previously produced by [toJson]. Unknown values
@@ -399,6 +453,8 @@ class ScanConfiguration {
       region: parseRegion(),
       skipAssetIds: parseStringSet('skipAssetIds'),
       includeOnlyAssetIds: parseStringSet('includeOnlyAssetIds'),
+      thresholdsByCategory:
+          _thresholdsFromJson(json['thresholdsByCategory']),
     );
   }
 
@@ -426,7 +482,8 @@ class ScanConfiguration {
         mode == other.mode &&
         region == other.region &&
         setEquals(skipAssetIds, other.skipAssetIds) &&
-        setEquals(includeOnlyAssetIds, other.includeOnlyAssetIds);
+        setEquals(includeOnlyAssetIds, other.includeOnlyAssetIds) &&
+        mapEquals(thresholdsByCategory, other.thresholdsByCategory);
   }
 
   @override
@@ -453,6 +510,12 @@ class ScanConfiguration {
           region,
           Object.hashAllUnordered(skipAssetIds),
           Object.hashAllUnordered(includeOnlyAssetIds),
+          thresholdsByCategory == null
+              ? null
+              : Object.hashAllUnordered(
+                  thresholdsByCategory!.entries
+                      .map((e) => Object.hash(e.key, e.value)),
+                ),
         ),
       );
 }
