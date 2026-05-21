@@ -163,7 +163,11 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
         widget.enableBlurOnNsfw && _lastResult != null && _lastResult!.isNsfw;
     final sigma = widget.blurSigma ?? effectiveTheme.cameraBlurSigma;
 
-    return Stack(
+    return Semantics(
+      container: true,
+      image: true,
+      label: 'NSFW live camera preview',
+      child: Stack(
       fit: StackFit.expand,
       children: [
         // WIDGET-01 — native camera preview via PlatformView. iOS hosts an
@@ -226,6 +230,7 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
             theme: widget.theme ?? NsfwGalleryTheme.defaults,
           ),
       ],
+    ),
     );
   }
 

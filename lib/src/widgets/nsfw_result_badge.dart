@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api/scan_result.dart';
 import '../api/nsfw_label.dart';
+import '../l10n/nsfw_localizations.dart';
 import 'theme/nsfw_theme.dart';
 
 enum BadgeStyle { compact, detailed, iconOnly, minimal }
@@ -21,10 +22,48 @@ class NsfwResultBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (result == null) return _pendingBadge();
-    if (result!.status == ScanStatus.failed) return _errorBadge();
-    if (result!.status == ScanStatus.skipped) return _skippedBadge();
-    return _resultBadge(result!);
+    final Widget visual;
+    if (result == null) {
+      visual = _pendingBadge();
+    } else if (result!.status == ScanStatus.failed) {
+      visual = _errorBadge();
+    } else if (result!.status == ScanStatus.skipped) {
+      visual = _skippedBadge();
+    } else {
+      visual = _resultBadge(result!);
+    }
+    // Wrap the visual content in a single Semantics node so screen readers
+    // announce one coherent label ("NSFW result: explicit nudity, 87%
+    // confidence") instead of the raw icon + percentage fragments. The
+    // visual children sit under `ExcludeSemantics` so their individual
+    // `Text` / `Icon` nodes don't double-announce.
+    return Semantics(
+      container: true,
+      label: _semanticsLabel(),
+      value: _semanticsValue(),
+      child: ExcludeSemantics(child: visual),
+    );
+  }
+
+  String _semanticsLabel() {
+    final l = NsfwLocalizations.current;
+    if (result == null) return 'NSFW: ${l.confidenceVeryLow}';
+    final r = result!;
+    switch (r.status) {
+      case ScanStatus.failed:
+        return 'NSFW: error';
+      case ScanStatus.skipped:
+        return 'NSFW: skipped';
+      case ScanStatus.completed:
+        return 'NSFW: ${r.topCategory.localizedName(l)}';
+    }
+  }
+
+  String? _semanticsValue() {
+    final r = result;
+    if (r == null || r.status != ScanStatus.completed) return null;
+    final pct = (r.topConfidence * 100).toStringAsFixed(0);
+    return '$pct%';
   }
 
   Widget _pendingBadge() => _BadgeContainer(

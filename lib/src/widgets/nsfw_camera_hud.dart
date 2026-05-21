@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/camera_frame_result.dart';
 import '../api/media_item.dart';
 import '../api/scan_result.dart';
+import '../l10n/nsfw_localizations.dart';
 import 'nsfw_result_badge.dart';
 import 'theme/nsfw_design_tokens.dart';
 import 'theme/nsfw_theme.dart';
@@ -72,25 +73,35 @@ class NsfwCameraHud extends StatelessWidget {
 
   Widget _topCategoryPill(CameraFrameResult r) {
     final color = theme.categoryColor(r.topCategory.name);
-    return AnimatedSwitcher(
-      duration: NsfwAnimations.standard.normal,
-      child: Container(
-        key: ValueKey('hud-pill-${r.topCategory.name}'),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: theme.cameraHudBackgroundOpacity),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
-          r.topCategory.displayName,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.3,
-            shadows: [
-              Shadow(blurRadius: 2, color: Colors.black54),
-            ],
+    final l = NsfwLocalizations.current;
+    final pct = (r.topConfidence * 100).toStringAsFixed(0);
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      label: 'NSFW live scan: ${r.topCategory.localizedName(l)}',
+      value: '$pct%',
+      child: ExcludeSemantics(
+        child: AnimatedSwitcher(
+          duration: NsfwAnimations.standard.normal,
+          child: Container(
+            key: ValueKey('hud-pill-${r.topCategory.name}'),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: theme.cameraHudBackgroundOpacity),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              r.topCategory.displayName,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.3,
+                shadows: [
+                  Shadow(blurRadius: 2, color: Colors.black54),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -103,14 +114,21 @@ class NsfwCameraHud extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(theme.cameraConfidenceBarHeight),
-          child: LinearProgressIndicator(
-            value: r.topConfidence.clamp(0.0, 1.0),
-            backgroundColor:
-                color.withValues(alpha: theme.cameraHudBackgroundOpacity),
-            valueColor: AlwaysStoppedAnimation<Color>(color),
-            minHeight: theme.cameraConfidenceBarHeight,
+        Semantics(
+          label: 'Live NSFW confidence',
+          value: '${(r.topConfidence * 100).toStringAsFixed(0)}%',
+          child: ExcludeSemantics(
+            child: ClipRRect(
+              borderRadius:
+                  BorderRadius.circular(theme.cameraConfidenceBarHeight),
+              child: LinearProgressIndicator(
+                value: r.topConfidence.clamp(0.0, 1.0),
+                backgroundColor:
+                    color.withValues(alpha: theme.cameraHudBackgroundOpacity),
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+                minHeight: theme.cameraConfidenceBarHeight,
+              ),
+            ),
           ),
         ),
         SizedBox(height: theme.cameraConfidenceBarHeight),

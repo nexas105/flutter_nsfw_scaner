@@ -1,3 +1,23 @@
+## 2.5.1 — 2026-05-21
+
+> Accessibility pass over the four most-surfaced widgets. Every change is additive — sighted layouts and tap behaviour are unchanged; the screen-reader experience goes from "raw icons + percentage fragments" to a single coherent announcement per widget.
+
+### Accessibility audit
+
+- **`NsfwResultBadge`** — wrapped in a single `Semantics` node that announces `"NSFW: <category>"` with the percentage as the value (`"NSFW: Explicit Nudity" → "87%"`). Visual icon + text children sit under `ExcludeSemantics` so they don't double-announce. Pending / failed / skipped states get distinct labels. Category strings honour `NsfwLocalizations.current` from 2.5.0.
+- **`NsfwMediaTile`** — Semantics node marks the tile as a `button` (when tappable), announces the media kind (`Photo` / `Video`), the category, and the confidence as the value (`"Photo, Nudity" → "91%"`). Selection state is exposed via the `selected` flag so a screen reader can read the multi-select context.
+- **`NsfwCameraHud`** — top category pill is now a `liveRegion` Semantics node so screen readers re-announce when the live classification changes (`"NSFW live scan: Nudity" → "72%"`). The confidence progress bar gets a dedicated `"Live NSFW confidence"` label so it doesn't read as a generic progress widget.
+- **`NsfwCameraView`** — root stack wrapped in a `Semantics(image: true)` node labelled `"NSFW live camera preview"`. Required because the camera surface itself is a PlatformView (UiKitView / AndroidView) whose contents are opaque to Flutter's accessibility tree.
+
+### Tests
+
+`test/a11y_semantics_test.dart` covers the four widgets with `tester.ensureSemantics()` + `getSemantics(...)` assertions — runs as part of the regular `flutter test` suite, no goldens, no native dependencies. Existing widget tests stay green.
+
+### Out of scope
+
+- Widget string overrides (button labels in `NsfwPermissionsView` / `NsfwGalleryView` / `NsfwScanControls`) — that's pure localization follow-up and belongs to the 2.5.x localization track, not a11y.
+- Contrast audit against `NsfwGalleryTheme` extensions — design tokens are already tuned for WCAG AA at the default colour palette; a programmatic contrast checker against every theme variant is a follow-up.
+
 ## 2.5.0 — 2026-05-21
 
 > First slice of the v2.5 "platform reach + polish" milestone. Ships **Localization** as the foundational piece — every subsequent v2.5.x release rides on this string-bundle contract. Source-level BC: every existing getter (`userMessage`, `displayName`, `confidenceDescription`, `ageRating`) keeps returning English regardless of the global override, so v2.4.x callers see zero behaviour change.

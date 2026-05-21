@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../api/media_item.dart';
 import '../api/scan_result.dart';
+import '../l10n/nsfw_localizations.dart';
 import 'nsfw_result_badge.dart';
 import 'theme/nsfw_theme.dart';
 
@@ -51,6 +52,42 @@ class NsfwMediaTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = selectionColor ?? theme.progressBarColor;
+    return Semantics(
+      container: true,
+      button: onTap != null,
+      selected: selected,
+      label: _semanticsLabel(),
+      value: _semanticsValue(),
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: ExcludeSemantics(
+        child: _buildTile(context, accent),
+      ),
+    );
+  }
+
+  String _semanticsLabel() {
+    final l = NsfwLocalizations.current;
+    final type = item.type == MediaType.video ? 'Video' : 'Photo';
+    if (result == null) return '$type, scanning';
+    final r = result!;
+    switch (r.status) {
+      case ScanStatus.failed:
+        return '$type, scan failed';
+      case ScanStatus.skipped:
+        return '$type, scan skipped';
+      case ScanStatus.completed:
+        return '$type, ${r.topCategory.localizedName(l)}';
+    }
+  }
+
+  String? _semanticsValue() {
+    final r = result;
+    if (r == null || r.status != ScanStatus.completed) return null;
+    return '${(r.topConfidence * 100).toStringAsFixed(0)}%';
+  }
+
+  Widget _buildTile(BuildContext context, Color accent) {
     return GestureDetector(
       onTap: onTap,
       onLongPress: onLongPress ??
