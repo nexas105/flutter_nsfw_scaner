@@ -21,6 +21,26 @@ class PerceptualHash {
 
   const PerceptualHash(this.hex);
 
+  /// JSON-friendly serialisation — just the hex string. Symmetric with
+  /// [PerceptualHash.fromJson]. Useful for persisting hashes alongside
+  /// `MediaItem.localIdentifier` for incremental dedup across launches.
+  String toJson() => hex;
+
+  /// Restores a hash previously produced by [toJson] (or any raw 16-char
+  /// hex string). Throws [FormatException] when [json] isn't a valid
+  /// 16-character lowercase hex string.
+  factory PerceptualHash.fromJson(String json) {
+    if (json.length != 16 ||
+        !RegExp(r'^[0-9a-f]{16}$').hasMatch(json)) {
+      throw FormatException('PerceptualHash expects a 16-char hex string', json);
+    }
+    return PerceptualHash(json);
+  }
+
+  /// Alias for [compute]. Mirrors `BodyPartDetection.fromBytes`-style naming
+  /// for callers used to factories on value types.
+  static Future<PerceptualHash?> fromBytes(Uint8List bytes) => compute(bytes);
+
   /// Computes the dHash for [bytes] (any format Flutter's image codecs can
   /// decode — JPEG, PNG, WebP). Returns `null` if decoding fails.
   ///

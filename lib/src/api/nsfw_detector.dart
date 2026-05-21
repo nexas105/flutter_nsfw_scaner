@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert' show base64Decode;
 import 'dart:io' show File, HttpClient, HttpException;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -6,6 +7,7 @@ import 'package:flutter/painting.dart'
     show ImageConfiguration, ImageProvider, ImageStream, ImageStreamListener;
 import 'body_part_detection.dart';
 import 'frame_stream_scanner.dart';
+import 'media_item.dart';
 import 'redaction_mode.dart';
 import 'model_download_progress.dart';
 import 'nsfw_init_options.dart';
@@ -809,6 +811,139 @@ class NsfwDetector {
     return completer.future;
   }
 
+  /// Scan a heterogeneous list of locations in one call.
+  ///
+  /// Each entry is routed by prefix:
+  ///
+  ///  * `file://`           → [scanFile]
+  ///  * `http://` / `https://` → [scanUrl]
+  ///  * `data:`             → base64-decoded then [scanBytes]
+  ///  * anything else       → treated as a photo-library localIdentifier and
+  ///                          forwarded to [scanAsset]
+  ///
+  /// Per-item failures surface as a [ScanResult.failed] entry so the batch
+  /// always completes. Order is preserved. [onProgress] fires once per item
+  /// with `(done, total)` counts.
+  Future<List<ScanResult>> scanPaths(
+    Iterable<String> paths, {
+    String? modelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final list = paths.toList(growable: false);
+    final out = <ScanResult>[];
+    for (var i = 0; i < list.length; i++) {
+      final p = list[i];
+      try {
+        out.add(await _routePath(
+          p,
+          modelId: modelId,
+          confidenceThreshold: confidenceThreshold,
+          region: region,
+        ));
+      } catch (e) {
+        out.add(ScanResult.failed(
+          localIdentifier: p,
+          errorMessage: e.toString(),
+        ));
+      }
+      onProgress?.call(out.length, list.length);
+    }
+    return out;
+  }
+
+  Future<ScanResult> _routePath(
+    String p, {
+    String? modelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+  }) {
+    if (p.startsWith('file://')) {
+      return scanFile(
+        Uri.parse(p).toFilePath(),
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+    }
+    if (p.startsWith('http://') || p.startsWith('https://')) {
+      return scanUrl(
+        Uri.parse(p),
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+    }
+    if (p.startsWith('data:')) {
+      final comma = p.indexOf(',');
+      if (comma == -1) {
+        throw FormatException('Invalid data URI: missing comma', p);
+      }
+      final payload = p.substring(comma + 1);
+      return scanBytes(
+        base64Decode(payload),
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+    }
+    return scanAsset(
+      p,
+      modelId: modelId,
+      confidenceThreshold: confidenceThreshold,
+      region: region,
+    );
+  }
+
+  /// Group perceptually-identical media items into clusters using a dHash.
+  ///
+  /// Each item's bytes are hashed once (via [loadBytes]) then clustered by
+  /// Hamming-distance threshold. Items that fail to load or hash are
+  /// silently dropped. Singletons are NOT returned — only clusters of two
+  /// or more.
+  ///
+  /// [loadBytes] decouples this from any particular storage layer — pass a
+  /// closure that knows how to fetch the encoded bytes for each [MediaItem]
+  /// (e.g. via `scanAsset` data, your CDN, the file system). Sequential to
+  /// keep memory bounded; if you want parallelism, hash up front and call
+  /// [PerceptualHash.hammingDistance] yourself.
+  Future<List<List<MediaItem>>> findDuplicates(
+    Iterable<MediaItem> items, {
+    required Future<Uint8List?> Function(MediaItem item) loadBytes,
+    int maxHammingDistance = 5,
+  }) async {
+    assert(maxHammingDistance >= 0 && maxHammingDistance <= 64);
+    final hashed = <_HashedItem>[];
+    for (final item in items) {
+      final bytes = await loadBytes(item);
+      if (bytes == null) continue;
+      final hash = await PerceptualHash.compute(bytes);
+      if (hash == null) continue;
+      hashed.add(_HashedItem(item, hash));
+    }
+    // Greedy O(n²) clustering — n is typically small (<= a few hundred
+    // gallery items per session). Compare against the first member of
+    // each existing cluster; assign to the first match.
+    final clusters = <List<_HashedItem>>[];
+    for (final entry in hashed) {
+      var added = false;
+      for (final cluster in clusters) {
+        if (entry.hash.hammingDistance(cluster.first.hash) <=
+            maxHammingDistance) {
+          cluster.add(entry);
+          added = true;
+          break;
+        }
+      }
+      if (!added) clusters.add([entry]);
+    }
+    return clusters
+        .where((c) => c.length >= 2)
+        .map((c) => c.map((e) => e.item).toList(growable: false))
+        .toList(growable: false);
+  }
+
   /// Boolean shortcut over [scanFile] — returns whether the file crosses the
   /// NSFW threshold. Use this for simple gate checks where you don't need
   /// the full [ScanResult].
@@ -1028,4 +1163,13 @@ class NsfwDetector {
     }
     return best;
   }
+}
+
+/// Internal helper for [NsfwDetector.findDuplicates] — keeps the
+/// `(item, hash)` pair together during clustering without exposing a tuple
+/// type at the public API boundary.
+class _HashedItem {
+  _HashedItem(this.item, this.hash);
+  final MediaItem item;
+  final PerceptualHash hash;
 }

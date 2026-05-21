@@ -1,6 +1,7 @@
 import 'camera_configuration.dart';
 import 'scan_configuration.dart';
 import 'scan_mode.dart';
+import 'scan_result.dart';
 
 /// Pre-tuned safety profiles bundling a recommended NSFW confidence
 /// threshold with a short age-rating label. Use these as a starting point
@@ -71,6 +72,30 @@ enum NsfwSafetyProfile {
         concurrency: concurrency ?? 4,
         mode: mode ?? ScanMode.classification,
       );
+
+  /// True when [result] would NOT be flagged as NSFW at this profile's
+  /// [recommendedThreshold]. Equivalent to "would `result.isNsfw` be false
+  /// if `confidenceThreshold` was [recommendedThreshold]?".
+  ///
+  /// Saves the two-line dance every host app re-writes:
+  ///
+  /// ```dart
+  /// final ok = NsfwSafetyProfile.kidSafe.evaluate(result);
+  /// ```
+  ///
+  /// Semantics:
+  ///  * `failed` / `skipped` results → false (route to manual review).
+  ///  * `safe` / `unknown` top category → true (regardless of confidence).
+  ///  * NSFW top category (`suggestive` / `nudity` / `explicitNudity`) → true
+  ///    only when the confidence is strictly below [recommendedThreshold].
+  bool evaluate(ScanResult result) {
+    if (result.status != ScanStatus.completed) return false;
+    if (!result.topCategory.isNsfw) return true;
+    return result.topConfidence < recommendedThreshold;
+  }
+
+  /// [evaluate] over a list — every entry must pass for `true`.
+  bool evaluateAll(Iterable<ScanResult> results) => results.every(evaluate);
 
   /// Builds a [CameraConfiguration] from this profile. Any `overrides`
   /// passed in win over the profile's defaults.

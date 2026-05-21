@@ -22,6 +22,13 @@
 - **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
 - **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
 
+### New — Profile / batch / dedupe helpers
+
+- **`NsfwSafetyProfile.evaluate(ScanResult)` / `evaluateAll(Iterable<ScanResult>)`** — bool helper that asks "would this result be flagged at this profile's threshold?". `safe` / `unknown` categories pass regardless of confidence; NSFW categories must score below `recommendedThreshold`. `failed` / `skipped` results route to manual review (return false).
+- **`NsfwDetector.scanPaths(Iterable<String>)`** — single batch entry point that auto-routes by prefix: `file://` → `scanFile`, `http(s)://` → `scanUrl`, `data:` → base64-decoded `scanBytes`, anything else → `scanAsset`. Per-item failures surface as `ScanResult.failed` so the batch always completes. Optional `onProgress(done, total)`.
+- **`NsfwDetector.findDuplicates(Iterable<MediaItem>, {loadBytes, maxHammingDistance = 5})`** — groups perceptually-identical items into clusters via dHash. Caller supplies `loadBytes` so the detector decouples from any specific storage layer. Singletons are dropped; only clusters of two or more are returned.
+- **`PerceptualHash.toJson()` / `PerceptualHash.fromJson(String)`** — JSON-friendly round-trip for persisting hashes alongside `MediaItem.localIdentifier`. `PerceptualHash.fromBytes(bytes)` alias added for symmetry with `BodyPartDetection.fromBytes`-style factories.
+
 ### Fixes — code-review hardening
 
 - **iOS** `ImageAnalyzer`: PhotoKit fetches gated by 30 s wall-clock timeout + `OSAllocatedUnfairLock<Bool>` resume-once across both `requestImage` / `requestImageDataAndOrientation` callbacks. No more hanging scans for iCloud-offline assets and no double-resume races if PhotoKit ever delivers multiple callbacks.
