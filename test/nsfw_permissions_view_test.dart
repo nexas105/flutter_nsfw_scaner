@@ -61,6 +61,7 @@ class _PermPlatform extends NsfwPlatformInterface
   Future<Map<dynamic, dynamic>> scanSingleAsset(
     String localIdentifier, {
     String? modelId,
+    Map<String, double>? roi,
   }) async => {};
 
   @override

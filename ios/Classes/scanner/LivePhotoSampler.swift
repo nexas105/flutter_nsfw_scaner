@@ -208,10 +208,12 @@ enum LivePhotoSampler {
         generator.requestedTimeToleranceAfter  = CMTime(seconds: 0.2, preferredTimescale: 600)
 
         return try await withCheckedThrowingContinuation { continuation in
+            // Accumulator class so the @Sendable generator callback captures
+            // a single Sendable reference rather than non-Sendable locals.
+            // CVPixelBuffer is not Sendable; the lock provides exclusive
+            // access in lieu of type-level enforcement.
+            let acc = LivePhotoFrameAccumulator()
             let lock = NSLock()
-            var buffers: [CVPixelBuffer] = []
-            var completed = 0
-            var hasResumed = false
             let total = times.count
 
             generator.generateCGImagesAsynchronously(forTimes: times) { _, cgImage, _, result, _ in
@@ -224,14 +226,22 @@ enum LivePhotoSampler {
                        let cropped = RoiCropper.crop(buffer, region: region) {
                         buffer = cropped
                     }
-                    buffers.append(buffer)
+                    acc.buffers.append(buffer)
                 }
-                completed += 1
-                if completed == total && !hasResumed {
-                    hasResumed = true
-                    continuation.resume(returning: buffers)
+                acc.completed += 1
+                if acc.completed == total && !acc.hasResumed {
+                    acc.hasResumed = true
+                    continuation.resume(returning: acc.buffers)
                 }
             }
         }
     }
+}
+
+/// Mutable state for `LivePhotoSampler.extractFrames`'s @Sendable callback.
+/// See `FrameAccumulator` in VideoFrameSampler — same rationale.
+private final class LivePhotoFrameAccumulator: @unchecked Sendable {
+    var buffers: [CVPixelBuffer] = []
+    var completed = 0
+    var hasResumed = false
 }

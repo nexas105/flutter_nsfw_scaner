@@ -4,7 +4,7 @@ PODS:
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
-  - nsfw_detect (1.2.8):
+  - nsfw_detect (2.1.0):
     - Flutter
   - photo_manager (3.9.0):
     - Flutter
@@ -44,7 +44,7 @@ SPEC CHECKSUMS:
   app_settings: 5127ae0678de1dcc19f2293271c51d37c89428b2
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  nsfw_detect: f57a511383f57853fe83b74b7f93ed622e137c3c
+  nsfw_detect: 3cf807af34ccb098735f758fcfc5eded01029c74
   photo_manager: 25fd77df14f4f0ba5ef99e2c61814dde77e2bceb
   share_plus: 50da8cb520a8f0f65671c6c6a99b3617ed10a58a
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb

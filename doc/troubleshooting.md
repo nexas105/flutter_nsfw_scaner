@@ -104,3 +104,9 @@ Disable it again when detailed logs are no longer needed:
 ```dart
 await NsfwDetector.instance.setLogging(false);
 ```
+
+## See also
+
+- [Platform gotchas](platform-gotchas.md) — iOS HEIC, limited library, App Store Privacy Manifest, Android Photo Picker, ProGuard / R8 rules, minSdk implications.
+- [Performance tuning](performance-tuning.md) — concurrency, cache, frame counts, FPS, delegates.
+- [False positives FAQ](false-positives-faq.md) — threshold calibration and per-product tuning.

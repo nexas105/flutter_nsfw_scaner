@@ -33,7 +33,7 @@ class _FakeCameraPlatform extends NsfwPlatformInterface
   Future<void> cancelScan() async {}
   @override
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
-          {String? modelId}) async =>
+          {String? modelId, Map<String, double>? roi}) async =>
       {};
 
   @override

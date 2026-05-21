@@ -42,13 +42,131 @@
 - **`needsSettingsApp`** — `true` for `denied` and `restricted` (requests won't re-prompt).
 - **`userMessage`** — short non-localised hint string for debug UIs.
 
+### New — Region-of-Interest scans
+
+- **`ScanRegion`** — normalized `[0..1]` `{x, y, width, height}` value type with `ScanRegion.full()`, `copyWith`, JSON round-trip, and asserts on out-of-range coords.
+- Optional `ScanRegion? region` parameter on `scanFile`, `scanBytes`, `scanAsset`, `isNsfwFile`, `isNsfwBytes`, `isNsfwAsset`, plus `ScanConfiguration.region` / `CameraConfiguration.region` for library and live-camera scans. Crop is applied natively before model input — iOS via `CIImage.cropped(to:)` with pool reuse, Android via `Bitmap.createBitmap(...)` with leak-safe recycle. Useful for "scan faces only" or "ignore watermark" workflows.
+
+### New — Safety profiles
+
+- **`NsfwSafetyProfile.kidSafe` / `.teen` / `.adult`** — three age-rating-aligned presets that bundle a recommended threshold and an `ageRating` string. `toScanConfiguration({...overrides})` / `toCameraConfiguration({...overrides})` translate them to a config in one line.
+
+### New — Perceptual-hash duplicate cache
+
+- **`PerceptualCache`** (`NsfwDetector.instance.perceptualCache`) — opt-in, dependency-free 8×8 dHash + LRU. `lookup(bytes, maxDistance: 5)` returns a prior `ScanResult` for visually identical bytes; `remember(bytes, result)` populates the cache. Useful as a pre-check before `scanBytes` in chat/forwards scenarios. Pure Dart — no native or pubspec deps.
+
+### New — `NsfwResultRedactor` widget
+
+- Wraps a child image and applies per-detection or full-image blur/solid overlays at the regions produced by `ScanMode.detection`. Constructors: `.bytes()`, `.file()`, `.asset()`. Customisable `blurSigma`, `overlayColor`, optional `badge` slot — defaults to the existing `NsfwResultBadge`.
+
+### New — Allow- / denylist on library scans
+
+- `ScanConfiguration.skipAssetIds` / `includeOnlyAssetIds` (`Set<String>`) — short-circuit per-asset filtering. `includeOnlyAssetIds` wins when both are set. Applied natively where supported and as a defensive Dart-side filter in `ScanSession` regardless.
+
+### New — Progress ETA & throughput
+
+- `ScanProgress.itemsPerSecond` and `ScanProgress.estimatedRemaining` (`Duration?`) — computed from a rolling 20-event throughput window inside `ScanSession`. Drives "≈ 4m 12s remaining" copy without app-side bookkeeping.
+
+### New — On-device threshold calibration
+
+- **`NsfwDetector.calibrate({samples, precisionTarget})`** — feed labelled `(bytes, expectedNsfw)` samples, sweep thresholds in 0.05 steps, return the smallest threshold whose precision meets `precisionTarget` (default 0.9). Pure Dart, no native dependency.
+
+### New — `NsfwInitOptions.production()` preset
+
+- Companion to `.debug()` / `.lazy()`. Defaults: native logging off, preloads `openNsfw2`, `defaultThreshold: 0.7`, no auto-download. Each preset now documents its intended use case in dartdoc.
+
+### New — Platform load awareness
+
+- **iOS**: `ProcessInfo.processInfo.isLowPowerModeEnabled` and `.thermalState` are monitored; concurrency and camera FPS scale by `1.0 / 0.5 / 0.25` for `nominal / serious / critical` (and half again when low-power is on). Implemented in `DeviceLoadMonitor.swift`; scan and camera tasks both consult the same live load factor.
+- **Android**: `PowerManager.OnThermalStatusChangedListener` (API 29+) and `PowerManager.isPowerSaveMode` produce the same backoff curve. `BatteryManager.BATTERY_PROPERTY_CAPACITY < 20%` triggers the low-power halving on older devices.
+
+### New — Native delegate transparency
+
+- **iOS**: `os_log` category `NSFW.CoreML` records requested vs. resolved `MLComputeUnits`. New method-channel call `getComputeUnits(modelId)` returns the engine's actual setting.
+- **Android**: `TFLiteEngine` and `TFLiteDetectorEngine` set `actualLoadedDelegate = "cpu"` and emit a structured `Log.w("NSFW-TFLite", …, throwable)` on delegate fallback. New `getDelegateInfo(modelId)` method-channel call surfaces the active delegate for in-app diagnostics.
+
+### New — Generic frame-stream scanner
+
+- **`FrameStreamScanner`** (`NsfwDetector.instance.scanFrameStream({frames, targetFps, …})`) — feed any `Stream<Uint8List>` of frame bytes, get a throttled, backpressure-safe `Stream<ScanResult>`. Drops frames that arrive faster than `targetFps` and silently drops new frames while a scan is still in flight (no unbounded queueing). Optional `dedupeCache: PerceptualCache` replays prior results for visually identical frames. `waitForNsfw({Duration? timeout})` convenience helper. Dartdoc includes a `flutter_webrtc` integration snippet — no hard dependency on any specific frame source.
+
+### New — Animated GIF / WebP / APNG
+
+- iOS: `AnimatedImageSampler` (`CGImageSourceGetCount` + GIF/APNG metadata sniffing) extracts up to 8 evenly-spaced frames, applies ROI via `RoiCropper`, classifies each via the existing pipeline, aggregates with the Gaussian center-bias `VideoResultAggregator`. Defensive fallback to single-frame decode on malformed sources.
+- Android: GIFs use `android.graphics.Movie` + canvas rasterization at evenly-spaced `setTime(ms)` points — real multi-frame extraction. Animated WebP / HEIF currently ship a single-frame fallback (AOSP `ImageDecoder` does not expose per-frame access without a third-party demuxer; documented in code).
+- Result map carries `frameCount: Int` and `animated: true` so debug UI can surface "Scanned N frames" for animated content.
+
+### New — RAW formats
+
+- iOS: `RawImageDecoder` accepts 13 extensions (dng, cr2/cr3, nef, arw/srf/sr2, raf, rw2, orf, srw, nrw). iOS 15+ uses `CIRAWFilter` with default RAW settings; older OS falls back to `CGImageSourceCreateThumbnailAtIndex` (the embedded JPEG preview, typically 1080p+ in modern cameras — good enough for classification). Reliability matrix per format in the source comments.
+- Android: native DNG decode via `BitmapFactory` on Android 12+. Vendor RAW (CR2/NEF/ARW/RAF/RW2/etc) falls back to `ExifInterface.thumbnailBytes` — the embedded JPEG preview. If neither path produces bytes, the scan errors with `RAW_FORMAT_NO_PREVIEW` so apps can surface specific guidance.
+
+### New — Live Photo motion classification (iOS)
+
+- `LivePhotoSampler` detects `PHAsset.mediaSubtypes.contains(.photoLive)`, streams the `.pairedVideo` `PHAssetResource` to a temp `.mov`, then uses `AVAssetImageGenerator` to sample up to 3 frames. Still image + sampled video frames are aggregated together — Live Photos with safe stills but explicit motion now classify correctly. `livePhoto: true` plus `livePhotoMotionSampled: true` flags surface in the result map; the latter is only `true` when the paired video actually decoded (iCloud-only assets / trimmed motion gracefully fall back to still-only).
+- Android: no platform concept of Live Photos. Documented as iOS-only — Samsung Motion Photos decode as static images; apps that need Motion Photo video scanning must extract the `.mp4` and call `scanFile()` on it manually.
+
+### New — Crop-resistant perceptual hash
+
+- **`BlockPerceptualHash`** — 4×4 grid of per-block 8×8 dHashes (16 hashes per image). Compares via per-block Hamming distance with configurable `minMatchingBlocks` (default 6 of 16) and `blockTolerance` (default 8 bits per block) — matches images even after crops that remove ≤ 60% of the source.
+- **`CropResistantCache`** (`NsfwDetector.instance.cropResistantCache`) — LRU keyed by `BlockPerceptualHash` with `lookup(bytes)` / `remember(bytes, result)`. 16× slower than `PerceptualCache` per lookup, but matches re-uploads that escape simple pHash (e.g., forwarded screenshots with new framing).
+
+### New — `@NsfwModel` codegen
+
+- **`@NsfwModel`** annotation in the main package (`id`, `defaultThreshold`, `defaultMode`, `displayName`, `tags`). Pure metadata — no runtime behaviour.
+- Companion **`nsfw_detect_gen`** package (under `gen/nsfw_detect_gen/`) — `source_gen` + `build_runner` generator that emits a typed `_$<Class>Registry`, a `models: Map<String, NsfwModel>` literal, and a `registerAll(NsfwDetector)` helper for any class annotated with one or more `@NsfwModel(...)` static-const fields. Opt-in as a `dev_dependency`; the main package gains no new deps. Example pre-generated `.g.dart` ships in `gen/nsfw_detect_gen/example/`.
+
 ### New — Widget
 
 - **`NsfwModerationGate`** — drop-in widget that scans a source (`.bytes(...)` / `.file(...)` / `.asset(...)`), renders the child on safe, and blurs + overlays a warning on NSFW. Custom `nsfwBuilder`, `errorBuilder`, and `loading` slots for app-specific UI. Fails open by default (renders child on scan error); override `errorBuilder` to fail closed.
 
+### Fixed
+
+- **Android Bitmap leak** in `ScanSessionTask` — every decoded bitmap is now recycled in a `finally` via `BitmapPipeline`, which also routes EXIF rotation, ROI cropping, and source-stream close in one place. Eliminates multi-GB transient allocations on large library scans.
+- **Android EXIF rotation** — `BitmapPipeline` reads `ExifInterface` orientation and applies `Matrix.postRotate` so 90°/180°/270°-rotated photos classify correctly. Adds `androidx.exifinterface:exifinterface:1.3.7` to `android/build.gradle`.
+- **Android checkpoint resume** — new `ScanCheckpoint` persists `{sessionId, configHash, lastProcessedAssetId, processedCount, totalCount}` to `cacheDir/nsfw_detect/checkpoints/<configHash>.json`. Re-running the same `startScan` skips already-processed assets, matching the existing iOS behaviour. Configurable via `resumeFromCheckpoint` (default `true`).
+- **Android video aggregation parity** — new `VideoResultAggregator` replaces the prior "first frame only" path with the same Gaussian center-bias weighting iOS already uses. Identical video → identical classification across platforms.
+- **`downloadProgress` stream replay** — `NsfwDetector.downloadProgress` now caches the most-recent in-flight value per `modelId` and replays it on new subscribers. UI code that attaches a listener after `downloadModel(...)` no longer misses early-burst progress events.
+- **Default-threshold drift** — `NsfwDetector` now captures the current default threshold into a local before any `await` and serialises against in-flight `init` / `reinit`. A scan started mid-`reinit` no longer silently flips to the new threshold partway through.
+- **Threshold range validation** — `confidenceThreshold`, `detectionConfidenceThreshold`, and `iouThreshold` now assert `[0.0, 1.0]` in `ScanConfiguration`, `CameraConfiguration`, and on inline call sites.
+- **`MediaItem` equality contract documented** — equality is by `localIdentifier` only (matches PHAsset / MediaStore semantics). New `MediaItem.equalsContent(other)` helper exposes structural comparison for callers that need it.
+
+### Performance
+
+- **iOS video-frame perceptual dedupe** — `VideoFrameSampler` computes an 8×8 dHash per sampled frame and skips frames within Hamming-distance ≤ 6 of the previously accepted frame. 30–50 % fewer inferences on keyframe-burst videos. Toggleable via the sampler's `enablePerceptualDedupe`.
+- **iOS early-exit on high-confidence videos** — `ScanSessionTask.classifyFrames` finalises a video result as soon as a frame returns `topConfidence > 0.95` with a non-safe / non-unknown category. Gate on by default; method-channel arg `earlyExitOnHighConfidence` (Bool) for overrides.
+- **CoreML batch inference auto-recovery** — `CoreMLEngine` previously disabled batch mode permanently after two failures. Now tracks `lastBatchFailureAt` and probes one trial batch after 5 minutes; success re-enables, failure resets the timer.
+- **Camera FPS adapts live** — `CameraSessionTask` (both platforms) subscribes to `DeviceLoadMonitor` and re-throttles via `setTargetFps` on thermal / power-state changes without restart.
+
+### DX / value-type ergonomics
+
+- `PickedMedia`, `ScanSummary`, `ModelStateSnapshot`, `MediaItem`, `ScanProgress`, `ScanRegion` now all carry `copyWith`, `==`, `hashCode`, and `toString`. Asymmetry with `ScanConfiguration` removed.
+- Re-export shims `lib/nsfw_detect_platform_interface.dart` and `lib/nsfw_detect_method_channel.dart` are now `@Deprecated` and slated for removal in 3.0. Import `package:nsfw_detect/nsfw_detect.dart` as the single public entry — the actual `NsfwPlatformInterface` lives at `lib/src/platform/`.
+
+### Pub.dev / project hygiene
+
+- Topics tightened to the strongest five for pub.dev cap: `content-moderation`, `nsfw-detection`, `camera`, `video-scanning`, `permission-handling`.
+- `pubspec.yaml` declares `funding:` (GitHub Sponsors) and a `screenshots:` block (PNGs to be added under `example/assets/screenshots/` before publish).
+- `analysis_options.yaml` enables `unawaited_futures`, `prefer_const_constructors[_in_immutables]`, `prefer_const_declarations`, `prefer_const_literals_to_create_immutables`, `prefer_final_locals`, `avoid_empty_else`, `sort_child_properties_last`, `use_super_parameters`, `unnecessary_lambdas`; promotes `unused_import` / `dead_code` / `missing_required_param` to errors.
+
+### Testing
+
+- 18 golden snapshots for `NsfwResultBadge`, `NsfwScanProgressBar`, `NsfwSkeletonTile`, `NsfwSelectionToolbar` across `NsfwTheme.light()` / `.dark()`.
+- New `test/_fakes/fake_nsfw_detector.dart` + companion test demonstrating the downstream `FakeNsfwPlatform` recipe so apps depending on this plugin can unit-test without booting the platform channel.
+- `example/integration_test/plugin_integration_test.dart` extended from 2 to 6 tests: `init()` reporting, `scanBytes` happy-path, `scanFiles` batch progress, plus the existing permission + model-list smoke tests.
+
+### Example app
+
+- New screens: `moderation_gate_screen.dart` (the three constructors side-by-side, `nsfwBuilder` toggle), `models_screen.dart` (live download speed + ETA, status pills, preload/remove), `error_states_screen.dart` (permission denials, camera errors, model unavailable, offline-during-download), `detection_demo_screen.dart` (end-to-end `ScanMode.detection` with `NsfwDetectionOverlay`, IoU + detection-threshold sliders).
+- Light / dark theme toggle backed by `MaterialApp.themeMode` and `SharedPreferences`.
+
 ### Docs
 
 - README Quickstart now leads with `pickMedia` (no library permission), then `scanFile` / `scanBytes`, then `startScan`. `init`, presets, and `NsfwModerationGate` are documented up front.
+- New guides:
+  - `doc/platform-gotchas.md` — HEIC handling, iOS 17 Limited Library re-prompt, iOS Privacy Manifest sample, Android 13 Photo Picker, Android 14 partial access (`READ_MEDIA_VISUAL_USER_SELECTED`), ProGuard/R8 keep rules, minSdk matrix.
+  - `doc/migration-2.1-to-2.2.md` — additive-only walkthrough with before/after for `init`, presets, batch APIs, `isNsfwFile`, `requestPermissionAndStartScan`, `NsfwModerationGate`, permission helpers.
+  - `doc/false-positives-faq.md` — threshold guidance, illustrative FP-rate table (0.5 / 0.7 / 0.85), suggestive-vs-NSFW, camera flicker, escalation paths.
+  - `doc/performance-tuning.md` — tuning matrix with concrete numbers (iPhone 14, 10k images: default ~3 min, `.fastScan()` ~90s, ROI=face ~45s), concurrency / cache / video-frame / FPS / low-power / ROI / compute-units knobs.
 
 ## 2.1.2 - 2026-05-21
 

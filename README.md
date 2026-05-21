@@ -30,7 +30,7 @@ Use `nsfw_detect` to scan images, videos, selected media, photo libraries, and c
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.1.1
+  nsfw_detect: ^2.2.0
 ```
 
 Then run:
@@ -167,6 +167,10 @@ For camera scans, configuration details, and model handling, see the guides belo
 - [Camera scanning](doc/camera-scanning.md)
 - [Configuration](doc/configuration.md)
 - [Models](doc/models.md)
+- [Platform gotchas (iOS / Android)](doc/platform-gotchas.md)
+- [Performance tuning](doc/performance-tuning.md)
+- [False positives FAQ](doc/false-positives-faq.md)
+- [Migration: 2.1 → 2.2](doc/migration-2.1-to-2.2.md)
 - [Privacy and limitations](doc/privacy-and-limitations.md)
 - [Troubleshooting](doc/troubleshooting.md)
 

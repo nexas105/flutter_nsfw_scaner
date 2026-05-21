@@ -4,6 +4,7 @@ description: >-
   picked media, photo libraries, and camera frames on-device.
 
 version: 2.2.0
+
 homepage: https://github.com/nexas105/flutter_nsfw_scaner
 repository: https://github.com/nexas105/flutter_nsfw_scaner
 issue_tracker: https://github.com/nexas105/flutter_nsfw_scaner/issues
@@ -12,9 +13,24 @@ documentation: https://pub.dev/documentation/nsfw_detect/latest/
 topics:
   - content-moderation
   - nsfw-detection
-  - image-recognition
-  - machine-learning
-  - flutter-plugin
+  - camera
+  - video-scanning
+  - permission-handling
+
+funding:
+  - https://github.com/sponsors/nexas105
+
+screenshots:
+  - description: Gallery view with on-device scan results and badges.
+    path: example/assets/screenshots/gallery.png
+  - description: Native picker flow scanning user-selected media.
+    path: example/assets/screenshots/picker.png
+  - description: Live camera scanning with HUD and optional blur.
+    path: example/assets/screenshots/camera.png
+  - description: Result detail screen with label confidences.
+    path: example/assets/screenshots/result-detail.png
+  - description: Moderation gate widget blurring NSFW content.
+    path: example/assets/screenshots/moderation-gate.png
 
 environment:
   sdk: ^3.4.0

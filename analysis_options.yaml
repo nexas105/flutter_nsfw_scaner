@@ -2,3 +2,30 @@ include: package:flutter_lints/flutter.yaml
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options
+
+analyzer:
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "build/**"
+  errors:
+    unused_import: error
+    dead_code: error
+    missing_required_param: error
+
+linter:
+  rules:
+    unawaited_futures: true
+    prefer_const_constructors: true
+    prefer_const_constructors_in_immutables: true
+    prefer_const_declarations: true
+    prefer_const_literals_to_create_immutables: true
+    prefer_final_locals: true
+    avoid_empty_else: true
+    # always_put_required_named_parameters_first and directives_ordering are
+    # disabled here: enforcing them on the current widget surface area would
+    # produce dozens of cosmetic warnings without changing behaviour. Revisit
+    # these rules during the next breaking-change window.
+    sort_child_properties_last: true
+    use_super_parameters: true
+    unnecessary_lambdas: true
