@@ -161,6 +161,17 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
 
   // v2.3.0 — cache lookup, prefetch, native redaction.
 
+  /// Schedule a recurring background scan. Default throws — host-app
+  /// integration is required (Info.plist on iOS, WorkManager classpath
+  /// on Android — see `BackgroundSweepOptions` docs).
+  Future<void> scheduleBackgroundSweep(Map<String, Object?> options) =>
+      throw UnimplementedError(
+          'scheduleBackgroundSweep is not implemented by this platform');
+
+  /// Cancel any pending background sweep. Default no-op — safe to call
+  /// even if none was scheduled.
+  Future<void> cancelBackgroundSweep() async {}
+
   /// Register a custom model descriptor at runtime. Returns the resolved
   /// asset path the native side will load from. Default throws.
   Future<String> registerModel(Map<String, Object?> registration) =>

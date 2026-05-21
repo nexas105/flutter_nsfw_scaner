@@ -166,6 +166,35 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   }
 
   @override
+  Future<void> scheduleBackgroundSweep(Map<String, Object?> options) async {
+    try {
+      await _methodChannel.invokeMethod<void>('scheduleBackgroundSweep', options);
+    } on MissingPluginException {
+      throw UnimplementedError(
+          'scheduleBackgroundSweep is not yet wired on this platform — see BackgroundSweepOptions docs');
+    } on PlatformException catch (e) {
+      // Native side raises specific failure codes (HOST_APP_NOT_CONFIGURED
+      // for missing Info.plist identifier, etc). Surface as a typed error
+      // so callers can branch on it.
+      if (e.code == 'HOST_APP_NOT_CONFIGURED') {
+        throw StateError(
+          'Background sweep unavailable — ${e.message ?? "host app not configured"}',
+        );
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<void> cancelBackgroundSweep() async {
+    try {
+      await _methodChannel.invokeMethod<void>('cancelBackgroundSweep');
+    } on MissingPluginException {
+      // No-op when the native side hasn't been wired.
+    }
+  }
+
+  @override
   Future<String> registerModel(Map<String, Object?> registration) async {
     final result = await _methodChannel.invokeMethod<String>(
       'registerModel',

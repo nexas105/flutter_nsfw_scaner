@@ -22,6 +22,13 @@
 - **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
 - **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
 
+### New — Background sweep API (host-app integration required)
+
+- **`NsfwDetector.scheduleBackgroundSweep(BackgroundSweepOptions)`** / **`cancelBackgroundSweep()`** — ship the Dart API surface for "moderate the library once a night while the user is asleep". Per-asset results land in the on-device `ScanCache`; foreground apps read them via `cachedResult` / `cacheUpdates` on next launch.
+- **`BackgroundSweepOptions`** — value type bundling `interval` (≥ 15 min, WorkManager's hard floor), `requiresCharging`, `requiresWifi`, and the `ScanConfiguration` the worker dispatches.
+- **`BackgroundSweepUnavailableError`** — typed error raised when host-app config is missing.
+- **Host-app integration required.** Until each host app completes the platform-specific wiring documented on `BackgroundSweepOptions`, `scheduleBackgroundSweep` throws `UnimplementedError`. iOS needs `BGTaskSchedulerPermittedIdentifiers` in `Info.plist` and a launch-handler registration before `GeneratedPluginRegistrant.register(...)`. Android needs `androidx.work:work-runtime-ktx` on the classpath (most apps already have it). The native dispatcher implementations (BGTaskScheduler launch handler + WorkManager Worker class) ship in a focused follow-up PR — this release commits the Dart API contract so app authors can wire their bootstraps now.
+
 ### New — Multi-model ensemble voting
 
 - **`EnsembleStrategy`** — new sealed base + `MajorityEnsemble` / `WeightedEnsemble`. Apps that want to combine open_nsfw_2, AdamCodd, and Falconsai (or any registered classifier set) on borderline samples can now do so with two lines of config.

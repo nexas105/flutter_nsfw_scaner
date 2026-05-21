@@ -6,6 +6,7 @@
 library nsfw_detect;
 
 export 'src/api/annotations.dart';
+export 'src/api/background_sweep.dart';
 export 'src/api/frame_stream_scanner.dart';
 export 'src/api/nsfw_detector.dart';
 export 'src/api/nsfw_scan_controller.dart';

@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/painting.dart'
     show ImageConfiguration, ImageProvider, ImageStream, ImageStreamListener;
+import 'background_sweep.dart';
 import 'body_part_detection.dart';
 import 'ensemble_strategy.dart';
 import 'frame_stream_scanner.dart';
@@ -665,6 +666,25 @@ class NsfwDetector {
       client.close(force: true);
     }
   }
+
+  /// Schedule a recurring background sweep that runs even while the user
+  /// is not in the app. See [BackgroundSweepOptions] for the host-app
+  /// integration steps required on each platform.
+  ///
+  /// The worker forces `resumeFromCheckpoint = true` so it cooperates with
+  /// any foreground session the user later runs. Per-asset results land in
+  /// the on-device `ScanCache`; foreground apps read them via
+  /// [cachedResult] / [cacheUpdates] on next launch.
+  ///
+  /// Throws [UnimplementedError] when the platform hasn't shipped the
+  /// scheduler binding yet, or [StateError] when host-app config is
+  /// missing (e.g. iOS Info.plist identifier not registered).
+  Future<void> scheduleBackgroundSweep(BackgroundSweepOptions options) =>
+      _platform.scheduleBackgroundSweep(options.toChannelMap());
+
+  /// Cancel any pending background sweep. Safe to call even when none is
+  /// scheduled.
+  Future<void> cancelBackgroundSweep() => _platform.cancelBackgroundSweep();
 
   /// Fan an input out to every model in [strategy.modelIds], then combine
   /// the per-model results via the strategy.
