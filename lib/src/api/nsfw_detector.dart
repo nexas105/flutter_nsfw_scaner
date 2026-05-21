@@ -21,6 +21,7 @@ import 'scan_configuration.dart';
 import 'scan_region.dart';
 import 'scan_result.dart';
 import 'scan_session.dart';
+import 'telemetry_event.dart';
 import 'camera_configuration.dart';
 import 'camera_scan_session.dart';
 import 'model_descriptor.dart';
@@ -64,6 +65,38 @@ class NsfwDetector {
 
   PerceptualCache? _perceptualCache;
   CropResistantCache? _cropResistantCache;
+
+  /// Optional sink for structured telemetry events. Assign once at app
+  /// startup; the detector invokes it inline for every scan / download /
+  /// lifecycle transition.
+  ///
+  /// The handler MUST be fast and MUST NOT throw — exceptions are swallowed
+  /// but a slow handler will back up the scan pipeline. Pipe through your
+  /// own queue / Isolate if you need heavyweight processing.
+  ///
+  /// ```dart
+  /// NsfwDetector.instance.onTelemetryEvent = (e) {
+  ///   sentry.addBreadcrumb({'kind': e.type.name, 'model': e.modelId, ...});
+  /// };
+  /// ```
+  TelemetryHandler? onTelemetryEvent;
+
+  /// When `true`, telemetry events for per-asset scans include the asset's
+  /// `localIdentifier`. Default `false` — most analytics pipelines do not
+  /// want PII / opaque IDs in their event stream.
+  bool includeLocalIdsInTelemetry = false;
+
+  /// Internal — invokes [onTelemetryEvent] for [event], swallowing any error
+  /// the handler may throw so a buggy sink can't break scanning.
+  void emitTelemetry(TelemetryEvent event) {
+    final handler = onTelemetryEvent;
+    if (handler == null) return;
+    try {
+      handler(event);
+    } catch (_) {
+      // Telemetry must never break scanning. Drop the failure.
+    }
+  }
 
   /// Lazily-initialised in-memory [CropResistantCache].
   ///
@@ -252,6 +285,16 @@ class NsfwDetector {
             _lastDownloadProgress[progress.modelId] = progress;
           }
           if (!controller!.isClosed) controller.add(progress);
+          // Mirror progress as a telemetry event so analytics pipelines can
+          // observe download throughput without subscribing to the user-facing
+          // stream.
+          if (!progress.isComplete && progress.error == null) {
+            emitTelemetry(TelemetryEvent.downloadProgress(
+              modelId: progress.modelId,
+              downloadedBytes: progress.bytesDownloaded,
+              totalBytes: progress.totalBytes,
+            ));
+          }
         }
       },
       onError: (_) {/* swallow — native scan errors aren't download errors */},
@@ -325,15 +368,42 @@ class NsfwDetector {
 
   /// Downloads or loads [modelId] ahead of a scan when the platform supports
   /// explicit preloading.
-  Future<void> preloadModel(String modelId) => _platform.preloadModel(modelId);
+  Future<void> preloadModel(String modelId) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      await _platform.preloadModel(modelId);
+      stopwatch.stop();
+      emitTelemetry(TelemetryEvent.modelLoaded(
+        modelId: modelId,
+        elapsed: stopwatch.elapsed,
+        ok: true,
+      ));
+    } catch (e) {
+      stopwatch.stop();
+      emitTelemetry(TelemetryEvent.modelLoaded(
+        modelId: modelId,
+        elapsed: stopwatch.elapsed,
+        ok: false,
+        errorMessage: e.toString(),
+      ));
+      rethrow;
+    }
+  }
 
   /// Starts a photo-library scan using [config].
   ///
   /// The returned [ScanSession] streams [ScanResult] values and progress. Media
   /// is classified on the device through the native implementation; results are
   /// confidence scores rather than guarantees.
-  Future<ScanSession> startScan(ScanConfiguration config) =>
-      ScanSession.start(config: config, platform: _platform);
+  Future<ScanSession> startScan(ScanConfiguration config) {
+    emitTelemetry(TelemetryEvent.scanStarted(modelId: config.modelId));
+    return ScanSession.start(
+      config: config,
+      platform: _platform,
+      telemetrySink: emitTelemetry,
+      includeLocalIds: includeLocalIdsInTelemetry,
+    );
+  }
 
   /// Clears native scan state for the current library scan.
   Future<void> resetScan() => _platform.resetScan();
@@ -342,8 +412,29 @@ class NsfwDetector {
   ///
   /// Listen to [downloadProgress] for progress events when the platform emits
   /// them. Returns whether the platform reports the download as successful.
-  Future<bool> downloadModel(String modelId, {String? url}) =>
-      _platform.downloadModel(modelId, url: url);
+  Future<bool> downloadModel(String modelId, {String? url}) async {
+    emitTelemetry(TelemetryEvent.downloadStarted(modelId: modelId));
+    final stopwatch = Stopwatch()..start();
+    try {
+      final ok = await _platform.downloadModel(modelId, url: url);
+      stopwatch.stop();
+      emitTelemetry(TelemetryEvent.downloadFinished(
+        modelId: modelId,
+        elapsed: stopwatch.elapsed,
+        ok: ok,
+      ));
+      return ok;
+    } catch (e) {
+      stopwatch.stop();
+      emitTelemetry(TelemetryEvent.downloadFinished(
+        modelId: modelId,
+        elapsed: stopwatch.elapsed,
+        ok: false,
+        errorMessage: e.toString(),
+      ));
+      rethrow;
+    }
+  }
 
   /// Convenience over [downloadModel] + [downloadProgress]: kicks off the
   /// download and resolves once it completes. [onProgress] is invoked for
@@ -502,12 +593,22 @@ class NsfwDetector {
     ScanRegion? region,
   }) async {
     final t = await _resolveThreshold(confidenceThreshold);
+    final stopwatch = Stopwatch()..start();
     final map = await _platform.scanSingleAsset(
       localIdentifier,
       modelId: modelId,
       roi: region?.toJson(),
     );
-    return ScanResult.fromMap(map, confidenceThreshold: t);
+    stopwatch.stop();
+    final result = ScanResult.fromMap(map, confidenceThreshold: t);
+    _emitClassifyTime(
+      result: result,
+      modelId: modelId,
+      source: 'asset',
+      elapsed: stopwatch.elapsed,
+      localId: localIdentifier,
+    );
+    return result;
   }
 
   /// Shows the native photo/video picker, then scans the selected items.
@@ -516,12 +617,17 @@ class NsfwDetector {
   Future<ScanSession> pickAndScan({
     int maxItems = 1,
     ScanConfiguration? config,
-  }) =>
-      ScanSession.startPicker(
-        config: config ?? const ScanConfiguration(),
-        platform: _platform,
-        maxItems: maxItems,
-      );
+  }) {
+    final cfg = config ?? const ScanConfiguration();
+    emitTelemetry(TelemetryEvent.scanStarted(modelId: cfg.modelId));
+    return ScanSession.startPicker(
+      config: cfg,
+      platform: _platform,
+      maxItems: maxItems,
+      telemetrySink: emitTelemetry,
+      includeLocalIds: includeLocalIdsInTelemetry,
+    );
+  }
 
   /// Scans an image from a local file path.
   ///
@@ -535,12 +641,21 @@ class NsfwDetector {
     ScanRegion? region,
   }) async {
     final t = await _resolveThreshold(confidenceThreshold);
+    final stopwatch = Stopwatch()..start();
     final map = await _platform.scanFilePath(
       filePath,
       modelId: modelId,
       roi: region?.toJson(),
     );
-    return ScanResult.fromMap(map, confidenceThreshold: t);
+    stopwatch.stop();
+    final result = ScanResult.fromMap(map, confidenceThreshold: t);
+    _emitClassifyTime(
+      result: result,
+      modelId: modelId,
+      source: 'file',
+      elapsed: stopwatch.elapsed,
+    );
+    return result;
   }
 
   /// Opens the native photo / video picker and returns the selected items
@@ -574,14 +689,59 @@ class NsfwDetector {
     String? modelId,
     double? confidenceThreshold,
     ScanRegion? region,
+  }) =>
+      _scanBytesInternal(
+        bytes,
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+        telemetrySource: 'bytes',
+      );
+
+  Future<ScanResult> _scanBytesInternal(
+    Uint8List bytes, {
+    String? modelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+    required String telemetrySource,
   }) async {
     final t = await _resolveThreshold(confidenceThreshold);
+    final stopwatch = Stopwatch()..start();
     final map = await _platform.scanImageBytes(
       bytes,
       modelId: modelId,
       roi: region?.toJson(),
     );
-    return ScanResult.fromMap(map, confidenceThreshold: t);
+    stopwatch.stop();
+    final result = ScanResult.fromMap(map, confidenceThreshold: t);
+    _emitClassifyTime(
+      result: result,
+      modelId: modelId,
+      source: telemetrySource,
+      elapsed: stopwatch.elapsed,
+    );
+    return result;
+  }
+
+  /// Helper that emits a [TelemetryEventType.classifyTime] event for a
+  /// completed one-shot scan. No-op when telemetry is not wired.
+  void _emitClassifyTime({
+    required ScanResult result,
+    required String? modelId,
+    required String source,
+    required Duration elapsed,
+    String? localId,
+  }) {
+    if (onTelemetryEvent == null) return;
+    emitTelemetry(TelemetryEvent.classifyTime(
+      modelId: modelId ?? ModelIds.openNsfw2,
+      source: source,
+      topCategory: result.topCategory,
+      topConfidence: result.topConfidence,
+      elapsed: elapsed,
+      fromCache: result.fromCache,
+      localId: includeLocalIdsInTelemetry ? localId : null,
+    ));
   }
 
   /// Scans any Flutter [ImageProvider] — `NetworkImage`, `MemoryImage`,
@@ -602,11 +762,12 @@ class NsfwDetector {
     ImageConfiguration configuration = ImageConfiguration.empty,
   }) async {
     final bytes = await _resolveImageProviderBytes(provider, configuration);
-    return scanBytes(
+    return _scanBytesInternal(
       bytes,
       modelId: modelId,
       confidenceThreshold: confidenceThreshold,
       region: region,
+      telemetrySource: 'imageProvider',
     );
   }
 
@@ -656,11 +817,12 @@ class NsfwDetector {
           );
         }
       }
-      return scanBytes(
+      return _scanBytesInternal(
         builder.takeBytes(),
         modelId: modelId,
         confidenceThreshold: confidenceThreshold,
         region: region,
+        telemetrySource: 'url',
       );
     } finally {
       client.close(force: true);
@@ -679,12 +841,21 @@ class NsfwDetector {
   /// Throws [UnimplementedError] when the platform hasn't shipped the
   /// scheduler binding yet, or [StateError] when host-app config is
   /// missing (e.g. iOS Info.plist identifier not registered).
-  Future<void> scheduleBackgroundSweep(BackgroundSweepOptions options) =>
-      _platform.scheduleBackgroundSweep(options.toChannelMap());
+  Future<void> scheduleBackgroundSweep(BackgroundSweepOptions options) async {
+    await _platform.scheduleBackgroundSweep(options.toChannelMap());
+    emitTelemetry(
+      TelemetryEvent.backgroundSweepChanged(kind: 'scheduled'),
+    );
+  }
 
   /// Cancel any pending background sweep. Safe to call even when none is
   /// scheduled.
-  Future<void> cancelBackgroundSweep() => _platform.cancelBackgroundSweep();
+  Future<void> cancelBackgroundSweep() async {
+    await _platform.cancelBackgroundSweep();
+    emitTelemetry(
+      TelemetryEvent.backgroundSweepChanged(kind: 'cancelled'),
+    );
+  }
 
   /// Fan an input out to every model in [strategy.modelIds], then combine
   /// the per-model results via the strategy.

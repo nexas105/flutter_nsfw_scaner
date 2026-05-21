@@ -5,6 +5,7 @@ import 'scan_result.dart';
 import 'scan_progress.dart';
 import 'scan_summary.dart';
 import 'scan_configuration.dart';
+import 'telemetry_event.dart';
 import '../platform/nsfw_platform_interface.dart';
 
 /// Running photo-library or picker scan.
@@ -20,6 +21,8 @@ import '../platform/nsfw_platform_interface.dart';
 class ScanSession {
   final ScanConfiguration _config;
   final NsfwPlatformInterface _platform;
+  final TelemetryHandler? _telemetrySink;
+  final bool _includeLocalIds;
 
   final _resultsController = StreamController<ScanResult>.broadcast();
   final _progressController = StreamController<ScanProgress>.broadcast();
@@ -44,14 +47,25 @@ class ScanSession {
   ScanSession._({
     required ScanConfiguration config,
     required NsfwPlatformInterface platform,
+    TelemetryHandler? telemetrySink,
+    bool includeLocalIds = false,
   })  : _config = config,
-        _platform = platform;
+        _platform = platform,
+        _telemetrySink = telemetrySink,
+        _includeLocalIds = includeLocalIds;
 
   static Future<ScanSession> start({
     required ScanConfiguration config,
     required NsfwPlatformInterface platform,
+    TelemetryHandler? telemetrySink,
+    bool includeLocalIds = false,
   }) async {
-    final session = ScanSession._(config: config, platform: platform);
+    final session = ScanSession._(
+      config: config,
+      platform: platform,
+      telemetrySink: telemetrySink,
+      includeLocalIds: includeLocalIds,
+    );
     await session._begin();
     return session;
   }
@@ -60,10 +74,27 @@ class ScanSession {
     required ScanConfiguration config,
     required NsfwPlatformInterface platform,
     required int maxItems,
+    TelemetryHandler? telemetrySink,
+    bool includeLocalIds = false,
   }) async {
-    final session = ScanSession._(config: config, platform: platform);
+    final session = ScanSession._(
+      config: config,
+      platform: platform,
+      telemetrySink: telemetrySink,
+      includeLocalIds: includeLocalIds,
+    );
     await session._beginPicker(maxItems);
     return session;
+  }
+
+  void _emitTelemetry(TelemetryEvent event) {
+    final sink = _telemetrySink;
+    if (sink == null) return;
+    try {
+      sink(event);
+    } catch (_) {
+      // Telemetry must not break scanning.
+    }
   }
 
   /// Stream of item-level scan results.
@@ -249,6 +280,15 @@ class ScanSession {
     } else if (result.isNsfw) {
       _nsfwCount++;
     }
+    if (_telemetrySink != null && result.status == ScanStatus.completed) {
+      _emitTelemetry(TelemetryEvent.scanCompleted(
+        modelId: _config.modelId,
+        topCategory: result.topCategory,
+        topConfidence: result.topConfidence,
+        fromCache: result.fromCache,
+        localId: _includeLocalIds ? result.item.localIdentifier : null,
+      ));
+    }
     _resultsController.add(result);
   }
 
@@ -276,6 +316,15 @@ class ScanSession {
     );
 
     _summaryCompleter.complete(summary);
+    _emitTelemetry(TelemetryEvent.scanFinished(
+      modelId: _config.modelId,
+      elapsed: elapsed,
+      totalScanned: _totalCount,
+      nsfwCount: _nsfwCount,
+      skippedCount: _skippedCount,
+      failedCount: _failedCount,
+      wasCancelled: cancelled,
+    ));
     _eventSub?.cancel();
     _resultsController.close();
     _progressController.close();
@@ -286,6 +335,9 @@ class ScanSession {
     if (!_isRunning) return;
     _isCancelled = true;
     await _platform.cancelScan();
+    _emitTelemetry(
+      TelemetryEvent.cancelHonored(modelId: _config.modelId),
+    );
     // Ensure we finish immediately — don't wait for native onDone
     if (!_summaryCompleter.isCompleted) {
       _finish(cancelled: true);

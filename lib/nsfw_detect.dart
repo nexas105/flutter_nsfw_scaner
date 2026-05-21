@@ -24,6 +24,7 @@ export 'src/api/scan_session.dart';
 export 'src/api/picked_media.dart';
 export 'src/api/media_picker_type.dart';
 export 'src/api/scan_summary.dart';
+export 'src/api/telemetry_event.dart';
 export 'src/api/model_descriptor.dart';
 export 'src/api/model_download_progress.dart';
 export 'src/api/model_registration.dart';
