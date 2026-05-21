@@ -1,0 +1,26 @@
+name: nsfw_detect_gen
+description: >-
+  Code generator for the `@NsfwModel` annotation shipped with the `nsfw_detect`
+  Flutter plugin. Emits typed model registries and `registerAll(NsfwDetector)`
+  helpers from a single annotated class.
+version: 0.1.0
+publish_to: none
+homepage: https://github.com/nexas105/flutter_nsfw_scaner
+repository: https://github.com/nexas105/flutter_nsfw_scaner
+issue_tracker: https://github.com/nexas105/flutter_nsfw_scaner/issues
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  analyzer: ^6.0.0
+  build: ^2.0.0
+  source_gen: ^1.5.0
+  nsfw_detect:
+    path: ../..
+
+dev_dependencies:
+  build_runner: ^2.4.0
+  build_test: ^2.0.0
+  test: ^1.24.0
+  lints: ^4.0.0

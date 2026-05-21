@@ -63,13 +63,56 @@ class MediaItem {
         if (height != null) 'height': height,
       };
 
+  /// Returns a copy of this [MediaItem] with selected fields replaced.
+  ///
+  /// Passing `null` leaves the existing value unchanged. There is no way to
+  /// explicitly null out an optional field via [copyWith] — construct a new
+  /// [MediaItem] directly if that's what you need.
+  MediaItem copyWith({
+    String? localIdentifier,
+    MediaType? type,
+    DateTime? creationDate,
+    Duration? duration,
+    int? width,
+    int? height,
+  }) =>
+      MediaItem(
+        localIdentifier: localIdentifier ?? this.localIdentifier,
+        type: type ?? this.type,
+        creationDate: creationDate ?? this.creationDate,
+        duration: duration ?? this.duration,
+        width: width ?? this.width,
+        height: height ?? this.height,
+      );
+
+  /// Two [MediaItem]s are equal if they share the same [localIdentifier].
+  ///
+  /// Metadata fields ([type], [creationDate], [duration], [width], [height])
+  /// are views of the underlying asset at a point in time and are intentionally
+  /// excluded from equality — same asset, different metadata snapshot is still
+  /// the same item. Mirrors how `PHAsset` / `MediaStore` treat asset IDs as keys.
+  /// Use [equalsContent] for a deep structural comparison.
   @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is MediaItem && localIdentifier == other.localIdentifier;
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is MediaItem && localIdentifier == other.localIdentifier;
+  }
 
   @override
   int get hashCode => localIdentifier.hashCode;
 
+  /// Returns `true` iff every metadata field matches [other].
+  bool equalsContent(MediaItem other) =>
+      localIdentifier == other.localIdentifier &&
+      type == other.type &&
+      creationDate == other.creationDate &&
+      duration == other.duration &&
+      width == other.width &&
+      height == other.height;
+
   @override
-  String toString() => 'MediaItem($localIdentifier, ${type.name})';
+  String toString() =>
+      'MediaItem(localIdentifier: $localIdentifier, type: ${type.name}, '
+      'creationDate: $creationDate, duration: $duration, '
+      'width: $width, height: $height)';
 }

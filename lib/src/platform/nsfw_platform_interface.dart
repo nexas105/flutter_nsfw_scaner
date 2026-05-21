@@ -95,9 +95,12 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
       throw UnimplementedError(
           'requestCameraPermission is not yet implemented for this platform');
 
-  // Single asset
+  // Single asset. [roi] is a normalised `{x, y, width, height}` map in
+  // `[0, 1]` passed straight to the native side; when null the full asset is
+  // scanned. Native implementations that don't support ROI cropping should
+  // ignore the key.
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
-      {String? modelId});
+      {String? modelId, Map<String, double>? roi});
 
   // Event stream (raw maps from native)
   Stream<Map<dynamic, dynamic>> get scanEventStream;
@@ -124,15 +127,18 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
       throw UnimplementedError(
           'pickMedia is not implemented by this platform');
 
-  /// Scan an image file from path. Default throws.
+  /// Scan an image file from path. Default throws. [roi] is a normalised
+  /// `{x, y, width, height}` map in `[0, 1]`; native implementations that
+  /// don't support cropping should ignore the key.
   Future<Map<dynamic, dynamic>> scanFilePath(String filePath,
-          {String? modelId}) =>
+          {String? modelId, Map<String, double>? roi}) =>
       throw UnimplementedError(
           'scanFilePath is not implemented by this platform');
 
-  /// Scan raw image bytes. Default throws.
+  /// Scan raw image bytes. Default throws. See [scanFilePath] for the
+  /// [roi] contract.
   Future<Map<dynamic, dynamic>> scanImageBytes(Uint8List bytes,
-          {String? modelId}) =>
+          {String? modelId, Map<String, double>? roi}) =>
       throw UnimplementedError(
           'scanImageBytes is not implemented by this platform');
 
@@ -176,7 +182,7 @@ class NsfwUninitializedPlatform extends NsfwPlatformInterface {
   Future<void> stopCameraScan() => throw UnimplementedError();
   @override
   Future<Map<dynamic, dynamic>> scanSingleAsset(String localIdentifier,
-          {String? modelId}) =>
+          {String? modelId, Map<String, double>? roi}) =>
       throw UnimplementedError();
   @override
   Stream<Map<dynamic, dynamic>> get scanEventStream =>

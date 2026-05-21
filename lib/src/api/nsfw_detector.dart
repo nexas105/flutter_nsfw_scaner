@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'frame_stream_scanner.dart';
 import 'model_download_progress.dart';
 import 'nsfw_init_options.dart';
 import 'nsfw_model_manager.dart';
+import 'perceptual_cache.dart';
 import 'picked_media.dart';
 import 'scan_configuration.dart';
+import 'scan_region.dart';
 import 'scan_result.dart';
 import 'scan_session.dart';
 import 'camera_configuration.dart';
@@ -40,10 +43,45 @@ class NsfwDetector {
 
   StreamController<ModelDownloadProgress>? _downloadProgressController;
   StreamSubscription<Map<dynamic, dynamic>>? _downloadProgressSub;
+  // Latest in-flight progress event per modelId. Cleared when a download
+  // emits `isComplete` so the next subscriber doesn't replay stale state.
+  final Map<String, ModelDownloadProgress> _lastDownloadProgress = {};
 
   NsfwModelManager? _models;
   Future<NsfwInitReport>? _initFuture;
   double _defaultThreshold = 0.7;
+
+  PerceptualCache? _perceptualCache;
+  CropResistantCache? _cropResistantCache;
+
+  /// Lazily-initialised in-memory [CropResistantCache].
+  ///
+  /// Uses [BlockPerceptualHash] (16-block grid by default) so cropped
+  /// re-uploads still match the original entry. Roughly 16x slower per
+  /// lookup than [perceptualCache] — prefer it for forwarded-image
+  /// moderation pipelines, fall back to [perceptualCache] when raw speed
+  /// matters more than crop resistance.
+  CropResistantCache get cropResistantCache =>
+      _cropResistantCache ??= CropResistantCache();
+
+  /// Lazily-initialised in-memory [PerceptualCache].
+  ///
+  /// Use as a pre-check before [scanBytes] to skip duplicate / near-duplicate
+  /// inputs:
+  ///
+  /// ```dart
+  /// final cache = NsfwDetector.instance.perceptualCache;
+  /// final cached = await cache.lookup(bytes);
+  /// if (cached != null) return cached;
+  /// final result = await NsfwDetector.instance.scanBytes(bytes);
+  /// await cache.remember(bytes, result);
+  /// ```
+  ///
+  /// The cache is opt-in — the detector itself does not call it. Capacity
+  /// defaults to 256 entries; rebuild with `PerceptualCache(capacity: …)` if
+  /// you need a different size.
+  PerceptualCache get perceptualCache =>
+      _perceptualCache ??= PerceptualCache();
 
   /// High-level model lifecycle facade — preload, download, ensureReady,
   /// state-change stream. Lazily constructed on first access.
@@ -161,30 +199,79 @@ class NsfwDetector {
   /// download is in flight. The stream multiplexes events from any concurrent
   /// downloads — discriminate via [ModelDownloadProgress.modelId].
   ///
+  /// Late subscribers receive a replay of the latest cached in-flight event
+  /// per `modelId` immediately on subscribe — so attaching a listener after a
+  /// download has already started still gets the most recent fraction (no
+  /// race window where the UI shows 0% until the next native event lands).
+  /// The cache is cleared on `isComplete` so completed downloads aren't
+  /// replayed to future subscribers.
+  ///
   /// The stream is lazy: it subscribes to the native event stream only when
   /// the first listener attaches. Cancel listeners when you no longer need
   /// updates so the underlying subscription can be torn down.
   Stream<ModelDownloadProgress> get downloadProgress {
+    _ensureDownloadProgressController();
+    final controller = _downloadProgressController!;
+    return _replayDownloadProgress(controller.stream);
+  }
+
+  void _ensureDownloadProgressController() {
     final existing = _downloadProgressController;
-    if (existing != null && !existing.isClosed) return existing.stream;
-    final controller = StreamController<ModelDownloadProgress>.broadcast(
+    if (existing != null && !existing.isClosed) return;
+    StreamController<ModelDownloadProgress>? controller;
+    controller = StreamController<ModelDownloadProgress>.broadcast(
       onCancel: () {
-        _downloadProgressSub?.cancel();
-        _downloadProgressSub = null;
+        // Only tear down the native subscription when the controller has no
+        // listeners left. Otherwise we'd cancel mid-download for other
+        // subscribers.
+        if (controller?.hasListener == false) {
+          _downloadProgressSub?.cancel();
+          _downloadProgressSub = null;
+        }
       },
     );
     _downloadProgressController = controller;
     _downloadProgressSub = _platform.scanEventStream.listen(
       (event) {
         if (event['type'] == 'modelDownloadProgress') {
-          if (!controller.isClosed) {
-            controller.add(ModelDownloadProgress.fromMap(event));
+          final progress = ModelDownloadProgress.fromMap(event);
+          if (progress.isComplete || progress.error != null) {
+            _lastDownloadProgress.remove(progress.modelId);
+          } else {
+            _lastDownloadProgress[progress.modelId] = progress;
           }
+          if (!controller!.isClosed) controller.add(progress);
         }
       },
       onError: (_) {/* swallow — native scan errors aren't download errors */},
     );
-    return controller.stream;
+  }
+
+  /// Wraps [source] in a per-listener stream that synchronously emits the
+  /// last cached in-flight progress event(s) before forwarding live events.
+  Stream<ModelDownloadProgress> _replayDownloadProgress(
+    Stream<ModelDownloadProgress> source,
+  ) {
+    late StreamController<ModelDownloadProgress> out;
+    StreamSubscription<ModelDownloadProgress>? sub;
+    out = StreamController<ModelDownloadProgress>(
+      onListen: () {
+        // Replay any in-flight progress synchronously so late subscribers
+        // don't see a 0% gap.
+        for (final cached in _lastDownloadProgress.values) {
+          out.add(cached);
+        }
+        sub = source.listen(
+          out.add,
+          onError: out.addError,
+          onDone: out.close,
+        );
+      },
+      onPause: () => sub?.pause(),
+      onResume: () => sub?.resume(),
+      onCancel: () => sub?.cancel(),
+    );
+    return out.stream;
   }
 
   /// Requests access to the user's photo library.
@@ -321,6 +408,40 @@ class NsfwDetector {
     return session;
   }
 
+  /// Builds a [FrameStreamScanner] over [frames] — a generic adapter for
+  /// WebRTC tracks, RTSP/HLS frame producers, or any custom source emitting
+  /// encoded image buffers.
+  ///
+  /// See [FrameStreamScanner] for backpressure semantics and a
+  /// `flutter_webrtc` integration example.
+  ///
+  /// ```dart
+  /// final scanner = NsfwDetector.instance.scanFrameStream(
+  ///   frames: myFrameStream,
+  ///   targetFps: 2,
+  ///   earlyExitOnNsfw: true,
+  ///   dedupeCache: NsfwDetector.instance.perceptualCache,
+  /// );
+  /// scanner.results.listen((r) => print('frame: ${r.topCategory}'));
+  /// ```
+  FrameStreamScanner scanFrameStream({
+    required Stream<Uint8List> frames,
+    double? confidenceThreshold,
+    int targetFps = 2,
+    bool earlyExitOnNsfw = false,
+    String? modelId,
+    PerceptualCache? dedupeCache,
+  }) {
+    return FrameStreamScanner(
+      frames: frames,
+      confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
+      targetFps: targetFps,
+      earlyExitOnNsfw: earlyExitOnNsfw,
+      modelId: modelId,
+      dedupeCache: dedupeCache,
+    );
+  }
+
   /// Stops the active camera scan. No-op if none is running.
   Future<void> stopCameraScan() async {
     if (_cameraSession != null && _cameraSession!.isRunning) {
@@ -329,18 +450,49 @@ class NsfwDetector {
     }
   }
 
+  /// Resolves the effective threshold for a scan call, honouring any in-flight
+  /// init so [_defaultThreshold] reflects the post-init value rather than the
+  /// pre-init field.
+  ///
+  /// Captures the result locally so callers can use it across async gaps
+  /// without worrying about a parallel `reinit` flipping the field underneath.
+  Future<double> _resolveThreshold(double? override) async {
+    if (override != null) {
+      assert(
+        override >= 0.0 && override <= 1.0,
+        'confidenceThreshold must be in [0.0, 1.0]',
+      );
+      return override;
+    }
+    // Await in-flight init so default-threshold reads after any pending
+    // reconfiguration. Errors are swallowed; the field already has a safe
+    // fallback (0.7).
+    final pending = _initFuture;
+    if (pending != null) {
+      try {
+        await pending;
+      } catch (_) {/* ignored — the threshold default is still safe */}
+    }
+    return _defaultThreshold;
+  }
+
   /// Scans a single photo-library asset by local identifier.
   ///
   /// [confidenceThreshold] is copied into the returned [ScanResult] and affects
   /// convenience getters such as `isNsfw`; the raw labels remain available.
+  /// [region] restricts the scan to a normalised sub-rectangle of the asset.
   Future<ScanResult> scanAsset(
     String localIdentifier, {
     String? modelId,
     double? confidenceThreshold,
+    ScanRegion? region,
   }) async {
-    final t = confidenceThreshold ?? _defaultThreshold;
-    final map =
-        await _platform.scanSingleAsset(localIdentifier, modelId: modelId);
+    final t = await _resolveThreshold(confidenceThreshold);
+    final map = await _platform.scanSingleAsset(
+      localIdentifier,
+      modelId: modelId,
+      roi: region?.toJson(),
+    );
     return ScanResult.fromMap(map, confidenceThreshold: t);
   }
 
@@ -361,14 +513,19 @@ class NsfwDetector {
   ///
   /// The image is classified by the platform implementation. The returned
   /// [ScanResult] contains probabilistic labels sorted by NSFW priority and
-  /// confidence.
+  /// confidence. [region] restricts the scan to a normalised sub-rectangle.
   Future<ScanResult> scanFile(
     String filePath, {
     String? modelId,
     double? confidenceThreshold,
+    ScanRegion? region,
   }) async {
-    final t = confidenceThreshold ?? _defaultThreshold;
-    final map = await _platform.scanFilePath(filePath, modelId: modelId);
+    final t = await _resolveThreshold(confidenceThreshold);
+    final map = await _platform.scanFilePath(
+      filePath,
+      modelId: modelId,
+      roi: region?.toJson(),
+    );
     return ScanResult.fromMap(map, confidenceThreshold: t);
   }
 
@@ -396,14 +553,20 @@ class NsfwDetector {
   /// Scans an image from raw bytes (JPEG, PNG, etc.).
   ///
   /// Use this for images already loaded by your app. Keep byte buffers small
-  /// enough for the target devices.
+  /// enough for the target devices. [region] restricts the scan to a
+  /// normalised sub-rectangle.
   Future<ScanResult> scanBytes(
     Uint8List bytes, {
     String? modelId,
     double? confidenceThreshold,
+    ScanRegion? region,
   }) async {
-    final t = confidenceThreshold ?? _defaultThreshold;
-    final map = await _platform.scanImageBytes(bytes, modelId: modelId);
+    final t = await _resolveThreshold(confidenceThreshold);
+    final map = await _platform.scanImageBytes(
+      bytes,
+      modelId: modelId,
+      roi: region?.toJson(),
+    );
     return ScanResult.fromMap(map, confidenceThreshold: t);
   }
 
@@ -414,11 +577,13 @@ class NsfwDetector {
     String filePath, {
     String? modelId,
     double? confidenceThreshold,
+    ScanRegion? region,
   }) async {
     final result = await scanFile(
       filePath,
       modelId: modelId,
       confidenceThreshold: confidenceThreshold,
+      region: region,
     );
     return result.isNsfw;
   }
@@ -429,11 +594,13 @@ class NsfwDetector {
     Uint8List bytes, {
     String? modelId,
     double? confidenceThreshold,
+    ScanRegion? region,
   }) async {
     final result = await scanBytes(
       bytes,
       modelId: modelId,
       confidenceThreshold: confidenceThreshold,
+      region: region,
     );
     return result.isNsfw;
   }
@@ -444,11 +611,13 @@ class NsfwDetector {
     String localIdentifier, {
     String? modelId,
     double? confidenceThreshold,
+    ScanRegion? region,
   }) async {
     final result = await scanAsset(
       localIdentifier,
       modelId: modelId,
       confidenceThreshold: confidenceThreshold,
+      region: region,
     );
     return result.isNsfw;
   }
@@ -476,15 +645,18 @@ class NsfwDetector {
     String? modelId,
     double? confidenceThreshold,
     void Function(int completed, int total)? onProgress,
-  }) =>
-      _scanBatch<String>(
-        paths,
-        (p) => scanFile(p,
-            modelId: modelId, confidenceThreshold: confidenceThreshold),
-        onProgress: onProgress,
-        confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
-        identifierFor: (p) => p,
-      );
+  }) async {
+    // Resolve once so the per-item threshold can't drift if reinit lands
+    // mid-batch.
+    final t = await _resolveThreshold(confidenceThreshold);
+    return _scanBatch<String>(
+      paths,
+      (p) => scanFile(p, modelId: modelId, confidenceThreshold: t),
+      onProgress: onProgress,
+      confidenceThreshold: t,
+      identifierFor: (p) => p,
+    );
+  }
 
   /// Scans every byte buffer in [items] sequentially. See [scanFiles] for
   /// progress and error semantics.
@@ -493,15 +665,16 @@ class NsfwDetector {
     String? modelId,
     double? confidenceThreshold,
     void Function(int completed, int total)? onProgress,
-  }) =>
-      _scanBatch<Uint8List>(
-        items,
-        (b) => scanBytes(b,
-            modelId: modelId, confidenceThreshold: confidenceThreshold),
-        onProgress: onProgress,
-        confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
-        identifierFor: (_) => '',
-      );
+  }) async {
+    final t = await _resolveThreshold(confidenceThreshold);
+    return _scanBatch<Uint8List>(
+      items,
+      (b) => scanBytes(b, modelId: modelId, confidenceThreshold: t),
+      onProgress: onProgress,
+      confidenceThreshold: t,
+      identifierFor: (_) => '',
+    );
+  }
 
   /// Scans every photo-library local identifier in [localIdentifiers]
   /// sequentially. See [scanFiles] for progress and error semantics.
@@ -510,15 +683,16 @@ class NsfwDetector {
     String? modelId,
     double? confidenceThreshold,
     void Function(int completed, int total)? onProgress,
-  }) =>
-      _scanBatch<String>(
-        localIdentifiers,
-        (id) => scanAsset(id,
-            modelId: modelId, confidenceThreshold: confidenceThreshold),
-        onProgress: onProgress,
-        confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
-        identifierFor: (id) => id,
-      );
+  }) async {
+    final t = await _resolveThreshold(confidenceThreshold);
+    return _scanBatch<String>(
+      localIdentifiers,
+      (id) => scanAsset(id, modelId: modelId, confidenceThreshold: t),
+      onProgress: onProgress,
+      confidenceThreshold: t,
+      identifierFor: (id) => id,
+    );
+  }
 
   Future<List<ScanResult>> _scanBatch<T>(
     List<T> items,
@@ -551,4 +725,68 @@ class NsfwDetector {
   /// threshold, and multi-model preload all flow through one call.
   Future<void> ready({String modelId = ModelIds.openNsfw2}) =>
       preloadModel(modelId);
+
+  /// Sweeps NSFW confidence thresholds against [samples] to find the smallest
+  /// threshold whose **precision** (`TP / (TP + FP)`) is at least
+  /// [precisionTarget].
+  ///
+  /// Each sample is a tuple of image bytes + an `expectedNsfw` ground-truth
+  /// label. The method runs [scanBytes] on every sample once, then sweeps
+  /// candidate thresholds in `0.05` increments from `0.05` to `0.95`.
+  ///
+  /// Returns the chosen threshold. Throws [ArgumentError] when [samples] is
+  /// empty. If no threshold meets the precision target, returns `1.0` —
+  /// effectively never flagging anything (the safest possible cut-off).
+  ///
+  /// Pure Dart — no native changes needed.
+  Future<double> calibrate({
+    required List<({Uint8List bytes, bool expectedNsfw})> samples,
+    double precisionTarget = 0.9,
+    String? modelId,
+  }) async {
+    if (samples.isEmpty) {
+      throw ArgumentError.value(samples, 'samples', 'must be non-empty');
+    }
+    assert(
+      precisionTarget >= 0.0 && precisionTarget <= 1.0,
+      'precisionTarget must be in [0.0, 1.0]',
+    );
+
+    // Run each sample once at a permissive threshold (0.0) so the raw
+    // topConfidence + topCategory are stable; we re-bucket them per
+    // candidate threshold without re-running the model.
+    final scored =
+        <({double topConfidence, bool topIsNsfw, bool expectedNsfw})>[];
+    for (final s in samples) {
+      final r = await scanBytes(
+        s.bytes,
+        modelId: modelId,
+        confidenceThreshold: 0.0,
+      );
+      scored.add((
+        topConfidence: r.topConfidence,
+        topIsNsfw: r.topCategory.isNsfw,
+        expectedNsfw: s.expectedNsfw,
+      ));
+    }
+
+    double best = 1.0;
+    for (var step = 1; step <= 19; step++) {
+      final t = step * 0.05;
+      var tp = 0;
+      var fp = 0;
+      for (final s in scored) {
+        final predicted = s.topIsNsfw && s.topConfidence >= t;
+        if (predicted && s.expectedNsfw) tp++;
+        if (predicted && !s.expectedNsfw) fp++;
+      }
+      if (tp + fp == 0) continue;
+      final precision = tp / (tp + fp);
+      if (precision >= precisionTarget) {
+        best = t;
+        break;
+      }
+    }
+    return best;
+  }
 }

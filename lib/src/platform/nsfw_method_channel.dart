@@ -65,10 +65,15 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   Future<Map<dynamic, dynamic>> scanSingleAsset(
     String localIdentifier, {
     String? modelId,
+    Map<String, double>? roi,
   }) async {
     final result = await _methodChannel.invokeMapMethod<dynamic, dynamic>(
       'scanSingleAsset',
-      {'localId': localIdentifier, if (modelId != null) 'modelId': modelId},
+      {
+        'localId': localIdentifier,
+        if (modelId != null) 'modelId': modelId,
+        if (roi != null) 'roi': roi,
+      },
     );
     return result ?? {};
   }
@@ -100,20 +105,28 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
 
   @override
   Future<Map<dynamic, dynamic>> scanFilePath(String filePath,
-      {String? modelId}) async {
+      {String? modelId, Map<String, double>? roi}) async {
     final result = await _methodChannel.invokeMapMethod<dynamic, dynamic>(
       'scanFile',
-      {'filePath': filePath, if (modelId != null) 'modelId': modelId},
+      {
+        'filePath': filePath,
+        if (modelId != null) 'modelId': modelId,
+        if (roi != null) 'roi': roi,
+      },
     );
     return result ?? {};
   }
 
   @override
   Future<Map<dynamic, dynamic>> scanImageBytes(Uint8List bytes,
-      {String? modelId}) async {
+      {String? modelId, Map<String, double>? roi}) async {
     final result = await _methodChannel.invokeMapMethod<dynamic, dynamic>(
       'scanBytes',
-      {'bytes': bytes, if (modelId != null) 'modelId': modelId},
+      {
+        'bytes': bytes,
+        if (modelId != null) 'modelId': modelId,
+        if (roi != null) 'roi': roi,
+      },
     );
     return result ?? {};
   }

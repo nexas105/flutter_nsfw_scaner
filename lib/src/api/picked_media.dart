@@ -44,4 +44,45 @@ class PickedMedia {
         height: (map['height'] as num?)?.toInt(),
         durationMs: (map['durationMs'] as num?)?.toInt(),
       );
+
+  /// Returns a copy of this [PickedMedia] with selected fields replaced.
+  PickedMedia copyWith({
+    String? localId,
+    MediaType? mediaType,
+    String? filePath,
+    int? width,
+    int? height,
+    int? durationMs,
+  }) =>
+      PickedMedia(
+        localId: localId ?? this.localId,
+        mediaType: mediaType ?? this.mediaType,
+        filePath: filePath ?? this.filePath,
+        width: width ?? this.width,
+        height: height ?? this.height,
+        durationMs: durationMs ?? this.durationMs,
+      );
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+    return other is PickedMedia &&
+        localId == other.localId &&
+        mediaType == other.mediaType &&
+        filePath == other.filePath &&
+        width == other.width &&
+        height == other.height &&
+        durationMs == other.durationMs;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(localId, mediaType, filePath, width, height, durationMs);
+
+  @override
+  String toString() =>
+      'PickedMedia(localId: $localId, type: ${mediaType.name}, '
+      'filePath: $filePath, width: $width, height: $height, '
+      'durationMs: $durationMs)';
 }

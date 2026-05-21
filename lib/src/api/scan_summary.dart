@@ -29,7 +29,50 @@ class ScanSummary {
         elapsed = Duration.zero,
         wasCancelled = false;
 
+  /// Returns a copy of this [ScanSummary] with selected fields replaced.
+  ScanSummary copyWith({
+    int? totalScanned,
+    int? nsfwCount,
+    int? skippedCount,
+    int? failedCount,
+    Duration? elapsed,
+    bool? wasCancelled,
+  }) =>
+      ScanSummary(
+        totalScanned: totalScanned ?? this.totalScanned,
+        nsfwCount: nsfwCount ?? this.nsfwCount,
+        skippedCount: skippedCount ?? this.skippedCount,
+        failedCount: failedCount ?? this.failedCount,
+        elapsed: elapsed ?? this.elapsed,
+        wasCancelled: wasCancelled ?? this.wasCancelled,
+      );
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+    return other is ScanSummary &&
+        totalScanned == other.totalScanned &&
+        nsfwCount == other.nsfwCount &&
+        skippedCount == other.skippedCount &&
+        failedCount == other.failedCount &&
+        elapsed == other.elapsed &&
+        wasCancelled == other.wasCancelled;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        totalScanned,
+        nsfwCount,
+        skippedCount,
+        failedCount,
+        elapsed,
+        wasCancelled,
+      );
+
   @override
   String toString() =>
-      'ScanSummary(total=$totalScanned, nsfw=$nsfwCount, skipped=$skippedCount, failed=$failedCount)';
+      'ScanSummary(totalScanned: $totalScanned, nsfwCount: $nsfwCount, '
+      'skippedCount: $skippedCount, failedCount: $failedCount, '
+      'elapsed: $elapsed, wasCancelled: $wasCancelled)';
 }

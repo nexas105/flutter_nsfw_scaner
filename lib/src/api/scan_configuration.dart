@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'scan_mode.dart';
+import 'scan_region.dart';
 
 /// Immutable options for a photo-library NSFW scan.
 ///
@@ -87,6 +88,24 @@ class ScanConfiguration {
   /// kind matches the requested mode.
   final ScanMode mode;
 
+  /// Single normalized region (`x`, `y`, `width`, `height` in `[0, 1]`) that
+  /// the native scanner should crop before classifying each asset. `null`
+  /// means scan the full image. Applied to every asset in a library scan.
+  final ScanRegion? region;
+
+  /// Asset identifiers to skip in this scan. Useful for moderation review
+  /// queues that have already triaged a subset of the library. Native side
+  /// SHOULD honour this if supported; the Dart-side [ScanSession] filters
+  /// matching `localId` events as a defensive fallback.
+  ///
+  /// Precedence: if [includeOnlyAssetIds] is non-empty it wins — any id not
+  /// in the include set is skipped, regardless of this set.
+  final Set<String> skipAssetIds;
+
+  /// When non-empty, only assets whose `localId` is in this set are scanned.
+  /// Combined precedence with [skipAssetIds]: include-only wins.
+  final Set<String> includeOnlyAssetIds;
+
   const ScanConfiguration({
     this.modelId = ModelIds.openNsfw2,
     this.confidenceThreshold = 0.7,
@@ -106,7 +125,22 @@ class ScanConfiguration {
     this.iosComputeUnits = IosComputeUnits.all,
     this.androidDelegate,
     this.mode = ScanMode.classification,
-  });
+    this.region,
+    this.skipAssetIds = const {},
+    this.includeOnlyAssetIds = const {},
+  })  : assert(
+          confidenceThreshold >= 0.0 && confidenceThreshold <= 1.0,
+          'confidenceThreshold must be in [0.0, 1.0]',
+        ),
+        assert(
+          detectionConfidenceThreshold >= 0.0 &&
+              detectionConfidenceThreshold <= 1.0,
+          'detectionConfidenceThreshold must be in [0.0, 1.0]',
+        ),
+        assert(
+          iouThreshold >= 0.0 && iouThreshold <= 1.0,
+          'iouThreshold must be in [0.0, 1.0]',
+        );
 
   /// Strict moderation tuning — high `confidenceThreshold` (0.85) so only
   /// strong NSFW signals trip `isNsfw`. Lower false-positive cost is traded
@@ -203,6 +237,9 @@ class ScanConfiguration {
     IosComputeUnits? iosComputeUnits,
     AndroidDelegate? androidDelegate,
     ScanMode? mode,
+    ScanRegion? region,
+    Set<String>? skipAssetIds,
+    Set<String>? includeOnlyAssetIds,
   }) =>
       ScanConfiguration(
         modelId: modelId ?? this.modelId,
@@ -225,6 +262,9 @@ class ScanConfiguration {
         iosComputeUnits: iosComputeUnits ?? this.iosComputeUnits,
         androidDelegate: androidDelegate ?? this.androidDelegate,
         mode: mode ?? this.mode,
+        region: region ?? this.region,
+        skipAssetIds: skipAssetIds ?? this.skipAssetIds,
+        includeOnlyAssetIds: includeOnlyAssetIds ?? this.includeOnlyAssetIds,
       );
 
   /// Converts this configuration into the method-channel payload expected by
@@ -249,6 +289,10 @@ class ScanConfiguration {
         if (androidDelegate != null)
           'androidDelegate': androidDelegate!.wireValue,
         'mode': mode.wireValue,
+        if (region != null) 'roi': region!.toJson(),
+        if (skipAssetIds.isNotEmpty) 'skipAssetIds': skipAssetIds.toList(),
+        if (includeOnlyAssetIds.isNotEmpty)
+          'includeOnlyAssetIds': includeOnlyAssetIds.toList(),
       };
 
   /// Serialises the configuration to a JSON-safe map. Symmetric with
@@ -274,6 +318,10 @@ class ScanConfiguration {
         if (androidDelegate != null)
           'androidDelegate': androidDelegate!.wireValue,
         'mode': mode.wireValue,
+        if (region != null) 'region': region!.toJson(),
+        if (skipAssetIds.isNotEmpty) 'skipAssetIds': skipAssetIds.toList(),
+        if (includeOnlyAssetIds.isNotEmpty)
+          'includeOnlyAssetIds': includeOnlyAssetIds.toList(),
       };
 
   /// Restores a configuration previously produced by [toJson]. Unknown values
@@ -303,6 +351,18 @@ class ScanConfiguration {
       final v = json['assetIdentifiers'];
       if (v is! List) return null;
       return v.whereType<String>().toList(growable: false);
+    }
+
+    Set<String> parseStringSet(String key) {
+      final v = json[key];
+      if (v is! List) return const {};
+      return v.whereType<String>().toSet();
+    }
+
+    ScanRegion? parseRegion() {
+      final v = json['region'];
+      if (v is Map<dynamic, dynamic>) return ScanRegion.fromJson(v);
+      return null;
     }
 
     return ScanConfiguration(
@@ -336,6 +396,9 @@ class ScanConfiguration {
       iosComputeUnits: parseCompute(),
       androidDelegate: parseDelegate(),
       mode: ScanMode.fromWire(json['mode'] as String?),
+      region: parseRegion(),
+      skipAssetIds: parseStringSet('skipAssetIds'),
+      includeOnlyAssetIds: parseStringSet('includeOnlyAssetIds'),
     );
   }
 
@@ -360,7 +423,10 @@ class ScanConfiguration {
         replayCachedResults == other.replayCachedResults &&
         iosComputeUnits == other.iosComputeUnits &&
         androidDelegate == other.androidDelegate &&
-        mode == other.mode;
+        mode == other.mode &&
+        region == other.region &&
+        setEquals(skipAssetIds, other.skipAssetIds) &&
+        setEquals(includeOnlyAssetIds, other.includeOnlyAssetIds);
   }
 
   @override
@@ -384,6 +450,9 @@ class ScanConfiguration {
           iosComputeUnits,
           androidDelegate,
           mode,
+          region,
+          Object.hashAllUnordered(skipAssetIds),
+          Object.hashAllUnordered(includeOnlyAssetIds),
         ),
       );
 }

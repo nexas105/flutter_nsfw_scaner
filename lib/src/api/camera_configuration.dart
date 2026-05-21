@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'scan_configuration.dart';
 import 'scan_mode.dart';
+import 'scan_region.dart';
 
 /// Resolution preset for the live camera feed.
 enum CameraResolution {
@@ -56,6 +57,11 @@ class CameraConfiguration {
   /// Android TFLite delegate.
   final AndroidDelegate? androidDelegate;
 
+  /// Single normalized region (`x`, `y`, `width`, `height` in `[0, 1]`) that
+  /// the native camera scanner should crop from each frame before
+  /// classification. `null` means scan the full frame.
+  final ScanRegion? region;
+
   const CameraConfiguration({
     this.modelId = ModelIds.openNsfw2,
     this.confidenceThreshold = 0.7,
@@ -66,7 +72,21 @@ class CameraConfiguration {
     this.iouThreshold = 0.45,
     this.iosComputeUnits = IosComputeUnits.all,
     this.androidDelegate,
-  }) : assert(fps >= 1 && fps <= 30, 'fps must be between 1 and 30');
+    this.region,
+  })  : assert(fps >= 1 && fps <= 30, 'fps must be between 1 and 30'),
+        assert(
+          confidenceThreshold >= 0.0 && confidenceThreshold <= 1.0,
+          'confidenceThreshold must be in [0.0, 1.0]',
+        ),
+        assert(
+          detectionConfidenceThreshold >= 0.0 &&
+              detectionConfidenceThreshold <= 1.0,
+          'detectionConfidenceThreshold must be in [0.0, 1.0]',
+        ),
+        assert(
+          iouThreshold >= 0.0 && iouThreshold <= 1.0,
+          'iouThreshold must be in [0.0, 1.0]',
+        );
 
   /// Higher-throughput preset — 10 FPS, high resolution, all compute units.
   /// Best for interactive review apps; expect higher battery draw.
@@ -121,6 +141,7 @@ class CameraConfiguration {
     double? iouThreshold,
     IosComputeUnits? iosComputeUnits,
     AndroidDelegate? androidDelegate,
+    ScanRegion? region,
   }) =>
       CameraConfiguration(
         modelId: modelId ?? this.modelId,
@@ -133,6 +154,7 @@ class CameraConfiguration {
         iouThreshold: iouThreshold ?? this.iouThreshold,
         iosComputeUnits: iosComputeUnits ?? this.iosComputeUnits,
         androidDelegate: androidDelegate ?? this.androidDelegate,
+        region: region ?? this.region,
       );
 
   /// Converts this configuration into the method-channel payload expected by
@@ -148,6 +170,7 @@ class CameraConfiguration {
         'iosComputeUnits': iosComputeUnits.wireValue,
         if (androidDelegate != null)
           'androidDelegate': androidDelegate!.wireValue,
+        if (region != null) 'roi': region!.toJson(),
       };
 
   @override
@@ -162,7 +185,8 @@ class CameraConfiguration {
         detectionConfidenceThreshold == other.detectionConfidenceThreshold &&
         iouThreshold == other.iouThreshold &&
         iosComputeUnits == other.iosComputeUnits &&
-        androidDelegate == other.androidDelegate;
+        androidDelegate == other.androidDelegate &&
+        region == other.region;
   }
 
   @override
@@ -176,5 +200,6 @@ class CameraConfiguration {
         iouThreshold,
         iosComputeUnits,
         androidDelegate,
+        region,
       );
 }

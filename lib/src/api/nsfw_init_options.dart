@@ -45,6 +45,9 @@ class NsfwInitOptions {
   /// Minimum-cost init — only registers the platform channel, preloads
   /// nothing. Useful when you want a `NsfwInitReport` for symmetry but don't
   /// need the model loaded yet.
+  ///
+  /// Intent: defer all model work to the first real scan. Best for apps that
+  /// might never actually scan and want zero cold-start cost.
   const NsfwInitOptions.lazy()
       : preloadModels = const [],
         downloadIfMissing = const [],
@@ -53,13 +56,30 @@ class NsfwInitOptions {
         defaultThreshold = 0.7;
 
   /// Development preset — preloads the default classifier, turns on native
-  /// logging, and uses the standard threshold. Use [NsfwInitOptions]
+  /// logging, and uses the standard threshold.
+  ///
+  /// Intent: maximise diagnostic visibility during development. Pair with
+  /// `kDebugMode` to keep this off release builds. Use [NsfwInitOptions]
   /// directly for production tunings.
   const NsfwInitOptions.debug()
       : preloadModels = const [ModelIds.openNsfw2],
         downloadIfMissing = const [],
         tolerateModelErrors = true,
         enableNativeLogging = true,
+        defaultThreshold = 0.7;
+
+  /// Production preset — preloads the default classifier with logging off and
+  /// uses the standard threshold. No automatic downloads.
+  ///
+  /// Intent: warm one model for predictable first-scan latency, keep the
+  /// native side quiet, and let the app decide explicitly when (if ever) to
+  /// download additional models. Recommended starting point for release
+  /// builds.
+  const NsfwInitOptions.production()
+      : preloadModels = const [ModelIds.openNsfw2],
+        downloadIfMissing = const [],
+        tolerateModelErrors = true,
+        enableNativeLogging = false,
         defaultThreshold = 0.7;
 }
 

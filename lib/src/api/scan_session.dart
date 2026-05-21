@@ -36,6 +36,11 @@ class ScanSession {
   int _totalCount = 0;
   DateTime? _startTime;
 
+  // Rolling window of (timestamp, scannedCount) pairs used to compute the
+  // throughput / ETA shown in ScanProgress. Capped at 20 entries.
+  static const int _throughputWindow = 20;
+  final List<({DateTime at, int scannedCount})> _progressSamples = [];
+
   ScanSession._({
     required ScanConfiguration config,
     required NsfwPlatformInterface platform,
@@ -129,10 +134,11 @@ class ScanSession {
         }
 
       case 'progress':
-        final progress = ScanProgress.fromMap(event);
-        _totalCount = progress.totalCount;
-        _progressController.add(progress);
-        if (progress.isComplete && !_summaryCompleter.isCompleted) {
+        final raw = ScanProgress.fromMap(event);
+        _totalCount = raw.totalCount;
+        final enriched = _enrichProgress(raw);
+        _progressController.add(enriched);
+        if (enriched.isComplete && !_summaryCompleter.isCompleted) {
           _finish(cancelled: false);
         }
 
@@ -143,6 +149,47 @@ class ScanSession {
         }
         _handleError(Exception(msg));
     }
+  }
+
+  /// Adds itemsPerSecond + estimatedRemaining to [raw] based on a rolling
+  /// throughput window. Pure — does not mutate the input.
+  ScanProgress _enrichProgress(ScanProgress raw) {
+    final now = DateTime.now();
+    _progressSamples.add((at: now, scannedCount: raw.scannedCount));
+    if (_progressSamples.length > _throughputWindow) {
+      _progressSamples.removeAt(0);
+    }
+
+    double? itemsPerSecond;
+    Duration? estimatedRemaining;
+    if (_progressSamples.length >= 2) {
+      final first = _progressSamples.first;
+      final last = _progressSamples.last;
+      final elapsedMicros =
+          last.at.difference(first.at).inMicroseconds;
+      final deltaItems = last.scannedCount - first.scannedCount;
+      if (elapsedMicros > 0 && deltaItems > 0) {
+        itemsPerSecond = deltaItems * 1e6 / elapsedMicros;
+        if (raw.totalCount > 0 && !raw.isComplete) {
+          final remaining = raw.totalCount - raw.scannedCount;
+          if (remaining > 0) {
+            final etaSeconds = remaining / itemsPerSecond;
+            if (etaSeconds.isFinite && etaSeconds >= 0) {
+              estimatedRemaining = Duration(
+                microseconds: (etaSeconds * 1e6).round(),
+              );
+            }
+          } else {
+            estimatedRemaining = Duration.zero;
+          }
+        }
+      }
+    }
+
+    return raw.copyWith(
+      itemsPerSecond: itemsPerSecond,
+      estimatedRemaining: estimatedRemaining,
+    );
   }
 
   void _ingestResult(Map<dynamic, dynamic> event) {
@@ -171,6 +218,22 @@ class ScanSession {
     }
     final result = ScanResult.fromMap(event,
         confidenceThreshold: _config.confidenceThreshold);
+
+    // Dart-side filter: honour includeOnlyAssetIds (wins) / skipAssetIds even
+    // when the native implementation hasn't applied the lists itself. This
+    // keeps the public stream consistent across platforms.
+    final id = result.item.localIdentifier;
+    if (id.isNotEmpty) {
+      if (_config.includeOnlyAssetIds.isNotEmpty &&
+          !_config.includeOnlyAssetIds.contains(id)) {
+        return;
+      }
+      if (_config.includeOnlyAssetIds.isEmpty &&
+          _config.skipAssetIds.contains(id)) {
+        return;
+      }
+    }
+
     if (result.status == ScanStatus.failed) {
       _failedCount++;
       if (kDebugMode) {

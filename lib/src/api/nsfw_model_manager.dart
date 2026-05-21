@@ -47,10 +47,42 @@ class ModelStateSnapshot {
     this.error,
   });
 
+  /// Returns a copy of this snapshot with selected fields replaced.
+  ModelStateSnapshot copyWith({
+    String? modelId,
+    ModelStatus? status,
+    double? downloadFraction,
+    int? sizeBytes,
+    String? error,
+  }) =>
+      ModelStateSnapshot(
+        modelId: modelId ?? this.modelId,
+        status: status ?? this.status,
+        downloadFraction: downloadFraction ?? this.downloadFraction,
+        sizeBytes: sizeBytes ?? this.sizeBytes,
+        error: error ?? this.error,
+      );
+
   @override
-  String toString() => 'ModelStateSnapshot($modelId, ${status.name}'
-      '${downloadFraction != null ? ', ${(downloadFraction! * 100).toStringAsFixed(1)}%' : ''}'
-      '${error != null ? ', error=$error' : ''})';
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other.runtimeType != runtimeType) return false;
+    return other is ModelStateSnapshot &&
+        modelId == other.modelId &&
+        status == other.status &&
+        downloadFraction == other.downloadFraction &&
+        sizeBytes == other.sizeBytes &&
+        error == other.error;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(modelId, status, downloadFraction, sizeBytes, error);
+
+  @override
+  String toString() => 'ModelStateSnapshot(modelId: $modelId, '
+      'status: ${status.name}, downloadFraction: $downloadFraction, '
+      'sizeBytes: $sizeBytes, error: $error)';
 }
 
 /// High-level model lifecycle facade. Wraps the bare per-method APIs on

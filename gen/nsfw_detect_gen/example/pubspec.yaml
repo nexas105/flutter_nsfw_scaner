@@ -1,0 +1,17 @@
+name: nsfw_detect_gen_example
+description: Minimal example of the @NsfwModel codegen pipeline.
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ^3.4.0
+
+dependencies:
+  nsfw_detect:
+    path: ../../..
+
+dev_dependencies:
+  build_runner: ^2.4.0
+  nsfw_detect_gen:
+    path: ..
+  lints: ^4.0.0
