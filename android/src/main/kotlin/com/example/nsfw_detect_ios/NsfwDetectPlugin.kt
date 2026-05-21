@@ -47,6 +47,13 @@ class NsfwDetectPlugin : FlutterPlugin, ActivityAware, PluginRegistry.RequestPer
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        // Stop native work BEFORE detaching the channels — otherwise
+        // currentSession / currentCamera keep firing emit() against a sink
+        // whose EventChannel is about to go away, and CameraX keeps the
+        // activity-context alive for a moment after the engine detaches.
+        if (::scanMethodHandler.isInitialized) {
+            scanMethodHandler.dispose()
+        }
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
     }

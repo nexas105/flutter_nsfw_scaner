@@ -207,20 +207,33 @@ class ModelRegistry private constructor(appContext: Context) {
     // MARK: - Builtins
 
     private fun registerBuiltins() {
-        // ── Bundled (shipped inside the APK assets) ─────────────────────
+        // ── OpenNSFW2 ───────────────────────────────────────────────────
+        //
+        // The `.tflite` we historically shipped under
+        // `android/src/main/assets/open_nsfw2.tflite` has always been a
+        // 619-byte UTF-8 placeholder — the real artefact lives on
+        // HuggingFace and was never imported into the APK. The TFLite
+        // interpreter would happily try to load it and crash with an
+        // opaque "did not get magic number" later in the inference path.
+        //
+        // We treat it as a downloadable model instead, defaulting to the
+        // same `models-v1` GitHub release pattern as the other classifier
+        // / detector entries. Users who want a true bundled experience can
+        // re-register a descriptor pointing at their own asset.
+        val openNsfw2Default = "https://github.com/nexas105/flutter_nsfw_scaner/releases/download/models-v1/OpenNSFW2.tflite.zip"
         val openNsfw2 = ModelDescriptorNative(
             id = ModelIds.OPEN_NSFW_2,
-            displayName = "OpenNSFW2 (Bundled)",
+            displayName = "OpenNSFW2",
             description = "Lightweight NSFW classifier — 11 MB, fast, good baseline.",
             version = "1.0",
-            // Logical resource name. TFLiteEngine maps this to the actual asset
-            // file `open_nsfw2.tflite` shipped under android/src/main/assets/.
-            bundleResourceName = "open_nsfw_2",
+            bundleResourceName = "OpenNSFW2",
             metadata = mapOf(
                 "inputSize" to 224,
                 "outputSize" to 2,
                 "framework" to "TFLite",
             ),
+            downloadUrl = resolveDownloadUrl(ModelIds.OPEN_NSFW_2, openNsfw2Default),
+            downloadSizeBytes = 11_000_000L,
         )
         register(openNsfw2) { TFLiteEngine(appContext, it) }
 

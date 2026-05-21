@@ -181,14 +181,11 @@ class TFLiteEngine(
         }
 
         // Bundled in assets/. Asset filename derived from bundleResourceName.
-        // Compatibility shim: the legacy bundled file is `open_nsfw2.tflite`
-        // (no underscore before "2"), but the iOS-aligned descriptor uses
-        // `open_nsfw_2` as the resource name. Map both spellings.
+        // OpenNSFW2 has been flipped to download-on-demand (the historical
+        // bundled file was always a UTF-8 placeholder), so this path now
+        // only fires for custom descriptors a host app registers itself.
         val resourceName = descriptor.bundleResourceName ?: descriptor.id
-        val candidates = buildList {
-            add("$resourceName.tflite")
-            if (resourceName == "open_nsfw_2") add("open_nsfw2.tflite")
-        }
+        val candidates = listOf("$resourceName.tflite")
 
         var lastError: Throwable? = null
         for (assetName in candidates) {

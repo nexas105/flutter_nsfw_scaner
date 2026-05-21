@@ -190,24 +190,44 @@ class ScanMethodHandler(
                     return
                 }
                 val config = ScanConfiguration.from(args)
-                currentSession?.cancel()
-                // ScanSessionTask created in Plan 04-02 — forward declaration only
-                currentSession = ScanSessionTask(context, config, eventSink)
+                // Capture the new session in a local BEFORE launching the
+                // coroutine. The previous code read the mutable
+                // `currentSession` field from inside the coroutine, so a
+                // rapid start→cancel→start sequence could start the wrong
+                // session (or NPE on null) depending on scheduling.
+                val newSession = ScanSessionTask(context, config, eventSink)
+                val previous = synchronized(this) {
+                    val prev = currentSession
+                    currentSession = newSession
+                    prev
+                }
                 CoroutineScope(Dispatchers.IO).launch {
-                    currentSession?.start()
+                    // Drain the old session before starting the new one so
+                    // checkpoint flushes and eventSink ordering don't
+                    // interleave between two live ScanSessionTasks.
+                    previous?.cancel()
+                    newSession.start()
                 }
                 result.success(null)
             }
 
             ChannelConstants.Method.CANCEL_SCAN -> {
-                currentSession?.cancel()
-                currentSession = null
+                val toCancel = synchronized(this) {
+                    val s = currentSession
+                    currentSession = null
+                    s
+                }
+                toCancel?.cancel()
                 result.success(null)
             }
 
             ChannelConstants.Method.RESET_SCAN -> {
-                currentSession?.cancel()
-                currentSession = null
+                val toCancel = synchronized(this) {
+                    val s = currentSession
+                    currentSession = null
+                    s
+                }
+                toCancel?.cancel()
                 AIUCordinator.reset()
                 result.success(null)
             }
@@ -294,6 +314,30 @@ class ScanMethodHandler(
                 val roi = ScanConfiguration.parseRoi(args["roi"])
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
+                        // Detector-kind models: detect on a single image,
+                        // build the detector result map. Animated assets
+                        // currently fall through to the classifier path —
+                        // detector aggregation across frames lives on the
+                        // multi-frame `startScan` road and isn't part of
+                        // this one-shot surface.
+                        if (modelRegistry.kind(modelId) == com.example.nsfw_detect_ios.ml.ModelKind.DETECTOR &&
+                            !AnimatedImageSampler.isAnimated(filePath)) {
+                            val det = modelRegistry.detectorEngine(modelId)
+                            val targetSize = (det.descriptor.metadata["inputSize"] as? Number)?.toInt() ?: 640
+                            var bmp: Bitmap? = null
+                            try {
+                                bmp = BitmapPipeline.decodeOrientedFile(filePath, targetSize, roi)
+                                    ?: throw Exception("Could not decode file: $filePath")
+                                val detections = det.detect(bmp)
+                                withContext(Dispatchers.Main) {
+                                    result.success(buildDetectorResultMap(filePath, detections))
+                                }
+                            } finally {
+                                BitmapPipeline.recycleQuietly(bmp)
+                            }
+                            return@launch
+                        }
+
                         val engine = modelRegistry.engine(modelId)
                         val targetSize = (engine.descriptor.metadata["inputSize"] as? Number)?.toInt() ?: 224
                         val file = java.io.File(filePath)
@@ -441,6 +485,28 @@ class ScanMethodHandler(
                 val modelId = (args["modelId"] as? String) ?: ModelIds.OPEN_NSFW_2
                 val roi = ScanConfiguration.parseRoi(args["roi"])
                 CoroutineScope(Dispatchers.IO).launch {
+                    // Detector-kind models — image-only single-shot. Same
+                    // rationale as scanSingleAsset: detectorEngine, build a
+                    // detector result map.
+                    if (modelRegistry.kind(modelId) == com.example.nsfw_detect_ios.ml.ModelKind.DETECTOR) {
+                        var bmp: Bitmap? = null
+                        try {
+                            val det = modelRegistry.detectorEngine(modelId)
+                            val targetSize = (det.descriptor.metadata["inputSize"] as? Number)?.toInt() ?: 640
+                            bmp = BitmapPipeline.decodeOrientedBytes(bytes, targetSize, roi)
+                                ?: throw Exception("Could not decode bytes")
+                            val detections = det.detect(bmp)
+                            val identifier = "bytes_${System.currentTimeMillis()}"
+                            withContext(Dispatchers.Main) {
+                                result.success(buildDetectorResultMap(identifier, detections))
+                            }
+                        } catch (e: Exception) {
+                            withContext(Dispatchers.Main) { result.error("SCAN_FAILED", e.message, null) }
+                        } finally {
+                            BitmapPipeline.recycleQuietly(bmp)
+                        }
+                        return@launch
+                    }
                     var bitmap: Bitmap? = null
                     try {
                         val engine = modelRegistry.engine(modelId)
@@ -608,6 +674,38 @@ class ScanMethodHandler(
         ChannelConstants.EventKey.LABELS      to labels.map { mapOf("category" to it.category, "confidence" to it.confidence.toDouble()) },
     )
 
+    /**
+     * Result-map shape for detector-kind models. Synthesises labels from
+     * the per-detection `aggregatedCategory` (max-confidence wins per
+     * category) so Dart-side `ScanResult.fromMap` still has a `labels`
+     * array to work with. `detections` carries the raw boxes for callers
+     * that need them.
+     */
+    private fun buildDetectorResultMap(
+        localId: String,
+        detections: List<com.example.nsfw_detect_ios.ml.BodyPartDetection>,
+    ): Map<String, Any?> {
+        val perCategory = HashMap<String, Float>()
+        for (d in detections) {
+            val cur = perCategory[d.aggregatedCategory] ?: 0f
+            if (d.confidence > cur) perCategory[d.aggregatedCategory] = d.confidence
+        }
+        val labels = perCategory.map { (cat, conf) ->
+            mapOf("category" to cat, "confidence" to conf.toDouble())
+        }
+        val map: MutableMap<String, Any?> = mutableMapOf(
+            ChannelConstants.EventKey.LOCAL_ID    to localId,
+            ChannelConstants.EventKey.MEDIA_TYPE  to "image",
+            ChannelConstants.EventKey.STATUS      to "completed",
+            ChannelConstants.EventKey.SCANNED_AT  to System.currentTimeMillis(),
+            ChannelConstants.EventKey.LABELS      to labels,
+        )
+        if (detections.isNotEmpty()) {
+            map[ChannelConstants.EventKey.DETECTIONS] = detections.map { it.toMap() }
+        }
+        return map
+    }
+
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
         if (requestCode == PICK_MEDIA_REQUEST_CODE) {
             return handlePickMediaResult(resultCode, data)
@@ -723,6 +821,24 @@ class ScanMethodHandler(
             else -> throw IllegalArgumentException("Unsupported localId: $localId")
         }
 
+        // Detector-kind models (NudeNet) need detectorEngine + a different
+        // result shape. Without this branch the one-shot path would throw
+        // ModelNotFound because engine() only looks up classifier
+        // registrations.
+        if (modelRegistry.kind(mId) == com.example.nsfw_detect_ios.ml.ModelKind.DETECTOR) {
+            val det = modelRegistry.detectorEngine(mId)
+            val targetSize = (det.descriptor.metadata["inputSize"] as? Number)?.toInt() ?: 640
+            var bitmap: Bitmap? = null
+            try {
+                bitmap = BitmapPipeline.decodeOriented(uri, context.contentResolver, targetSize, roi)
+                    ?: throw Exception("Could not decode asset: $localId")
+                val detections = det.detect(bitmap)
+                return buildDetectorResultMap(localId, detections)
+            } finally {
+                BitmapPipeline.recycleQuietly(bitmap)
+            }
+        }
+
         val engine = modelRegistry.engine(mId)
         val targetSize = (engine.descriptor.metadata["inputSize"] as? Number)?.toInt() ?: 224
         var bitmap: Bitmap? = null
@@ -745,6 +861,20 @@ class ScanMethodHandler(
             // #1 — no leaked bitmap on error or success.
             BitmapPipeline.recycleQuietly(bitmap)
         }
+    }
+
+    /**
+     * Called from [NsfwDetectPlugin.onDetachedFromEngine] to stop any
+     * native work the plugin started. Without this, the camera session
+     * keeps publishing frames after the Flutter engine has gone away and
+     * the running scan session keeps reading MediaStore — both leak the
+     * activity context and waste battery.
+     */
+    fun dispose() {
+        currentSession?.cancel()
+        currentSession = null
+        currentCamera?.stop()
+        currentCamera = null
     }
 
     /**

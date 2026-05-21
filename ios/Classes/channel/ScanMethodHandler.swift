@@ -618,7 +618,30 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         guard let asset = fetchResult.firstObject else {
             throw ScanError.assetNotFound(localId)
         }
-        let engine = try await modelRegistry.engine(for: modelId ?? ModelIds.openNsfw2)
+        let resolvedId = modelId ?? ModelIds.openNsfw2
+
+        // Detector-kind models (NudeNet) — image assets only. Video sampling
+        // for detectors would need its own aggregator (NudeNet's box format
+        // isn't reducible the same way classifier confidences are), and
+        // there's no callsite asking for it yet. Reject loudly so the caller
+        // can switch to a classifier model or call `startScan` instead.
+        if modelRegistry.kind(for: resolvedId) == .detector {
+            guard asset.mediaType == .image else {
+                throw NSError(domain: "NsfwDetect", code: -2,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "Detector models are only supported on image assets by the one-shot API; got mediaType=\(asset.mediaType.rawValue)"])
+            }
+            let det = try await modelRegistry.detectorEngine(for: resolvedId)
+            det.setMinConfidence(detectionConfidence)
+            let inputSize = det.descriptor.metadata["inputSize"] as? Int ?? 640
+            let analyzer = ImageAnalyzer(inputSize: inputSize)
+            let buffer = try await analyzer.pixelBuffer(for: asset, region: region)
+            let detections = try await det.detect(pixelBuffer: buffer)
+            return Self.buildDetectorResultMap(identifier: asset.localIdentifier,
+                                               detections: detections)
+        }
+
+        let engine = try await modelRegistry.engine(for: resolvedId)
         engine.configure(detectionConfidence: detectionConfidence, iou: iouThreshold)
         let inputSize = engine.descriptor.metadata["inputSize"] as? Int ?? 224
         let analyzer   = ImageAnalyzer(inputSize: inputSize)
@@ -928,6 +951,28 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
 
     private func classifyCGImage(_ cgImage: CGImage, identifier: String, modelId: String?, detectionConfidence: Float, iouThreshold: Float, region: RoiCropper.Region? = nil) async throws -> [String: Any] {
         let id = modelId ?? ModelIds.openNsfw2
+
+        // Detector-kind models (NudeNet) need a different inference call —
+        // route them through detectorEngine() and aggregate the bounding
+        // boxes into a synthetic label list so the result shape stays
+        // compatible with classifier outputs. Without this branch the
+        // one-shot APIs would crash with "model not found" because
+        // engine(for:) only looks up classifier registrations.
+        if modelRegistry.kind(for: id) == .detector {
+            let det = try await modelRegistry.detectorEngine(for: id)
+            det.setMinConfidence(detectionConfidence)
+            let inputSize = det.descriptor.metadata["inputSize"] as? Int ?? 640
+            guard var buffer = cgImage.toPixelBuffer(size: CGSize(width: inputSize, height: inputSize)) else {
+                throw ScanError.frameSamplingFailed
+            }
+            if let region = region, let cropped = RoiCropper.crop(buffer, region: region) {
+                buffer = cropped
+            }
+            let detections = try await det.detect(pixelBuffer: buffer)
+            return Self.buildDetectorResultMap(identifier: identifier,
+                                               detections: detections)
+        }
+
         let engine = try await modelRegistry.engine(for: id)
         engine.configure(detectionConfidence: detectionConfidence, iou: iouThreshold)
         let inputSize = engine.descriptor.metadata["inputSize"] as? Int ?? 224
@@ -951,6 +996,37 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 ChannelConstants.EventKey.confidence: Double($0.confidence),
             ] as [String: Any] },
         ]
+    }
+
+    /// Builds the result-map shape that Dart-side `ScanResult.fromMap`
+    /// expects, from a list of detector bounding boxes. Labels are
+    /// synthesised by aggregating per-detection `aggregatedCategory`:
+    /// per category, the highest-confidence detection wins. Empty
+    /// detections → labels=[] which Dart treats as "no nsfw found".
+    static func buildDetectorResultMap(identifier: String,
+                                       detections: [BodyPartDetectionNative]) -> [String: Any] {
+        var perCategory: [String: Float] = [:]
+        for d in detections {
+            let cur = perCategory[d.aggregatedCategory] ?? 0
+            if d.confidence > cur { perCategory[d.aggregatedCategory] = d.confidence }
+        }
+        let labels: [[String: Any]] = perCategory.map { (cat, conf) in
+            [
+                ChannelConstants.EventKey.category:   cat,
+                ChannelConstants.EventKey.confidence: Double(conf),
+            ] as [String: Any]
+        }
+        var map: [String: Any] = [
+            ChannelConstants.EventKey.localId:   identifier,
+            ChannelConstants.EventKey.mediaType: "image",
+            ChannelConstants.EventKey.status:    "completed",
+            ChannelConstants.EventKey.scannedAt: Int64(Date().timeIntervalSince1970 * 1000),
+            ChannelConstants.EventKey.labels:    labels,
+        ]
+        if !detections.isEmpty {
+            map[ChannelConstants.EventKey.detections] = detections.map { $0.toDictionary() }
+        }
+        return map
     }
 
     /// Classify an already-decoded `CVPixelBuffer` (used for the RAW path

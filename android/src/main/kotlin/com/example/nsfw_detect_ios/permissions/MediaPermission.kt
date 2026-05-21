@@ -12,9 +12,14 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * 3-tier permission helper for media access.
  * Selects the correct permission string based on Android API level:
- * - API >= 34: READ_MEDIA_VISUAL_USER_SELECTED (partial) / READ_MEDIA_IMAGES (full)
- * - API 33: READ_MEDIA_IMAGES
+ * - API >= 34: READ_MEDIA_VISUAL_USER_SELECTED (partial) / READ_MEDIA_IMAGES + READ_MEDIA_VIDEO (full)
+ * - API 33: READ_MEDIA_IMAGES + READ_MEDIA_VIDEO
  * - API <= 32: READ_EXTERNAL_STORAGE
+ *
+ * The plugin scans video assets by default (see `MediaStoreScanner`'s
+ * `config.includeVideos` branch), so video access is always part of the
+ * request set on API 33+. Otherwise the scanner would see authorized but
+ * skip every video at query time.
  */
 object MediaPermission {
 
@@ -25,34 +30,34 @@ object MediaPermission {
      * "authorized", "limited", "denied", "notDetermined"
      */
     fun checkPermission(context: Context): String {
+        fun granted(perm: String): Boolean =
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                // API >= 34: check full vs partial vs none
-                val fullGranted = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.READ_MEDIA_IMAGES
-                ) == PackageManager.PERMISSION_GRANTED
-                if (fullGranted) return "authorized"
+                // API >= 34. "authorized" requires BOTH images and video so
+                // a downstream `includeVideos = true` scan doesn't silently
+                // see zero videos. READ_MEDIA_VISUAL_USER_SELECTED grants a
+                // partial visual-media set (images + videos together).
+                val imagesGranted = granted(Manifest.permission.READ_MEDIA_IMAGES)
+                val videoGranted = granted(Manifest.permission.READ_MEDIA_VIDEO)
+                if (imagesGranted && videoGranted) return "authorized"
 
-                val partialGranted = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
-                ) == PackageManager.PERMISSION_GRANTED
+                val partialGranted = granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
                 if (partialGranted) return "limited"
 
                 "notDetermined"
             }
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                // API 33
-                val granted = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.READ_MEDIA_IMAGES
-                ) == PackageManager.PERMISSION_GRANTED
-                if (granted) "authorized" else "notDetermined"
+                // API 33: images and videos are separate split permissions.
+                val imagesGranted = granted(Manifest.permission.READ_MEDIA_IMAGES)
+                val videoGranted = granted(Manifest.permission.READ_MEDIA_VIDEO)
+                if (imagesGranted && videoGranted) "authorized" else "notDetermined"
             }
             else -> {
                 // API <= 32
-                val granted = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.READ_EXTERNAL_STORAGE
-                ) == PackageManager.PERMISSION_GRANTED
-                if (granted) "authorized" else "notDetermined"
+                val storageGranted = granted(Manifest.permission.READ_EXTERNAL_STORAGE)
+                if (storageGranted) "authorized" else "notDetermined"
             }
         }
     }
@@ -104,38 +109,47 @@ object MediaPermission {
         if (grantResults.isEmpty()) return "denied"
 
         val grantMap = permissions.zip(grantResults.toTypedArray()).toMap()
+        fun granted(perm: String): Boolean =
+            grantMap[perm] == PackageManager.PERMISSION_GRANTED
 
         return when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
-                val fullGranted = grantMap[Manifest.permission.READ_MEDIA_IMAGES] == PackageManager.PERMISSION_GRANTED
-                if (fullGranted) return "authorized"
+                val imagesGranted = granted(Manifest.permission.READ_MEDIA_IMAGES)
+                val videoGranted = granted(Manifest.permission.READ_MEDIA_VIDEO)
+                if (imagesGranted && videoGranted) return "authorized"
 
-                val partialGranted = grantMap[Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED] == PackageManager.PERMISSION_GRANTED
+                val partialGranted = granted(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
                 if (partialGranted) return "limited"
 
                 "denied"
             }
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                val granted = grantMap[Manifest.permission.READ_MEDIA_IMAGES] == PackageManager.PERMISSION_GRANTED
-                if (granted) "authorized" else "denied"
+                val imagesGranted = granted(Manifest.permission.READ_MEDIA_IMAGES)
+                val videoGranted = granted(Manifest.permission.READ_MEDIA_VIDEO)
+                if (imagesGranted && videoGranted) "authorized" else "denied"
             }
             else -> {
-                val granted = grantMap[Manifest.permission.READ_EXTERNAL_STORAGE] == PackageManager.PERMISSION_GRANTED
-                if (granted) "authorized" else "denied"
+                val storageGranted = granted(Manifest.permission.READ_EXTERNAL_STORAGE)
+                if (storageGranted) "authorized" else "denied"
             }
         }
     }
 
     /**
      * Returns the required permissions array for the current API level.
+     * Always asks for video alongside images on API 33+ — the scanner is
+     * configured to include videos by default and a partial grant would
+     * silently miss every video at query time.
      */
     fun requiredPermissions(): Array<String> = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> arrayOf(
             Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.READ_MEDIA_VIDEO,
             Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED
         )
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> arrayOf(
-            Manifest.permission.READ_MEDIA_IMAGES
+            Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.READ_MEDIA_VIDEO
         )
         else -> arrayOf(
             Manifest.permission.READ_EXTERNAL_STORAGE
