@@ -86,6 +86,17 @@ class ScanSessionTask(
     /** Atomically returns + clears the flag. One asset wins per call. */
     private fun consumeSkipRequest(): Boolean = skipFlag.compareAndSet(true, false)
 
+    /**
+     * Suspends until the active [scanJob] completes (or returns immediately
+     * if no scan is running). Used by background-sweep workers to keep
+     * `doWork()` alive for the scan duration — without this, WorkManager
+     * would return from the worker as soon as `start()` returns, leaving
+     * the launched coroutine orphaned.
+     */
+    suspend fun awaitCompletion() {
+        scanJob?.join()
+    }
+
     fun start() {
         synchronized(lifecycleLock) {
             if (cancelled.get()) {

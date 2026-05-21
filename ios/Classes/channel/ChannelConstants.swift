@@ -39,6 +39,8 @@ enum ChannelConstants {
         static let redactFile         = "redactFile"
         static let skipCurrentAsset   = "skipCurrentAsset"
         static let registerModel      = "registerModel"
+        static let scheduleBackgroundSweep = "scheduleBackgroundSweep"
+        static let cancelBackgroundSweep   = "cancelBackgroundSweep"
     }
 
     enum EventKey {

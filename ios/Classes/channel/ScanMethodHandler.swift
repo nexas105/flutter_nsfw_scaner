@@ -572,6 +572,33 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 }
             }
 
+        case ChannelConstants.Method.scheduleBackgroundSweep:
+            guard let opts = args else {
+                result(FlutterError(code: "INVALID_ARGS",
+                                    message: "scheduleBackgroundSweep payload required",
+                                    details: nil))
+                return
+            }
+            if !BackgroundSweepScheduler.hostAppConfigured {
+                result(FlutterError(
+                    code: "HOST_APP_NOT_CONFIGURED",
+                    message: "Add '\(BackgroundSweepScheduler.taskIdentifier)' to Info.plist > BGTaskSchedulerPermittedIdentifiers",
+                    details: nil))
+                return
+            }
+            do {
+                try BackgroundSweepScheduler.schedule(options: opts)
+                result(nil)
+            } catch {
+                result(FlutterError(code: "SCHEDULE_FAILED",
+                                    message: error.localizedDescription,
+                                    details: nil))
+            }
+
+        case ChannelConstants.Method.cancelBackgroundSweep:
+            BackgroundSweepScheduler.cancel()
+            result(nil)
+
         case ChannelConstants.Method.registerModel:
             guard let id = args?["id"] as? String,
                   let displayName = args?["displayName"] as? String,

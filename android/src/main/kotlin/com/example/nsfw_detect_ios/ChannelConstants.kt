@@ -47,6 +47,8 @@ object ChannelConstants {
         const val REDACT_FILE       = "redactFile"
         const val SKIP_CURRENT_ASSET = "skipCurrentAsset"
         const val REGISTER_MODEL    = "registerModel"
+        const val SCHEDULE_BACKGROUND_SWEEP = "scheduleBackgroundSweep"
+        const val CANCEL_BACKGROUND_SWEEP   = "cancelBackgroundSweep"
     }
 
     object EventKey {

@@ -1,4 +1,4 @@
-## 2.3.0 — unreleased
+## 2.3.0 — 2026-05-21
 
 > Public-API extensions for image-provider scanning, URL scanning, cache lookup, native prefetch, and detection-aware redaction. All additive — existing 2.2.x code keeps working unchanged.
 
@@ -22,12 +22,14 @@
 - **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
 - **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
 
-### New — Background sweep API (host-app integration required)
+### New — Background sweep
 
-- **`NsfwDetector.scheduleBackgroundSweep(BackgroundSweepOptions)`** / **`cancelBackgroundSweep()`** — ship the Dart API surface for "moderate the library once a night while the user is asleep". Per-asset results land in the on-device `ScanCache`; foreground apps read them via `cachedResult` / `cacheUpdates` on next launch.
+- **`NsfwDetector.scheduleBackgroundSweep(BackgroundSweepOptions)`** / **`cancelBackgroundSweep()`** — "moderate the library once a night while the user is asleep". Per-asset results land in the on-device `ScanCache`; foreground apps read them via `cachedResult` / `cacheUpdates` on next launch.
 - **`BackgroundSweepOptions`** — value type bundling `interval` (≥ 15 min, WorkManager's hard floor), `requiresCharging`, `requiresWifi`, and the `ScanConfiguration` the worker dispatches.
-- **`BackgroundSweepUnavailableError`** — typed error raised when host-app config is missing.
-- **Host-app integration required.** Until each host app completes the platform-specific wiring documented on `BackgroundSweepOptions`, `scheduleBackgroundSweep` throws `UnimplementedError`. iOS needs `BGTaskSchedulerPermittedIdentifiers` in `Info.plist` and a launch-handler registration before `GeneratedPluginRegistrant.register(...)`. Android needs `androidx.work:work-runtime-ktx` on the classpath (most apps already have it). The native dispatcher implementations (BGTaskScheduler launch handler + WorkManager Worker class) ship in a focused follow-up PR — this release commits the Dart API contract so app authors can wire their bootstraps now.
+- **iOS dispatcher (`BackgroundSweepScheduler`)** — wraps `BGTaskScheduler`. The plugin registers its launch handler inside `register(with:)` (which runs during `application(_:didFinishLaunchingWithOptions:)`, the legal window for BG-task identifier registration). Apps that haven't opted in via `Info.plist > BGTaskSchedulerPermittedIdentifiers` pay nothing; `scheduleBackgroundSweep` raises `HOST_APP_NOT_CONFIGURED` so the Dart side gets a typed signal.
+- **Android dispatcher (`NsfwSweepWorker`)** — `CoroutineWorker` enqueued via `WorkManager.enqueueUniquePeriodicWork` with constraints (`setRequiresCharging`, `setRequiresBatteryNotLow`, `NetworkType.UNMETERED` when `requiresWifi: true`). Cancellation propagates through the worker coroutine into the underlying `scanJob`.
+- **Host-app integration.** iOS apps add `com.nsfw_detect.background_sweep` to `BGTaskSchedulerPermittedIdentifiers`. Android apps don't need manifest changes — `androidx.work:work-runtime-ktx 2.9.1` is now a plugin dependency.
+- **`ScanSessionTask.awaitCompletion`** (Android, internal) — public-suspending wrapper around the internal `scanJob.join()` so the worker's `doWork()` can stay alive until the session reports done.
 
 ### New — Multi-model ensemble voting
 

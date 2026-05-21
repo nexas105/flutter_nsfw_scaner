@@ -77,4 +77,8 @@ dependencies {
     // which reads orientation off PHAsset). Used in ScanSessionTask.decodeAndOrient
     // and ScanMethodHandler.scanFile/scanBytes/scanSingleAsset.
     implementation "androidx.exifinterface:exifinterface:1.3.7"
+    // WorkManager — periodic background sweep (v2.3.0 / #25).
+    // Coroutines-aware CoroutineWorker; 2.9.x is the last release compatible
+    // with the API 24 floor this plugin still supports.
+    implementation "androidx.work:work-runtime-ktx:2.9.1"
 }

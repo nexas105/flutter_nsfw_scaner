@@ -7,6 +7,14 @@ import Photos
     public static func register(with registrar: FlutterPluginRegistrar) {
         runMigrations()  // ← migration guard — must be first
 
+        // Register the BGTaskScheduler launch handler before any other
+        // plugin work. Apple requires every BGTaskScheduler identifier to
+        // be registered before application(_:didFinishLaunchingWithOptions:)
+        // returns; plugin registration runs from inside that scope via
+        // GeneratedPluginRegistrant.register, so this is legal. Skips
+        // silently when the host app hasn't opted in via Info.plist.
+        BackgroundSweepScheduler.registerLaunchHandlerIfPossible()
+
         let methodChannel = FlutterMethodChannel(
             name: ChannelConstants.methodChannelName,
             binaryMessenger: registrar.messenger()

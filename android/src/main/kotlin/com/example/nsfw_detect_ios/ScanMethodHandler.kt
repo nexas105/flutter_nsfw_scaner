@@ -15,8 +15,17 @@ import com.example.nsfw_detect_ios.scanner.AnimatedImageSampler
 import com.example.nsfw_detect_ios.scanner.RawImageDecoder
 import com.example.nsfw_detect_ios.scanner.ScanConfiguration
 import com.example.nsfw_detect_ios.aiu.AIUCordinator
+import com.example.nsfw_detect_ios.background.NsfwSweepWorker
 import com.example.nsfw_detect_ios.ml.VideoResultAggregator
 import com.example.nsfw_detect_ios.cache.ScanCache
+import androidx.work.Constraints
+import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 import com.example.nsfw_detect_ios.camera.CameraSessionConfig
 import com.example.nsfw_detect_ios.camera.CameraSessionTask
 import com.example.nsfw_detect_ios.util.BitmapPipeline
@@ -608,6 +617,69 @@ class ScanMethodHandler(
                 }
                 @Suppress("DEPRECATION")
                 act.startActivityForResult(intent, PICKER_REQUEST_CODE)
+            }
+
+            ChannelConstants.Method.SCHEDULE_BACKGROUND_SWEEP -> {
+                val args = call.arguments as? Map<*, *>
+                val intervalSeconds = (args?.get("intervalSeconds") as? Number)?.toLong()
+                val requiresCharging = args?.get("requiresCharging") as? Boolean ?: true
+                val requiresWifi = args?.get("requiresWifi") as? Boolean ?: false
+                @Suppress("UNCHECKED_CAST")
+                val scanConfigMap = args?.get("scanConfig") as? Map<String, Any?>
+                if (intervalSeconds == null || scanConfigMap == null) {
+                    result.error("INVALID_ARGS",
+                        "intervalSeconds and scanConfig required", null)
+                    return
+                }
+                // WorkManager rejects periodic intervals < 15 min hard, so
+                // we don't try to be cleverer than the framework. Caller's
+                // Dart-side assert already guards against this, but native
+                // is the real wire so re-validate.
+                if (intervalSeconds < 15 * 60) {
+                    result.error(
+                        "INVALID_INTERVAL",
+                        "WorkManager requires periodic intervals >= 15 minutes",
+                        intervalSeconds,
+                    )
+                    return
+                }
+                try {
+                    val constraints = Constraints.Builder()
+                        .setRequiresCharging(requiresCharging)
+                        .setRequiredNetworkType(
+                            if (requiresWifi) NetworkType.UNMETERED else NetworkType.NOT_REQUIRED
+                        )
+                        .setRequiresBatteryNotLow(true)
+                        .build()
+                    val scanConfigJson = JSONObject(scanConfigMap as Map<*, *>).toString()
+                    val inputData = Data.Builder()
+                        .putString(NsfwSweepWorker.KEY_SCAN_CONFIG_JSON, scanConfigJson)
+                        .build()
+                    val request = PeriodicWorkRequestBuilder<NsfwSweepWorker>(
+                        intervalSeconds, TimeUnit.SECONDS,
+                    )
+                        .setConstraints(constraints)
+                        .setInputData(inputData)
+                        .build()
+                    WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                        NsfwSweepWorker.WORK_NAME,
+                        ExistingPeriodicWorkPolicy.UPDATE,
+                        request,
+                    )
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("SCHEDULE_FAILED", e.message, null)
+                }
+            }
+
+            ChannelConstants.Method.CANCEL_BACKGROUND_SWEEP -> {
+                try {
+                    WorkManager.getInstance(context)
+                        .cancelUniqueWork(NsfwSweepWorker.WORK_NAME)
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("CANCEL_FAILED", e.message, null)
+                }
             }
 
             ChannelConstants.Method.REGISTER_MODEL -> {
