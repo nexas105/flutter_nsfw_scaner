@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/painting.dart'
     show ImageConfiguration, ImageProvider, ImageStream, ImageStreamListener;
 import 'body_part_detection.dart';
+import 'ensemble_strategy.dart';
 import 'frame_stream_scanner.dart';
 import 'media_item.dart';
 import 'model_registration.dart';
@@ -663,6 +664,94 @@ class NsfwDetector {
     } finally {
       client.close(force: true);
     }
+  }
+
+  /// Fan an input out to every model in [strategy.modelIds], then combine
+  /// the per-model results via the strategy.
+  ///
+  /// Inference cost scales linearly with the model count — default is OFF;
+  /// only enable when the false-positive reduction from voting is worth
+  /// the 2-3× latency.
+  ///
+  /// Currently classifier-only. Passing a detector model id throws
+  /// `ArgumentError` after the first per-model scan returns detections —
+  /// detector outputs are spatial and not meaningfully averageable.
+  Future<ScanResult> scanBytesEnsemble(
+    Uint8List bytes,
+    EnsembleStrategy strategy, {
+    double? confidenceThreshold,
+    ScanRegion? region,
+  }) async {
+    final perModel = <ScanResult>[];
+    for (final modelId in strategy.modelIds) {
+      final r = await scanBytes(
+        bytes,
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+      if (r.hasDetections) {
+        throw ArgumentError(
+          'Ensembles are classifier-only — modelId "$modelId" returned a '
+          'detector result. Drop detector ids from EnsembleStrategy.modelIds.',
+        );
+      }
+      perModel.add(r);
+    }
+    return strategy.combine(perModel);
+  }
+
+  /// File-input variant of [scanBytesEnsemble]. See that method for the
+  /// per-strategy semantics and cost notes.
+  Future<ScanResult> scanFileEnsemble(
+    String filePath,
+    EnsembleStrategy strategy, {
+    double? confidenceThreshold,
+    ScanRegion? region,
+  }) async {
+    final perModel = <ScanResult>[];
+    for (final modelId in strategy.modelIds) {
+      final r = await scanFile(
+        filePath,
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+      if (r.hasDetections) {
+        throw ArgumentError(
+          'Ensembles are classifier-only — modelId "$modelId" returned a '
+          'detector result. Drop detector ids from EnsembleStrategy.modelIds.',
+        );
+      }
+      perModel.add(r);
+    }
+    return strategy.combine(perModel);
+  }
+
+  /// Asset-input variant of [scanBytesEnsemble].
+  Future<ScanResult> scanAssetEnsemble(
+    String localIdentifier,
+    EnsembleStrategy strategy, {
+    double? confidenceThreshold,
+    ScanRegion? region,
+  }) async {
+    final perModel = <ScanResult>[];
+    for (final modelId in strategy.modelIds) {
+      final r = await scanAsset(
+        localIdentifier,
+        modelId: modelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+      );
+      if (r.hasDetections) {
+        throw ArgumentError(
+          'Ensembles are classifier-only — modelId "$modelId" returned a '
+          'detector result. Drop detector ids from EnsembleStrategy.modelIds.',
+        );
+      }
+      perModel.add(r);
+    }
+    return strategy.combine(perModel);
   }
 
   /// Register a custom ML model at runtime so its [registration.id] can be

@@ -231,6 +231,70 @@ void main() {
     });
   });
 
+  group('EnsembleStrategy', () {
+    ScanResult fake(NsfwCategory cat, double conf) =>
+        ScanResult.fake(category: cat, confidence: conf);
+
+    test('MajorityEnsemble — three models, two vote nudity, one safe', () {
+      final strategy = MajorityEnsemble(modelIds: ['a', 'b', 'c']);
+      final combined = strategy.combine([
+        fake(NsfwCategory.nudity, 0.85),
+        fake(NsfwCategory.nudity, 0.92),
+        fake(NsfwCategory.safe, 0.78),
+      ]);
+      expect(combined.topCategory, NsfwCategory.nudity);
+    });
+
+    test('MajorityEnsemble — borderline confidences abstain', () {
+      final strategy = MajorityEnsemble(modelIds: ['a', 'b']);
+      // Both classifications are inside the default [0.45, 0.55] borderline
+      // band → both abstain → fall back to the highest-confidence raw result.
+      final combined = strategy.combine([
+        fake(NsfwCategory.nudity, 0.52),
+        fake(NsfwCategory.safe, 0.49),
+      ]);
+      // Highest-confidence raw result wins (nudity@0.52 > safe@0.49).
+      expect(combined.topCategory, NsfwCategory.nudity);
+    });
+
+    test('WeightedEnsemble — weighted average favours higher-weight model',
+        () {
+      final strategy = WeightedEnsemble(
+        modelIds: ['a', 'b'],
+        weights: {'a': 3.0, 'b': 1.0},
+      );
+      // a says safe (0.9), b says nudity (0.7).
+      // Weighted: safe = 0.9*3 = 2.7; nudity = 0.7*1 = 0.7.
+      // safe wins.
+      final combined = strategy.combine([
+        fake(NsfwCategory.safe, 0.9),
+        fake(NsfwCategory.nudity, 0.7),
+      ]);
+      expect(combined.topCategory, NsfwCategory.safe);
+      // safe confidence: 2.7 / (3+1) = 0.675
+      expect(combined.topConfidence, closeTo(0.675, 0.001));
+    });
+
+    test('WeightedEnsemble — negative weight rejected with ArgumentError', () {
+      final strategy = WeightedEnsemble(
+        modelIds: ['a', 'b'],
+        weights: {'a': -1.0, 'b': 1.0},
+      );
+      expect(
+        () => strategy.combine([
+          fake(NsfwCategory.safe, 0.9),
+          fake(NsfwCategory.nudity, 0.7),
+        ]),
+        throwsArgumentError,
+      );
+    });
+
+    test('combine on empty perModelResults throws StateError', () {
+      final strategy = MajorityEnsemble(modelIds: ['a', 'b']);
+      expect(() => strategy.combine([]), throwsStateError);
+    });
+  });
+
   group('findDuplicates', () {
     test('returns clusters of size >= 2 and drops singletons', () async {
       // Three media items, two with identical hashes (forced via loader),

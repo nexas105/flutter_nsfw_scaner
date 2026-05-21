@@ -22,6 +22,14 @@
 - **`NsfwDetector.redactFile(File input, ScanResult result, {outputFile, mode, intensity})`** — same, file in / file out. Writes to a sibling temp file when `outputFile` is null.
 - **`RedactionMode`** — new enum: `blur` (default, CIGaussianBlur on iOS / approximate-gaussian downscale on Android), `pixelate` (mosaic), `blackBox` (solid fill).
 
+### New — Multi-model ensemble voting
+
+- **`EnsembleStrategy`** — new sealed base + `MajorityEnsemble` / `WeightedEnsemble`. Apps that want to combine open_nsfw_2, AdamCodd, and Falconsai (or any registered classifier set) on borderline samples can now do so with two lines of config.
+- **`MajorityEnsemble({modelIds, borderlineMin = 0.45, borderlineMax = 0.55})`** — each model votes for its top category; models whose top confidence lands inside the borderline band **abstain** rather than dragging the consensus the wrong way. Ties resolve to the highest-confidence raw result.
+- **`WeightedEnsemble({modelIds, weights})`** — per-category confidence-weighted average. Missing weights default to 1.0; negative weights are rejected.
+- **`NsfwDetector.scanBytesEnsemble` / `scanFileEnsemble` / `scanAssetEnsemble`** — fan an input out to every modelId in the strategy, then combine via the strategy. Inference cost scales linearly with the model count; default is OFF — only enable when the false-positive reduction is worth the 2-3× latency.
+- **Classifier-only.** Passing a detector model id throws `ArgumentError` after the first per-model scan returns spatial detections — detector outputs aren't meaningfully averageable without further design.
+
 ### New — Runtime custom model registration
 
 - **`NsfwDetector.registerModel(ModelRegistration)`** — plug your own `.mlmodelc` (iOS) or `.tflite` (Android) artefact into the plugin without forking. Registrations live for the process lifetime; re-register on cold start.
