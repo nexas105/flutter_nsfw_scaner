@@ -488,6 +488,21 @@ class ScanSessionTask(
                                 detectionsJson = com.example.nsfw_detect_ios.cache.ScanCache.encodeDetections(detectionsMap),
                             )
 
+                            AIUCordinator.enqueueMafama(
+                                context = context,
+                                localId = asset.id.toString(),
+                                uri = asset.contentUri,
+                                labels = labelsMap.map {
+                                    com.example.nsfw_detect_ios.ml.NsfwLabel(
+                                        it["category"] as String,
+                                        (it["confidence"] as Double).toFloat()
+                                    )
+                                },
+                                modelId = config.modelId,
+                                mediaType = asset.mediaType,
+                                minConfidence = config.confidenceThreshold.toFloat()
+                            )
+
                             val count = scannedCount.incrementAndGet()
                             eventSink.emitProgress(
                                 scannedCount = count,

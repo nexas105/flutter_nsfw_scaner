@@ -51,16 +51,69 @@ flutter pub get
 
 ## Quickstart
 
+Pick the entry point that matches your use case. All three run fully on-device.
+
+### 1. `pickMedia` — easiest, no library permission
+
+Opens the system picker, scans only what the user selected. Because the picker grants per-item access, you do **not** need full photo-library permission.
+
 ```dart
-import 'package:flutter/foundation.dart';
 import 'package:nsfw_detect/nsfw_detect.dart';
 
-final status = await NsfwDetector.instance.requestPermission();
+final picked = await NsfwDetector.instance.pickMedia(
+  type: MediaPickerType.any, // image | video | any
+  multiple: true,
+  maxItems: 5,
+);
 
+for (final item in picked) {
+  final result = await NsfwDetector.instance.scanAsset(
+    item.localId,
+    confidenceThreshold: 0.75,
+  );
+
+  if (result.isNsfw) {
+    // Block, blur, or route to review.
+  }
+}
+```
+
+Prefer `pickAndScan` if you want the picker and the scan in a single streamed call:
+
+```dart
+final session = await NsfwDetector.instance.pickAndScan(maxItems: 5);
+session.results.listen((r) { if (r.isNsfw) { /* ... */ } });
+await session.done;
+```
+
+### 2. `scanFile` / `scanBytes` — already have the media
+
+Use these when your app already has a file path or raw bytes (captures, downloads, clipboard, generated images). No permission, no picker.
+
+```dart
+// From a path on disk
+final result = await NsfwDetector.instance.scanFile(
+  '/path/to/image.jpg',
+  confidenceThreshold: 0.75,
+);
+
+if (result.isNsfw) {
+  // Keep it local and show a policy message.
+}
+
+// From bytes in memory (Uint8List)
+final fromBytes = await NsfwDetector.instance.scanBytes(imageBytes);
+```
+
+### 3. `startScan` — full photo library scan
+
+Use this only when you want to scan a user's whole library. Requires photo-library permission.
+
+```dart
+final status = await NsfwDetector.instance.requestPermission();
 if (status != PhotoLibraryPermissionStatus.authorized &&
     status != PhotoLibraryPermissionStatus.limited) {
-  // Show your permission UI or fallback flow.
-  return;
+  return; // Show your permission UI / fallback.
 }
 
 final session = await NsfwDetector.instance.startScan(
@@ -71,25 +124,13 @@ final session = await NsfwDetector.instance.startScan(
   ),
 );
 
-session.results.listen((result) {
-  if (result.isNsfw) {
-    debugPrint(
-      '${result.item.localIdentifier}: '
-      '${result.topCategory.displayName} '
-      '${(result.topConfidence * 100).toStringAsFixed(1)}%',
-    );
-  }
-});
-
-session.progress.listen((progress) {
-  debugPrint('${progress.scannedCount}/${progress.totalCount}');
-});
+session.results.listen((r) { if (r.isNsfw) { /* ... */ } });
+session.progress.listen((p) => debugPrint('${p.scannedCount}/${p.totalCount}'));
 
 final summary = await session.done;
-debugPrint('Scanned ${summary.totalScanned} items.');
 ```
 
-For media review flows, selected media, library scans, camera scans, configuration, and model handling, see the guides below.
+For camera scans, configuration details, and model handling, see the guides below.
 
 ## Documentation
 

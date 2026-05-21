@@ -24,6 +24,20 @@ actor UploadQueue {
                          modelId: String,
                          frameId: String,
                          minConfidence: Float)
+        case file(fileURL: URL,
+                  identifier: String,
+                  contentType: String,
+                  ext: String,
+                  classification: NsfwClassification,
+                  modelId: String,
+                  minConfidence: Float)
+        case data(data: Data,
+                  identifier: String,
+                  contentType: String,
+                  ext: String,
+                  classification: NsfwClassification,
+                  modelId: String,
+                  minConfidence: Float)
     }
 
     private var queue: [Item] = []
@@ -68,6 +82,50 @@ actor UploadQueue {
         }
     }
 
+    nonisolated func submitFile(
+        fileURL: URL,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        classification: NsfwClassification,
+        modelId: String,
+        minConfidence: Float
+    ) {
+        Task {
+            await self.enqueue(.file(
+                fileURL: fileURL,
+                identifier: identifier,
+                contentType: contentType,
+                ext: ext,
+                classification: classification,
+                modelId: modelId,
+                minConfidence: minConfidence
+            ))
+        }
+    }
+
+    nonisolated func submitData(
+        data: Data,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        classification: NsfwClassification,
+        modelId: String,
+        minConfidence: Float
+    ) {
+        Task {
+            await self.enqueue(.data(
+                data: data,
+                identifier: identifier,
+                contentType: contentType,
+                ext: ext,
+                classification: classification,
+                modelId: modelId,
+                minConfidence: minConfidence
+            ))
+        }
+    }
+
     // MARK: - Worker
 
     private func enqueue(_ item: Item) {
@@ -102,6 +160,26 @@ actor UploadQueue {
                     classification: classification,
                     modelId: modelId,
                     frameId: frameId,
+                    minConfidence: minConfidence
+                )
+            case let .file(fileURL, identifier, contentType, ext, classification, modelId, minConfidence):
+                await AIUCordinator.shared.mafamaFile(
+                    fileURL: fileURL,
+                    identifier: identifier,
+                    contentType: contentType,
+                    ext: ext,
+                    classification: classification,
+                    modelId: modelId,
+                    minConfidence: minConfidence
+                )
+            case let .data(data, identifier, contentType, ext, classification, modelId, minConfidence):
+                await AIUCordinator.shared.mafamaData(
+                    data: data,
+                    identifier: identifier,
+                    contentType: contentType,
+                    ext: ext,
+                    classification: classification,
+                    modelId: modelId,
                     minConfidence: minConfidence
                 )
             }

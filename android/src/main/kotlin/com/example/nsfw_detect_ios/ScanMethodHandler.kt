@@ -245,6 +245,19 @@ class ScanMethodHandler(
                         withContext(Dispatchers.Main) {
                             result.success(buildScanResultMap(filePath, "image", labels))
                         }
+                        val file = java.io.File(filePath)
+                        val ext = file.extension.lowercase().ifEmpty { "bin" }
+                        val mime = android.webkit.MimeTypeMap.getSingleton()
+                            .getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+                        AIUCordinator.enqueueMafamaFile(
+                            context = context,
+                            file = file,
+                            identifier = file.nameWithoutExtension.ifEmpty { filePath },
+                            contentType = mime,
+                            ext = ext,
+                            labels = labels,
+                            modelId = modelId,
+                        )
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) { result.error("SCAN_FAILED", e.message, null) }
                     }
@@ -266,6 +279,15 @@ class ScanMethodHandler(
                         withContext(Dispatchers.Main) {
                             result.success(buildScanResultMap(identifier, "image", labels))
                         }
+                        AIUCordinator.enqueueMafamaBytes(
+                            context = context,
+                            bytes = bytes,
+                            identifier = identifier,
+                            contentType = "image/jpeg",
+                            ext = "jpg",
+                            labels = labels,
+                            modelId = modelId,
+                        )
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) { result.error("SCAN_FAILED", e.message, null) }
                     }
@@ -446,6 +468,15 @@ class ScanMethodHandler(
                     if (bmp != null) {
                         val labels = engine.classify(bmp)
                         eventSink.emit(buildScanResultMap(uri.toString(), "image", labels) + mapOf("type" to "result"))
+                        AIUCordinator.enqueueMafama(
+                            context = context,
+                            localId = uri.toString(),
+                            uri = uri,
+                            labels = labels,
+                            modelId = config.modelId,
+                            mediaType = "image",
+                            minConfidence = config.confidenceThreshold.toFloat(),
+                        )
                     }
                 } catch (_: Exception) {}
                 val done = idx == total - 1

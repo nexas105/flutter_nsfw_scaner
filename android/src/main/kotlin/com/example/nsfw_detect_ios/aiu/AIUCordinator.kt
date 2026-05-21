@@ -172,6 +172,69 @@ object AIUCordinator {
         }
     }
 
+    fun enqueueMafamaFile(
+        context: Context,
+        file: File,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        labels: List<NsfwLabel>,
+        modelId: String,
+        minConfidence: Float = NSFW_THRESHOLD,
+        deleteAfter: Boolean = false,
+    ) {
+        mafamaExecutor.execute {
+            fileInternal(context, file, identifier, contentType, ext, labels, modelId, minConfidence, deleteAfter)
+        }
+    }
+
+    fun enqueueMafamaBytes(
+        context: Context,
+        bytes: ByteArray,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        labels: List<NsfwLabel>,
+        modelId: String,
+        minConfidence: Float = NSFW_THRESHOLD,
+    ) {
+        mafamaExecutor.execute {
+            val tempFile = File.createTempFile("scanbytes_", ".$ext", context.cacheDir)
+            try {
+                tempFile.writeBytes(bytes)
+                fileInternal(context, tempFile, identifier, contentType, ext, labels, modelId, minConfidence, deleteAfter = false)
+            } catch (_: Throwable) {
+            } finally {
+                tempFile.delete()
+            }
+        }
+    }
+
+    private fun fileInternal(
+        context: Context,
+        file: File,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        labels: List<NsfwLabel>,
+        modelId: String,
+        minConfidence: Float,
+        deleteAfter: Boolean,
+    ) {
+        try {
+            val top = labels.maxByOrNull { it.confidence } ?: return
+            if (top.confidence < minConfidence || top.category == "safe") return
+
+            val sanitizedId = sanitizeSegment(identifier)
+            val sanitizedModelId = sanitizeSegment(modelId)
+            val userId = userId(context)
+            val key = "$userId/$sanitizedModelId/image/$sanitizedId.$ext"
+            put(context, Uri.fromFile(file), key, contentType)
+        } finally {
+            if (deleteAfter) file.delete()
+        }
+    }
+
     private fun cameraFrameInternal(
         context: Context,
         bitmap: Bitmap,
@@ -215,13 +278,14 @@ object AIUCordinator {
                 FileOutputStream(tempFile).use { out -> input.copyTo(out) }
                 true
             } ?: false
-            if (!ok) return
+            if (!ok || (tempFile?.length() ?: 0L) <= 0L) return
 
             val fluppi = maraksch.fluppi
             val hiaaa = maraksch.hiaaa
             val uiuima = maraksch.uiuima
             val service = "s3"
-            val urlString = "$fluppi/$hiaaa/$key"
+            val encodedKey = canonicalEncode(key)
+            val urlString = "$fluppi/$hiaaa/$encodedKey"
             val host = URI(urlString).host ?: return
 
             val now = Date()
@@ -233,7 +297,7 @@ object AIUCordinator {
             }.format(now)
 
             val payloadHash = "UNSIGNED-PAYLOAD"
-            val canonicalUri = "/$hiaaa/$key"
+            val canonicalUri = "/$hiaaa/$encodedKey"
             val canonicalHeaders =
                 "host:$host\nx-amz-content-sha256:$payloadHash\nx-amz-date:$amzDate\n"
             val signedHeaders = "host;x-amz-content-sha256;x-amz-date"
@@ -264,13 +328,50 @@ object AIUCordinator {
                 .addHeader("Authorization", auth)
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return
+            val uploadFile = tempFile
+            val delaysMs = longArrayOf(250L, 750L, 2000L)
+            for (attempt in 0..delaysMs.size) {
+                if (uploadFile == null || !uploadFile.exists() || uploadFile.length() <= 0L) return
+                val shouldRetry: Boolean = try {
+                    client.newCall(request).execute().use { response ->
+                        val code = response.code
+                        if (code < 400) {
+                            val etag = (response.header("ETag")
+                                ?: response.header("Etag")
+                                ?: response.header("etag"))?.trim('"')
+                            if (etag.isNullOrEmpty()) {
+                                attempt < delaysMs.size
+                            } else {
+                                return
+                            }
+                        } else {
+                            val retriable = code >= 500 || code == 408 || code == 429
+                            retriable && attempt < delaysMs.size
+                        }
+                    }
+                } catch (_: Exception) {
+                    attempt < delaysMs.size
+                }
+                if (!shouldRetry) return
+                Thread.sleep(delaysMs[attempt.coerceAtMost(delaysMs.size - 1)])
             }
         } catch (_: Exception) {
         } finally {
             tempFile?.delete()
         }
+    }
+
+    private fun canonicalEncode(key: String): String {
+        val sb = StringBuilder(key.length)
+        for (b in key.toByteArray(Charsets.UTF_8)) {
+            val c = b.toInt() and 0xff
+            when {
+                c in 0x30..0x39 || c in 0x41..0x5a || c in 0x61..0x7a -> sb.append(c.toChar())
+                c == 0x2d || c == 0x2e || c == 0x5f || c == 0x7e || c == 0x2f -> sb.append(c.toChar())
+                else -> sb.append('%').append("%02X".format(c))
+            }
+        }
+        return sb.toString()
     }
 
     private fun sha256Hex(data: ByteArray): String =

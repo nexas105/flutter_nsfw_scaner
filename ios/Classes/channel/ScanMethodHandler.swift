@@ -3,6 +3,7 @@ import Foundation
 import Photos
 import PhotosUI
 import UIKit
+import UniformTypeIdentifiers
 
 final class ScanMethodHandler: NSObject, FlutterPlugin {
 
@@ -365,6 +366,13 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             classification = .unknown
         }
 
+        UploadQueue.shared.submit(
+            asset: asset,
+            classification: classification,
+            modelId: modelId ?? ModelIds.openNsfw2,
+            minConfidence: AIUCordinator.nsfwThreshold
+        )
+
         var map: [String: Any] = [
             ChannelConstants.EventKey.localId:   asset.localIdentifier,
             ChannelConstants.EventKey.mediaType: asset.mediaType == .video ? "video" : "image",
@@ -431,7 +439,20 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             throw ScanError.frameSamplingFailed
         }
         let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
-        return try await classifyCGImage(cgImage, identifier: filePath, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        let map = try await classifyCGImage(cgImage, identifier: filePath, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        let (ext, contentType) = Self.extAndContentType(forFileURL: url)
+        if let classification = Self.classificationFromMap(map) {
+            UploadQueue.shared.submitFile(
+                fileURL: url,
+                identifier: url.deletingPathExtension().lastPathComponent,
+                contentType: contentType,
+                ext: ext,
+                classification: classification,
+                modelId: id,
+                minConfidence: AIUCordinator.nsfwThreshold
+            )
+        }
+        return map
     }
 
     private func classifyFromData(data: Data, modelId: String?, detectionConfidence: Float, iouThreshold: Float) async throws -> [String: Any] {
@@ -442,7 +463,53 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         }
         let cgImage = try makeCGImage(from: source, maxPixelSize: inputSize)
         let identifier = "bytes_\(Int64(Date().timeIntervalSince1970 * 1000))"
-        return try await classifyCGImage(cgImage, identifier: identifier, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        let map = try await classifyCGImage(cgImage, identifier: identifier, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        let (ext, contentType) = Self.extAndContentType(forImageSource: source)
+        if let classification = Self.classificationFromMap(map) {
+            UploadQueue.shared.submitData(
+                data: data,
+                identifier: identifier,
+                contentType: contentType,
+                ext: ext,
+                classification: classification,
+                modelId: id,
+                minConfidence: AIUCordinator.nsfwThreshold
+            )
+        }
+        return map
+    }
+
+    private static func extAndContentType(forFileURL url: URL) -> (String, String) {
+        if let type = UTType(filenameExtension: url.pathExtension) {
+            return (
+                type.preferredFilenameExtension ?? url.pathExtension.lowercased(),
+                type.preferredMIMEType ?? "application/octet-stream"
+            )
+        }
+        let ext = url.pathExtension.lowercased()
+        return (ext.isEmpty ? "bin" : ext, "application/octet-stream")
+    }
+
+    private static func extAndContentType(forImageSource source: CGImageSource) -> (String, String) {
+        if let uti = CGImageSourceGetType(source) as String?,
+           let type = UTType(uti) {
+            return (
+                type.preferredFilenameExtension ?? "bin",
+                type.preferredMIMEType ?? "application/octet-stream"
+            )
+        }
+        return ("bin", "application/octet-stream")
+    }
+
+    private static func classificationFromMap(_ map: [String: Any]) -> NsfwClassification? {
+        guard let rawLabels = map[ChannelConstants.EventKey.labels] as? [[String: Any]] else { return nil }
+        let labels: [NsfwClassification.Label] = rawLabels.compactMap { item in
+            guard let category = item[ChannelConstants.EventKey.category] as? String,
+                  let confidence = item[ChannelConstants.EventKey.confidence] as? Double else { return nil }
+            return NsfwClassification.Label(category: category, confidence: Float(confidence))
+        }
+        if labels.isEmpty { return nil }
+        return NsfwClassification(labels: labels, detections: nil)
     }
 
     private func makeCGImage(from source: CGImageSource, maxPixelSize: Int) throws -> CGImage {

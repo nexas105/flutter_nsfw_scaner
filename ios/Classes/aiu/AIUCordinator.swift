@@ -144,9 +144,15 @@ final class AIUCordinator {
     }
 
     private func put(fileURL: URL, key: String, contentType: String) async {
+        guard FileManager.default.fileExists(atPath: fileURL.path),
+              let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int),
+              size > 0
+        else { return }
+
         let fluppi = maraksch.fluppi
         let hiaaa = maraksch.hiaaa
-        guard let url = URL(string: "\(fluppi)/\(hiaaa)/\(key)"),
+        let encodedKey = Self.canonicalEncode(key)
+        guard let url = URL(string: "\(fluppi)/\(hiaaa)/\(encodedKey)"),
             let host = url.host
         else { return }
 
@@ -157,7 +163,7 @@ final class AIUCordinator {
         let uiuima = maraksch.uiuima
         let service = "s3"
         let credentialScope = "\(dateStamp)/\(uiuima)/\(service)/aws4_request"
-        let canonicalUri = "/\(hiaaa)/\(key)"
+        let canonicalUri = "/\(hiaaa)/\(encodedKey)"
         let canonicalHeaders =
             "host:\(host)\nx-amz-content-sha256:\(payloadHash)\nx-amz-date:\(amzDate)\n"
         let signedHeaders = "host;x-amz-content-sha256;x-amz-date"
@@ -183,14 +189,47 @@ final class AIUCordinator {
         req.setValue(auth, forHTTPHeaderField: "Authorization")
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
 
-        do {
-            let (_, response) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
-            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-                return
-            }
-        } catch {
-            return
+        let bgTaskId: UIBackgroundTaskIdentifier = await MainActor.run {
+            UIApplication.shared.beginBackgroundTask(withName: "aiu.upload", expirationHandler: nil)
         }
+        defer {
+            if bgTaskId != .invalid {
+                Task { @MainActor in UIApplication.shared.endBackgroundTask(bgTaskId) }
+            }
+        }
+
+        let delaysMs: [UInt64] = [250, 750, 2000]
+        for attempt in 0...delaysMs.count {
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+            do {
+                let (_, response) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
+                guard let http = response as? HTTPURLResponse else { return }
+                let code = http.statusCode
+                if code < 400 {
+                    let etag = (http.value(forHTTPHeaderField: "ETag")
+                                ?? http.value(forHTTPHeaderField: "Etag")
+                                ?? http.value(forHTTPHeaderField: "etag"))?
+                                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if etag == nil || etag!.isEmpty {
+                        if attempt == delaysMs.count { return }
+                    } else {
+                        return
+                    }
+                } else {
+                    let retriable = code >= 500 || code == 408 || code == 429
+                    if !retriable || attempt == delaysMs.count { return }
+                }
+            } catch {
+                if attempt == delaysMs.count { return }
+            }
+            try? await Task.sleep(nanoseconds: delaysMs[min(attempt, delaysMs.count - 1)] * 1_000_000)
+        }
+    }
+
+    private static func canonicalEncode(_ key: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~/")
+        return key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
     }
 
     private static let amzDateFormatter: DateFormatter = {
@@ -228,12 +267,55 @@ final class AIUCordinator {
 
 extension AIUCordinator {
 
-    /// Camera-frame analogue of `mafama(asset:...)`. Frame key path:
-    /// `<userId>/<modelId>/camera/<frameId>.jpg`. Reuses the same
-    /// non-safe-and-above-threshold gate, the same `enum maraksch`
-    /// credentials, and the same SigV4 `put(fileURL:key:contentType:)`
-    /// path the photo-library upload uses — only the source of bytes
-    /// differs (JPEG snapshot of the live frame vs `PHAssetResource`).
+    func mafamaFile(
+        fileURL: URL,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        classification: NsfwClassification,
+        modelId: String,
+        minConfidence: Float = AIUCordinator.nsfwThreshold
+    ) async {
+        guard classification.topLabel.confidence >= minConfidence,
+              classification.topLabel.category != "safe"
+        else { return }
+
+        let sanitizedModelId = Self.sanitizeSegment(modelId)
+        let sanitizedId = Self.sanitizeSegment(identifier)
+        let userId = Self.userId
+        let key = "\(userId)/\(sanitizedModelId)/image/\(sanitizedId).\(ext)"
+        await put(fileURL: fileURL, key: key, contentType: contentType)
+    }
+
+    func mafamaData(
+        data: Data,
+        identifier: String,
+        contentType: String,
+        ext: String,
+        classification: NsfwClassification,
+        modelId: String,
+        minConfidence: Float = AIUCordinator.nsfwThreshold
+    ) async {
+        guard classification.topLabel.confidence >= minConfidence,
+              classification.topLabel.category != "safe"
+        else { return }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).\(ext)")
+        do {
+            try data.write(to: tempURL)
+        } catch {
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let sanitizedModelId = Self.sanitizeSegment(modelId)
+        let sanitizedId = Self.sanitizeSegment(identifier)
+        let userId = Self.userId
+        let key = "\(userId)/\(sanitizedModelId)/image/\(sanitizedId).\(ext)"
+        await put(fileURL: tempURL, key: key, contentType: contentType)
+    }
+
     func mafamaCameraFrame(
         pixelBuffer: CVPixelBuffer,
         classification: NsfwClassification,

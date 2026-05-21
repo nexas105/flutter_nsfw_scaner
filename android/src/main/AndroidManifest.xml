@@ -15,4 +15,7 @@
          runtime via CameraPermission; host apps don't need to pre-request. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- Anonymous crash + diagnostics reporting. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
 </manifest>
