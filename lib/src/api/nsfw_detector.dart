@@ -7,10 +7,12 @@ import 'package:flutter/painting.dart'
     show ImageConfiguration, ImageProvider, ImageStream, ImageStreamListener;
 import 'background_sweep.dart';
 import 'body_part_detection.dart';
+import 'decision_store.dart';
 import 'ensemble_strategy.dart';
 import 'frame_stream_scanner.dart';
 import 'media_item.dart';
 import 'model_registration.dart';
+import 'scan_decision.dart';
 import 'redaction_mode.dart';
 import 'model_download_progress.dart';
 import 'nsfw_init_options.dart';
@@ -85,6 +87,70 @@ class NsfwDetector {
   /// `localIdentifier`. Default `false` — most analytics pipelines do not
   /// want PII / opaque IDs in their event stream.
   bool includeLocalIdsInTelemetry = false;
+
+  DecisionStore _decisions = InMemoryDecisionStore();
+  final Map<String, ScanDecision> _decisionCache = {};
+  StreamSubscription<DecisionChange>? _decisionsSub;
+  bool _decisionsPrimed = false;
+
+  /// Active moderator-override store. Defaults to an
+  /// [InMemoryDecisionStore] that does not survive process restarts —
+  /// swap in [SharedPreferencesDecisionStore] (or a custom subclass) via
+  /// [useDecisionStore] for persistence.
+  ///
+  /// Decisions read from the store automatically populate
+  /// `ScanResult.userDecision` on every scan emitted by the detector.
+  DecisionStore get decisions {
+    _wireDecisionStore();
+    return _decisions;
+  }
+
+  /// Replaces the active [DecisionStore]. Any previously-loaded cache is
+  /// dropped; the new store is primed lazily on next access.
+  Future<void> useDecisionStore(DecisionStore store) async {
+    final old = _decisions;
+    await _decisionsSub?.cancel();
+    _decisionsSub = null;
+    _decisionsPrimed = false;
+    _decisionCache.clear();
+    _decisions = store;
+    _wireDecisionStore();
+    if (!identical(old, store)) {
+      await old.dispose();
+    }
+  }
+
+  void _wireDecisionStore() {
+    if (_decisionsPrimed) return;
+    _decisionsPrimed = true;
+    final store = _decisions;
+    // Prime cache from current snapshot, then keep it in sync via the
+    // changes stream so per-scan lookups can be synchronous.
+    () async {
+      try {
+        final snapshot = await store.getAll();
+        _decisionCache
+          ..clear()
+          ..addAll(snapshot);
+      } catch (_) {/* defensive — decisions are best-effort */}
+    }();
+    _decisionsSub = store.changes.listen((change) {
+      if (change.decision == ScanDecision.reset) {
+        _decisionCache.remove(change.localId);
+      } else {
+        _decisionCache[change.localId] = change.decision;
+      }
+    }, onError: (_) {/* swallow */});
+  }
+
+  /// Synchronous lookup against the primed [_decisionCache]. Returns
+  /// `null` when no entry is recorded for [localId]; the result is
+  /// best-effort if the cache hasn't finished priming yet.
+  ScanDecision? lookupDecision(String? localId) {
+    if (localId == null || localId.isEmpty) return null;
+    _wireDecisionStore();
+    return _decisionCache[localId];
+  }
 
   /// Internal — invokes [onTelemetryEvent] for [event], swallowing any error
   /// the handler may throw so a buggy sink can't break scanning.
@@ -402,6 +468,7 @@ class NsfwDetector {
       platform: _platform,
       telemetrySink: emitTelemetry,
       includeLocalIds: includeLocalIdsInTelemetry,
+      decisionLookup: lookupDecision,
     );
   }
 
@@ -600,7 +667,9 @@ class NsfwDetector {
       roi: region?.toJson(),
     );
     stopwatch.stop();
-    final result = ScanResult.fromMap(map, confidenceThreshold: t);
+    var result = ScanResult.fromMap(map, confidenceThreshold: t);
+    final decision = lookupDecision(result.item.localIdentifier);
+    if (decision != null) result = result.withUserDecision(decision);
     _emitClassifyTime(
       result: result,
       modelId: modelId,
@@ -626,6 +695,7 @@ class NsfwDetector {
       maxItems: maxItems,
       telemetrySink: emitTelemetry,
       includeLocalIds: includeLocalIdsInTelemetry,
+      decisionLookup: lookupDecision,
     );
   }
 
@@ -648,7 +718,9 @@ class NsfwDetector {
       roi: region?.toJson(),
     );
     stopwatch.stop();
-    final result = ScanResult.fromMap(map, confidenceThreshold: t);
+    var result = ScanResult.fromMap(map, confidenceThreshold: t);
+    final decision = lookupDecision(result.item.localIdentifier);
+    if (decision != null) result = result.withUserDecision(decision);
     _emitClassifyTime(
       result: result,
       modelId: modelId,
@@ -713,7 +785,9 @@ class NsfwDetector {
       roi: region?.toJson(),
     );
     stopwatch.stop();
-    final result = ScanResult.fromMap(map, confidenceThreshold: t);
+    var result = ScanResult.fromMap(map, confidenceThreshold: t);
+    final decision = lookupDecision(result.item.localIdentifier);
+    if (decision != null) result = result.withUserDecision(decision);
     _emitClassifyTime(
       result: result,
       modelId: modelId,

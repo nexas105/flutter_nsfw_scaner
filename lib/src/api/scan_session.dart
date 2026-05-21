@@ -1,12 +1,18 @@
 import 'dart:async';
 import 'dart:developer' as dev;
 import 'package:flutter/foundation.dart';
+import 'scan_decision.dart';
 import 'scan_result.dart';
 import 'scan_progress.dart';
 import 'scan_summary.dart';
 import 'scan_configuration.dart';
 import 'telemetry_event.dart';
 import '../platform/nsfw_platform_interface.dart';
+
+/// Synchronous lookup signature for `(localId) → ScanDecision?` used by
+/// [ScanSession] to attach moderator overrides to results without an
+/// async dispatch per emission.
+typedef DecisionLookup = ScanDecision? Function(String? localId);
 
 /// Running photo-library or picker scan.
 ///
@@ -23,6 +29,7 @@ class ScanSession {
   final NsfwPlatformInterface _platform;
   final TelemetryHandler? _telemetrySink;
   final bool _includeLocalIds;
+  final DecisionLookup? _decisionLookup;
 
   final _resultsController = StreamController<ScanResult>.broadcast();
   final _progressController = StreamController<ScanProgress>.broadcast();
@@ -49,22 +56,26 @@ class ScanSession {
     required NsfwPlatformInterface platform,
     TelemetryHandler? telemetrySink,
     bool includeLocalIds = false,
+    DecisionLookup? decisionLookup,
   })  : _config = config,
         _platform = platform,
         _telemetrySink = telemetrySink,
-        _includeLocalIds = includeLocalIds;
+        _includeLocalIds = includeLocalIds,
+        _decisionLookup = decisionLookup;
 
   static Future<ScanSession> start({
     required ScanConfiguration config,
     required NsfwPlatformInterface platform,
     TelemetryHandler? telemetrySink,
     bool includeLocalIds = false,
+    DecisionLookup? decisionLookup,
   }) async {
     final session = ScanSession._(
       config: config,
       platform: platform,
       telemetrySink: telemetrySink,
       includeLocalIds: includeLocalIds,
+      decisionLookup: decisionLookup,
     );
     await session._begin();
     return session;
@@ -76,12 +87,14 @@ class ScanSession {
     required int maxItems,
     TelemetryHandler? telemetrySink,
     bool includeLocalIds = false,
+    DecisionLookup? decisionLookup,
   }) async {
     final session = ScanSession._(
       config: config,
       platform: platform,
       telemetrySink: telemetrySink,
       includeLocalIds: includeLocalIds,
+      decisionLookup: decisionLookup,
     );
     await session._beginPicker(maxItems);
     return session;
@@ -247,9 +260,11 @@ class ScanSession {
         }
       }
     }
-    final result = ScanResult.fromMap(event,
+    var result = ScanResult.fromMap(event,
         confidenceThreshold: _config.confidenceThreshold,
         thresholdsByCategory: _config.thresholdsByCategory);
+    final decision = _decisionLookup?.call(result.item.localIdentifier);
+    if (decision != null) result = result.withUserDecision(decision);
 
     // Dart-side filter: honour includeOnlyAssetIds (wins) / skipAssetIds even
     // when the native implementation hasn't applied the lists itself. This

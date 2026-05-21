@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'body_part_detection.dart';
 import 'media_item.dart';
 import 'nsfw_label.dart';
+import 'scan_decision.dart';
 
 /// Terminal status for scanning a single media item.
 enum ScanStatus {
@@ -76,6 +77,12 @@ class ScanResult {
   /// suggestive (0.95)" without re-classifying.
   final Map<NsfwCategory, double>? thresholdsByCategory;
 
+  /// Moderator override pulled from the active [DecisionStore], if any.
+  /// `ScanDecision.allow` overrides [isNsfw] to `false`; `ScanDecision.block`
+  /// overrides it to `true`. `null` (or `ScanDecision.reset`) defers to the
+  /// raw classifier output.
+  final ScanDecision? userDecision;
+
   const ScanResult({
     required this.item,
     required this.status,
@@ -86,6 +93,7 @@ class ScanResult {
     this.fromCache = false,
     this.detections,
     this.thresholdsByCategory,
+    this.userDecision,
   });
 
   /// Highest-priority category reported for this item.
@@ -107,7 +115,12 @@ class ScanResult {
   /// returns true as soon as one crosses its per-category threshold — so an
   /// explicit-at-0.6 label can flag the result even when the top label is a
   /// suggestive-at-0.9 sitting under its own 0.95 threshold.
+  ///
+  /// [userDecision] wins when set to `ScanDecision.allow` or
+  /// `ScanDecision.block`, so moderator overrides survive future re-scans.
   bool get isNsfw {
+    if (userDecision == ScanDecision.allow) return false;
+    if (userDecision == ScanDecision.block) return true;
     if (status != ScanStatus.completed) return false;
     if (thresholdsByCategory == null) {
       return topCategory.isNsfw && topConfidence >= confidenceThreshold;
@@ -254,6 +267,23 @@ class ScanResult {
         fromCache: fromCache,
         detections: detections,
         thresholdsByCategory: thresholdsByCategory,
+        userDecision: userDecision,
+      );
+
+  /// Returns a copy with a moderator override attached. Pass `null` (or
+  /// `ScanDecision.reset`) to clear an existing decision.
+  ScanResult withUserDecision(ScanDecision? decision) => ScanResult(
+        item: item,
+        status: status,
+        labels: labels,
+        scannedAt: scannedAt,
+        confidenceThreshold: confidenceThreshold,
+        errorMessage: errorMessage,
+        fromCache: fromCache,
+        detections: detections,
+        thresholdsByCategory: thresholdsByCategory,
+        userDecision:
+            decision == ScanDecision.reset ? null : decision,
       );
 
   /// Parses a method-channel result emitted by the native scanner.
@@ -261,6 +291,7 @@ class ScanResult {
     Map<dynamic, dynamic> map, {
     double confidenceThreshold = 0.7,
     Map<NsfwCategory, double>? thresholdsByCategory,
+    ScanDecision? userDecision,
   }) {
     final rawLabels = (map['labels'] as List<dynamic>?) ?? [];
     // Sort by NSFW priority FIRST, then confidence within each tier — a
@@ -301,6 +332,8 @@ class ScanResult {
       detections: detections,
       thresholdsByCategory: thresholdsByCategory ??
           _thresholdsFromMap(map['thresholdsByCategory']),
+      userDecision: userDecision ??
+          ScanDecision.fromWire(map['userDecision'] as String?),
     );
   }
 
@@ -346,6 +379,7 @@ class ScanResult {
           'detections': detections!.map((d) => d.toMap()).toList(),
         if (_thresholdsToMap(thresholdsByCategory) != null)
           'thresholdsByCategory': _thresholdsToMap(thresholdsByCategory),
+        if (userDecision != null) 'userDecision': userDecision!.wireValue,
       };
 
   /// Public JSON-safe serialisation suitable for `jsonEncode` /
