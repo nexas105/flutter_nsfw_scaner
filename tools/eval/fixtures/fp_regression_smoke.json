@@ -1,0 +1,18 @@
+[
+  {
+    "path": "smoke/safe_solid_red.png",
+    "truth": "safe",
+    "subcategory": "solid_colour",
+    "notes": "placeholder — replace with real beach_photo / art_nude / baby_bath / anime sets"
+  },
+  {
+    "path": "smoke/safe_solid_green.png",
+    "truth": "safe",
+    "subcategory": "solid_colour"
+  },
+  {
+    "path": "smoke/safe_solid_blue.png",
+    "truth": "safe",
+    "subcategory": "solid_colour"
+  }
+]

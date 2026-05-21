@@ -12,18 +12,25 @@ class EvalItem {
   /// Ground-truth NSFW category, parsed from the label string.
   final NsfwCategory truth;
 
+  /// Optional free-form bucket used by the FP-regression suite to break
+  /// false-positive rates down per "kind of edge case" (e.g.
+  /// `beach_photo`, `art_nude`, `baby_bath`, `anime`).
+  final String? subcategory;
+
   /// Optional notes preserved verbatim for the report.
   final String? notes;
 
   const EvalItem({
     required this.resolvedPath,
     required this.truth,
+    this.subcategory,
     this.notes,
   });
 
   Map<String, Object?> toJson() => {
         'path': resolvedPath,
         'truth': truth.name,
+        if (subcategory != null) 'subcategory': subcategory,
         if (notes != null) 'notes': notes,
       };
 }
@@ -90,6 +97,7 @@ EvalDataset loadDataset(File manifest) {
     items.add(EvalItem(
       resolvedPath: resolved,
       truth: category,
+      subcategory: entry['subcategory'] as String?,
       notes: entry['notes'] as String?,
     ));
   }

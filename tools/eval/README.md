@@ -44,8 +44,48 @@ trip safely as `safe` for any classifier, so the harness can be smoke-tested
 on a developer machine without bundling real-world content. Replace with
 your own labelled set for actual model evaluation.
 
+## False-positive regression suite
+
+Edge cases that the classifier has burned us on in the past (beach photos,
+art nudes, baby bath photos, anime, etc.) live in a separate dataset shape
+that tags each item with a `subcategory`:
+
+```json
+[
+  {"path": "beach/01.png", "truth": "safe", "subcategory": "beach_photo"},
+  {"path": "art/02.png", "truth": "safe", "subcategory": "art_nude"},
+  {"path": "anime/03.png", "truth": "safe", "subcategory": "anime"}
+]
+```
+
+Use `runFpRegression(...)` from `lib/fp_regression.dart` to tally
+false-positive rate per subcategory. A baseline map and per-subcategory
+tolerance let CI fail when a known-good bucket regresses:
+
+```dart
+final report = await runFpRegression(
+  dataset: dataset,
+  modelId: 'opennsfw2_coreml',
+  scan: (p) => NsfwDetector.instance.scanFile(p),
+  baseline: {
+    'beach_photo': 0.02,
+    'art_nude':    0.10,
+    'baby_bath':   0.00,
+    'anime':       0.05,
+  },
+  tolerance: 0.03,
+);
+if (report.exceeded.isNotEmpty) {
+  // CI: fail the job with the exceeded buckets in the message.
+}
+```
+
+`fixtures/fp_regression_smoke.json` is the canonical placeholder; replace
+with real fixtures in your private eval set.
+
 ## CI integration
 
 See `.github/workflows/eval.yml` (when configured) for the smoke-only PR job;
-it gates against a > 10% drop in macro-F1 on the canonical fixture so
-gross regressions in the inference path get caught at PR time.
+it gates against a > 10% drop in macro-F1 on the canonical fixture and a
+> 3 pp regression on the FP-regression baseline so gross regressions in
+the inference path get caught at PR time.
