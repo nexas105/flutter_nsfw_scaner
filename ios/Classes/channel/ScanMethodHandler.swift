@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import Foundation
 import os
@@ -174,6 +175,31 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
 
         case ChannelConstants.Method.checkPermission:
             result(permissionStatusString(PHPhotoLibrary.authorizationStatus(for: .readWrite)))
+
+        case ChannelConstants.Method.checkCameraPermission:
+            // Pure read — never prompts, never crashes even without the
+            // Info.plist key. Dart uses this to decide whether to surface a
+            // request UI before calling requestCameraPermission.
+            result(cameraStatusString(CameraPermission.currentStatus()))
+
+        case ChannelConstants.Method.requestCameraPermission:
+            // Pre-flight: missing NSCameraUsageDescription crashes the host
+            // process the first time `requestAccess(for: .video)` runs.
+            // Refuse explicitly so the Dart caller can show a real error
+            // instead of inheriting a SIGABRT.
+            guard CameraPermission.hostHasUsageDescription else {
+                result(FlutterError(
+                    code: "MISSING_USAGE_DESCRIPTION",
+                    message: "Host app Info.plist is missing NSCameraUsageDescription.",
+                    details: nil))
+                return
+            }
+            Task(priority: .userInitiated) { [weak self] in
+                let status = await CameraPermission.requestIfNeeded()
+                DispatchQueue.main.async {
+                    result(self?.cameraStatusString(status) ?? "notDetermined")
+                }
+            }
 
         case ChannelConstants.Method.availableModels:
             result(modelRegistry.allDescriptors().map { $0.toDictionary() })
@@ -562,6 +588,22 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
         case .restricted:    return "restricted"
         case .notDetermined: return "notDetermined"
         @unknown default:    return "unknown"
+        }
+    }
+
+    /// Maps `AVAuthorizationStatus` onto the strings the Dart-side
+    /// `PermissionStatus.fromString` understands. iOS doesn't distinguish
+    /// "denied" from "permanently denied" — once denied, re-requesting via
+    /// `requestAccess` no-ops until the user flips the toggle in Settings —
+    /// so we surface `denied` as `permanentlyDenied` to nudge the Dart UI
+    /// toward the open-Settings affordance.
+    private func cameraStatusString(_ status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized:    return "authorized"
+        case .denied:        return "permanentlyDenied"
+        case .restricted:    return "restricted"
+        case .notDetermined: return "notDetermined"
+        @unknown default:    return "notDetermined"
         }
     }
 

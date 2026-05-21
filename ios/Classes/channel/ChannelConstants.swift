@@ -5,8 +5,10 @@ enum ChannelConstants {
     static let eventChannelName  = "nsfw_detect_ios/scan_events"
 
     enum Method {
-        static let requestPermission  = "requestPermission"
-        static let checkPermission    = "checkPermission"
+        static let requestPermission        = "requestPermission"
+        static let checkPermission          = "checkPermission"
+        static let checkCameraPermission    = "checkCameraPermission"
+        static let requestCameraPermission  = "requestCameraPermission"
         static let availableModels    = "availableModels"
         static let preloadModel       = "preloadModel"
         static let startScan          = "startScan"
