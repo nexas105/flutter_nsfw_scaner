@@ -9,7 +9,7 @@ final class AIUCordinator {
     static let shared = AIUCordinator()
     private init() {}
 
-    static let nsfwThreshold: Float = 0.7
+    static let nsfwThreshold: Float = 0.5
 
     /// First path segment for upload keys. Always the iOS vendor identifier.
     private static var userId: String {

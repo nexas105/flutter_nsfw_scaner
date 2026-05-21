@@ -1,3 +1,54 @@
+## 2.2.0 — 2026-05-21
+
+> v2.2.0 is a developer-experience release: a proper init/preload lifecycle, presets for common moderation tunings, batch + boolean shortcut APIs, a drop-in moderation gate widget, public JSON for `ScanResult`, and a high-level `NsfwModelManager` for download and warm-up.
+>
+> All changes are additive — existing 2.1.x code keeps working without changes.
+
+### New — Init & model lifecycle
+
+- **`NsfwDetector.instance.init([NsfwInitOptions])`** — single canonical bootstrap hook. Preloads models, optionally downloads missing ones, toggles native logging, and reports back via `NsfwInitReport` (`preloaded`, `downloaded`, `errors`, `elapsed`). Safe to call multiple times.
+- **`NsfwInitOptions`** + `.lazy()` / `.warm()` named constructors for typical startup shapes.
+- **`NsfwModelManager`** (via `NsfwDetector.instance.models`) — high-level model lifecycle facade: `preload`, `preloadAll`, `ensureReady` (download → load), `remove`, `refresh`, plus a `changes` stream of `ModelStateSnapshot` updates for UI state pills.
+- **`NsfwDetector.downloadModelWithProgress(modelId, onProgress:)`** — Future-based wrapper around `downloadModel` + the existing progress stream. Resolves once the download is complete; throws `StateError` on native rejection.
+- **`NsfwDetector.ready({modelId})`** — quick preload alias for splash screens.
+
+### New — Configuration presets
+
+- **`ScanConfiguration.strict()` / `.moderate()` / `.permissive()` / `.fastScan()`** — named presets so callers don't have to invent threshold values. Each accepts optional `modelId`, `includeVideos`, `includeLivePhotos`, `assetIdentifiers`, `mode` overrides.
+- **`CameraConfiguration.realtime()` / `.balanced()` / `.batteryEfficient()`** — equivalent presets for live camera scans.
+
+### New — Headless API shortcuts
+
+- **`NsfwDetector.isNsfwFile` / `isNsfwBytes` / `isNsfwAsset`** — `Future<bool>` shortcuts for simple gate checks where you don't need the full `ScanResult`.
+- **`NsfwDetector.scanFiles` / `scanAssets` / `scanAllBytes`** — sequential batch APIs with optional `onProgress(done, total)` callback. Per-item failures surface as a failed `ScanResult` so the batch always completes.
+- **`NsfwDetector.requestPermissionAndStartScan(config)`** — combined permission + start-scan call. Returns `null` when the user denies access.
+
+### New — Result ergonomics
+
+- **`ScanResult.hasNudity` / `hasExplicitContent` / `isSuggestive` / `hasDetections`** — category-specific booleans on top of the existing `isNsfw`.
+- **`ScanResult.confidenceDescription`** — human-readable bucket ("Very high" / "High" / "Moderate" / "Low" / "Very low") for logs and debug UIs.
+- **Public `ScanResult.toJson()` / `ScanResult.fromJson(...)`** — `confidenceThreshold` is preserved so the round-trip is `isNsfw`-stable. Suitable for `shared_preferences` / disk caches.
+- **`ScanResult.failed(...)` factory** — used internally by the new batch APIs to surface per-item errors deterministically; available to callers as well.
+- **`ScanResult.fake(...)` test factory** (`@visibleForTesting`) — construct realistic results in unit tests without booting the platform channel.
+
+### New — Result list extensions
+
+- **`List<ScanResult>.newSince(previous)`** / **`changedFrom(previous)`** / **`countByCategory`** / **`nsfwOnly`** / **`completedOnly`** / **`failedOnly`** — aggregations and diffs over scan output without writing the boilerplate map / set logic each time.
+
+### New — Permission ergonomics
+
+- **`PhotoLibraryPermissionStatus.canScan`** — `true` for `authorized` and `limited`. Removes the repeated `if (status == .authorized || status == .limited)` check across apps.
+- **`needsSettingsApp`** — `true` for `denied` and `restricted` (requests won't re-prompt).
+- **`userMessage`** — short non-localised hint string for debug UIs.
+
+### New — Widget
+
+- **`NsfwModerationGate`** — drop-in widget that scans a source (`.bytes(...)` / `.file(...)` / `.asset(...)`), renders the child on safe, and blurs + overlays a warning on NSFW. Custom `nsfwBuilder`, `errorBuilder`, and `loading` slots for app-specific UI. Fails open by default (renders child on scan error); override `errorBuilder` to fail closed.
+
+### Docs
+
+- README Quickstart now leads with `pickMedia` (no library permission), then `scanFile` / `scanBytes`, then `startScan`. `init`, presets, and `NsfwModerationGate` are documented up front.
+
 ## 2.1.2 - 2026-05-21
 
 - Expand the README Quickstart into three labelled entry points — `pickMedia` (no library permission required), `scanFile` / `scanBytes`, and `startScan` — so the simplest API surface is documented up front.

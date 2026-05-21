@@ -100,6 +100,42 @@ class ScanResult {
       labels.where((l) => l.category == category).firstOrNull?.confidence ??
       0.0;
 
+  /// True when the top category is [NsfwCategory.nudity] above threshold.
+  bool get hasNudity =>
+      status == ScanStatus.completed &&
+      topCategory == NsfwCategory.nudity &&
+      topConfidence >= confidenceThreshold;
+
+  /// True when the top category is [NsfwCategory.explicitNudity] above
+  /// threshold. Stricter signal than [isNsfw].
+  bool get hasExplicitContent =>
+      status == ScanStatus.completed &&
+      topCategory == NsfwCategory.explicitNudity &&
+      topConfidence >= confidenceThreshold;
+
+  /// True when the top category is [NsfwCategory.suggestive] above threshold.
+  /// Treated as a separate signal from [isNsfw] because some products allow
+  /// suggestive content but block nudity.
+  bool get isSuggestive =>
+      status == ScanStatus.completed &&
+      topCategory == NsfwCategory.suggestive &&
+      topConfidence >= confidenceThreshold;
+
+  /// True when at least one body-part detection box is present. Only
+  /// populated for [ScanMode.detection] runs.
+  bool get hasDetections => detections != null && detections!.isNotEmpty;
+
+  /// Human-readable bucket for [topConfidence] — for logs, debug UIs, or
+  /// user-facing strings ("Very high" / "High" / "Moderate" / "Low" / "Very low").
+  /// Not localized; wrap in your own i18n layer if needed.
+  String get confidenceDescription {
+    if (topConfidence >= 0.9) return 'Very high';
+    if (topConfidence >= 0.75) return 'High';
+    if (topConfidence >= 0.6) return 'Moderate';
+    if (topConfidence >= 0.4) return 'Low';
+    return 'Very low';
+  }
+
   /// Priority order used in [ScanResult.fromMap] to break confidence ties so
   /// `topCategory` always surfaces NSFW over SFW when both are present.
   /// Lower value = higher priority. Mirrors the native-side sort in
@@ -119,6 +155,49 @@ class ScanResult {
         return 4;
     }
   }
+
+  /// Constructs a synthetic [ScanResult] with [status] = [ScanStatus.failed]
+  /// for batch APIs that need to surface per-item errors without aborting the
+  /// whole batch. `errorMessage` describes the underlying failure.
+  factory ScanResult.failed({
+    required String localIdentifier,
+    required String errorMessage,
+    double confidenceThreshold = 0.7,
+    MediaType type = MediaType.unknown,
+  }) =>
+      ScanResult(
+        item: MediaItem(localIdentifier: localIdentifier, type: type),
+        status: ScanStatus.failed,
+        labels: const [],
+        scannedAt: DateTime.now(),
+        confidenceThreshold: confidenceThreshold,
+        errorMessage: errorMessage,
+      );
+
+  /// Test-only factory — constructs a [ScanResult] with the given category /
+  /// confidence so unit tests can assert moderation logic without booting
+  /// the platform channel. Not intended for production code.
+  @visibleForTesting
+  factory ScanResult.fake({
+    String localIdentifier = 'fake-id',
+    NsfwCategory category = NsfwCategory.safe,
+    double confidence = 0.95,
+    double confidenceThreshold = 0.7,
+    ScanStatus status = ScanStatus.completed,
+    MediaType type = MediaType.image,
+    bool fromCache = false,
+    List<BodyPartDetection>? detections,
+    DateTime? scannedAt,
+  }) =>
+      ScanResult(
+        item: MediaItem(localIdentifier: localIdentifier, type: type),
+        status: status,
+        labels: [NsfwLabel(category: category, confidence: confidence)],
+        scannedAt: scannedAt ?? DateTime.now(),
+        confidenceThreshold: confidenceThreshold,
+        fromCache: fromCache,
+        detections: detections,
+      );
 
   /// Parses a method-channel result emitted by the native scanner.
   factory ScanResult.fromMap(
@@ -178,6 +257,22 @@ class ScanResult {
         if (detections != null)
           'detections': detections!.map((d) => d.toMap()).toList(),
       };
+
+  /// Public JSON-safe serialisation suitable for `jsonEncode` /
+  /// `shared_preferences` storage. Symmetric with [ScanResult.fromJson].
+  /// Includes `confidenceThreshold` so the round-trip preserves [isNsfw].
+  Map<String, dynamic> toJson() => {
+        ...toMap(),
+        'confidenceThreshold': confidenceThreshold,
+      };
+
+  /// Restores a result previously produced by [toJson]. Missing fields fall
+  /// back to the same defaults as [ScanResult.fromMap].
+  factory ScanResult.fromJson(Map<String, dynamic> json) => ScanResult.fromMap(
+        json,
+        confidenceThreshold:
+            (json['confidenceThreshold'] as num?)?.toDouble() ?? 0.7,
+      );
 
   @override
   bool operator ==(Object other) =>

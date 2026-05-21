@@ -19,6 +19,32 @@ enum PhotoLibraryPermissionStatus {
         'restricted' => PhotoLibraryPermissionStatus.restricted,
         _ => PhotoLibraryPermissionStatus.notDetermined,
       };
+
+  /// True when the current grant permits at least some library access —
+  /// either full (`authorized`) or selected-assets (`limited`).
+  bool get canScan =>
+      this == PhotoLibraryPermissionStatus.authorized ||
+      this == PhotoLibraryPermissionStatus.limited;
+
+  /// True when the user must change the grant in the system Settings app
+  /// (denied or restricted). Permission requests will not re-prompt.
+  bool get needsSettingsApp =>
+      this == PhotoLibraryPermissionStatus.denied ||
+      this == PhotoLibraryPermissionStatus.restricted;
+
+  /// Short non-localized hint string for debug UIs / logs. Wrap in your own
+  /// i18n layer when surfacing this to end users.
+  String get userMessage => switch (this) {
+        PhotoLibraryPermissionStatus.authorized => 'Full photo library access',
+        PhotoLibraryPermissionStatus.limited =>
+          'Limited access — only selected items are scannable',
+        PhotoLibraryPermissionStatus.denied =>
+          'Access denied — enable photo permission in Settings',
+        PhotoLibraryPermissionStatus.restricted =>
+          'Access restricted by device policy',
+        PhotoLibraryPermissionStatus.notDetermined =>
+          'Permission has not been requested yet',
+      };
 }
 
 /// Platform-interface contract for nsfw_detect.

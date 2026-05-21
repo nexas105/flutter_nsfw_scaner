@@ -108,6 +108,79 @@ class ScanConfiguration {
     this.mode = ScanMode.classification,
   });
 
+  /// Strict moderation tuning — high `confidenceThreshold` (0.85) so only
+  /// strong NSFW signals trip `isNsfw`. Lower false-positive cost is traded
+  /// for slightly higher false-negative risk.
+  const ScanConfiguration.strict({
+    String modelId = ModelIds.openNsfw2,
+    bool includeVideos = true,
+    bool includeLivePhotos = true,
+    List<String>? assetIdentifiers,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: 0.85,
+          includeVideos: includeVideos,
+          includeLivePhotos: includeLivePhotos,
+          assetIdentifiers: assetIdentifiers,
+          mode: mode,
+        );
+
+  /// Balanced default — `confidenceThreshold` 0.7, cache on. Good starting
+  /// point for general moderation workflows.
+  const ScanConfiguration.moderate({
+    String modelId = ModelIds.openNsfw2,
+    bool includeVideos = true,
+    bool includeLivePhotos = true,
+    List<String>? assetIdentifiers,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: 0.7,
+          includeVideos: includeVideos,
+          includeLivePhotos: includeLivePhotos,
+          assetIdentifiers: assetIdentifiers,
+          mode: mode,
+        );
+
+  /// Permissive tuning — `confidenceThreshold` 0.5. Flags more items.
+  /// Useful for review queues where false negatives are costlier than
+  /// false positives.
+  const ScanConfiguration.permissive({
+    String modelId = ModelIds.openNsfw2,
+    bool includeVideos = true,
+    bool includeLivePhotos = true,
+    List<String>? assetIdentifiers,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: 0.5,
+          includeVideos: includeVideos,
+          includeLivePhotos: includeLivePhotos,
+          assetIdentifiers: assetIdentifiers,
+          mode: mode,
+        );
+
+  /// Throughput-tuned preset — higher `concurrency` (8) and skips already
+  /// scanned items. Use after profiling on the device families you support.
+  const ScanConfiguration.fastScan({
+    String modelId = ModelIds.openNsfw2,
+    double confidenceThreshold = 0.7,
+    bool includeVideos = true,
+    bool includeLivePhotos = true,
+    List<String>? assetIdentifiers,
+    ScanMode mode = ScanMode.classification,
+  }) : this(
+          modelId: modelId,
+          confidenceThreshold: confidenceThreshold,
+          includeVideos: includeVideos,
+          includeLivePhotos: includeLivePhotos,
+          assetIdentifiers: assetIdentifiers,
+          concurrency: 8,
+          skipAlreadyScanned: true,
+          mode: mode,
+        );
+
   /// Returns a copy with selected fields replaced.
   ///
   /// Passing null leaves the existing value unchanged.

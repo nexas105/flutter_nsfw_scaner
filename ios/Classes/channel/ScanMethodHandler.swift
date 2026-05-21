@@ -341,6 +341,10 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
     // MARK: - Single asset scan
 
     private func scanSingleAsset(localId: String, modelId: String?, detectionConfidence: Float = 0.25, iouThreshold: Float = 0.45) async throws -> [String: Any] {
+        if localId.hasPrefix("file://") {
+            let path = String(localId.dropFirst("file://".count))
+            return try await classifyFromFile(filePath: path, modelId: modelId, detectionConfidence: detectionConfidence, iouThreshold: iouThreshold)
+        }
         let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil)
         guard let asset = fetchResult.firstObject else {
             throw ScanError.assetNotFound(localId)
@@ -641,39 +645,76 @@ extension ScanMethodHandler: PHPickerViewControllerDelegate {
     // MARK: pickMedia flow (no scan)
 
     private func handlePickMediaResults(_ results: [PHPickerResult], flutterResult: @escaping FlutterResult) {
-        let identifiers = results.compactMap { $0.assetIdentifier }
-        guard !identifiers.isEmpty else {
-            // User cancelled, or full-library access not granted → return empty list.
+        guard !results.isEmpty else {
             DispatchQueue.main.async { flutterResult([] as [[String: Any]]) }
             return
         }
 
-        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        let identifiers = results.compactMap { $0.assetIdentifier }
+        let fetchResult = identifiers.isEmpty
+            ? nil
+            : PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
         var byId: [String: PHAsset] = [:]
-        fetchResult.enumerateObjects { asset, _, _ in
+        fetchResult?.enumerateObjects { asset, _, _ in
             byId[asset.localIdentifier] = asset
         }
 
-        // Preserve picker order rather than fetch-result order.
-        let payload: [[String: Any]] = identifiers.compactMap { id in
-            guard let asset = byId[id] else {
-                return [
-                    "localId":   id,
-                    "mediaType": "image",
-                ] as [String: Any]
+        Task {
+            var payload: [[String: Any]] = []
+            for result in results {
+                if let id = result.assetIdentifier, let asset = byId[id] {
+                    var item: [String: Any] = [
+                        "localId":   asset.localIdentifier,
+                        "mediaType": asset.mediaType == .video ? "video" : "image",
+                        "width":     asset.pixelWidth,
+                        "height":    asset.pixelHeight,
+                    ]
+                    if asset.mediaType == .video {
+                        item["durationMs"] = Int(asset.duration * 1000)
+                    }
+                    payload.append(item)
+                } else if let fallback = await Self.extractItemProviderToTemp(result.itemProvider) {
+                    payload.append(fallback)
+                }
             }
-            var item: [String: Any] = [
-                "localId":   asset.localIdentifier,
-                "mediaType": asset.mediaType == .video ? "video" : "image",
-                "width":     asset.pixelWidth,
-                "height":    asset.pixelHeight,
-            ]
-            if asset.mediaType == .video {
-                item["durationMs"] = Int(asset.duration * 1000)
-            }
-            return item
+            DispatchQueue.main.async { flutterResult(payload) }
         }
+    }
 
-        DispatchQueue.main.async { flutterResult(payload) }
+    private static func extractItemProviderToTemp(_ provider: NSItemProvider) async -> [String: Any]? {
+        let types = provider.registeredTypeIdentifiers
+        let videoTypes = ["public.movie", "public.video", "public.mpeg-4", "com.apple.quicktime-movie"]
+        let imageTypes = ["public.heic", "public.jpeg", "public.png", "public.image"]
+        let isVideo = types.contains { t in videoTypes.contains { t.hasPrefix($0) || $0.hasPrefix(t) } }
+        let preferred = (isVideo ? videoTypes : imageTypes).first { t in
+            types.contains { it in it == t || it.hasPrefix(t) }
+        } ?? types.first(where: { $0.hasPrefix("public.") }) ?? types.first
+        guard let typeId = preferred else { return nil }
+
+        return await withCheckedContinuation { (cont: CheckedContinuation<[String: Any]?, Never>) in
+            provider.loadFileRepresentation(forTypeIdentifier: typeId) { srcURL, _ in
+                guard let srcURL = srcURL else {
+                    cont.resume(returning: nil)
+                    return
+                }
+                let ext = srcURL.pathExtension.isEmpty
+                    ? (UTType(typeId)?.preferredFilenameExtension ?? "bin")
+                    : srcURL.pathExtension
+                let dst = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("picked_\(UUID().uuidString).\(ext)")
+                do {
+                    try? FileManager.default.removeItem(at: dst)
+                    try FileManager.default.copyItem(at: srcURL, to: dst)
+                } catch {
+                    cont.resume(returning: nil)
+                    return
+                }
+                cont.resume(returning: [
+                    "localId":   "file://" + dst.path,
+                    "mediaType": isVideo ? "video" : "image",
+                    "filePath":  dst.path,
+                ])
+            }
+        }
     }
 }

@@ -51,7 +51,21 @@ flutter pub get
 
 ## Quickstart
 
-Pick the entry point that matches your use case. All three run fully on-device.
+### 0. Optional one-time init
+
+Wrap your app's bootstrap in `NsfwDetector.instance.init(...)` to warm models on a splash screen — first scans become fast.
+
+```dart
+await NsfwDetector.instance.init(const NsfwInitOptions(
+  preloadModels: [ModelIds.openNsfw2],
+  downloadIfMissing: [], // add ids you want auto-downloaded on first launch
+  enableNativeLogging: false,
+));
+```
+
+If you skip `init`, the plugin lazy-loads on first use — no errors, just a slightly slower first scan.
+
+Pick the entry point that matches your use case. Everything runs fully on-device.
 
 ### 1. `pickMedia` — easiest, no library permission
 
@@ -103,32 +117,43 @@ if (result.isNsfw) {
 
 // From bytes in memory (Uint8List)
 final fromBytes = await NsfwDetector.instance.scanBytes(imageBytes);
+
+// One-shot boolean variants when you don't need the full result:
+final flagged = await NsfwDetector.instance.isNsfwFile('/path/to/image.jpg');
 ```
+
+### 2b. `NsfwModerationGate` — drop-in widget
+
+Wrap any image-rendering widget and the gate blurs it if NSFW:
+
+```dart
+NsfwModerationGate.bytes(
+  imageBytes,
+  child: Image.memory(imageBytes),
+  onResult: (r) => debugPrint('scanned: ${r.topCategory}'),
+)
+```
+
+Available constructors: `.bytes(...)`, `.file(...)`, `.asset(...)`. Provide `nsfwBuilder` / `errorBuilder` for custom UI.
 
 ### 3. `startScan` — full photo library scan
 
 Use this only when you want to scan a user's whole library. Requires photo-library permission.
 
 ```dart
-final status = await NsfwDetector.instance.requestPermission();
-if (status != PhotoLibraryPermissionStatus.authorized &&
-    status != PhotoLibraryPermissionStatus.limited) {
-  return; // Show your permission UI / fallback.
-}
-
-final session = await NsfwDetector.instance.startScan(
-  const ScanConfiguration(
-    confidenceThreshold: 0.75,
-    includeVideos: true,
-    maxVideoFrames: 8,
-  ),
+// Combined permission request + scan — returns null on denial.
+final session = await NsfwDetector.instance.requestPermissionAndStartScan(
+  const ScanConfiguration.strict(includeVideos: true),
 );
+if (session == null) return; // Show your permission UI / fallback.
 
 session.results.listen((r) { if (r.isNsfw) { /* ... */ } });
 session.progress.listen((p) => debugPrint('${p.scannedCount}/${p.totalCount}'));
 
 final summary = await session.done;
 ```
+
+Presets available: `ScanConfiguration.strict()` (threshold 0.85), `.moderate()` (0.7), `.permissive()` (0.5), `.fastScan()` (concurrency 8). Equivalent presets for camera: `CameraConfiguration.realtime()`, `.balanced()`, `.batteryEfficient()`.
 
 For camera scans, configuration details, and model handling, see the guides below.
 
