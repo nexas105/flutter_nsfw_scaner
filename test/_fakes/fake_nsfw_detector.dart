@@ -79,6 +79,7 @@ class FakeNsfwPlatform extends NsfwPlatformInterface
     this.permissionStatus = PhotoLibraryPermissionStatus.authorized,
     this.cameraStatus = PermissionStatus.authorized,
     List<ModelDescriptor>? models,
+    this.downloadShouldFail = false,
   })  : results = results ?? {},
         models = models ??
             const [
@@ -88,11 +89,68 @@ class FakeNsfwPlatform extends NsfwPlatformInterface
               ),
             ];
 
+  /// Whether [downloadModel] should reject. Toggle in tests that want to
+  /// exercise the download-failure path without subclassing the fake.
+  bool downloadShouldFail;
+
+  // ── Scenario presets ─────────────────────────────────────────────────────
+  // Convenience builders so widget / controller tests don't have to script
+  // results-by-id by hand for the common shapes. Each returns a fresh
+  // platform so multiple scenarios can coexist in the same test file.
+
+  /// "Happy path" — every scan returns a safe result, both permissions
+  /// authorized. Equivalent to the default constructor today; named here
+  /// for symmetry with the other presets.
+  factory FakeNsfwPlatform.allSafe() => FakeNsfwPlatform();
+
+  /// Every scan returns NSFW at [confidence]. Permissions still authorized.
+  /// Use for "does my moderation UI render the blocked state?" tests.
+  factory FakeNsfwPlatform.allNsfw({double confidence = 0.95}) {
+    final fake = FakeNsfwPlatform();
+    fake._defaultResultOverride = ScanResult.fake(
+      localIdentifier: 'fake-nsfw',
+      category: NsfwCategory.nudity,
+      confidence: confidence,
+    );
+    return fake;
+  }
+
+  /// Photo-library and camera permissions both report `permanentlyDenied`.
+  /// Use for "does my permissions UI render the open-settings affordance?"
+  /// tests.
+  factory FakeNsfwPlatform.permissionDenied() => FakeNsfwPlatform(
+        permissionStatus: PhotoLibraryPermissionStatus.denied,
+        cameraStatus: PermissionStatus.permanentlyDenied,
+      );
+
+  /// Photo-library grants `limited` access, camera authorized. Use for
+  /// "does my UI cope with partial photo access?" tests.
+  factory FakeNsfwPlatform.limitedPhotoAccess() => FakeNsfwPlatform(
+        permissionStatus: PhotoLibraryPermissionStatus.limited,
+      );
+
+  /// Every [downloadModel] call rejects. Permissions still authorized.
+  /// Use for "does my model-manager UI render download errors?" tests.
+  factory FakeNsfwPlatform.modelDownloadFails() =>
+      FakeNsfwPlatform(downloadShouldFail: true);
+
+  /// Replaces the default safe placeholder returned by `_resultFor` when no
+  /// per-id script is set. Used internally by [FakeNsfwPlatform.allNsfw].
+  ScanResult? _defaultResultOverride;
+
   /// Replay or synthesize a [ScanResult] for [localId]. Override [results] to
   /// script the response per test.
   ScanResult _resultFor(String localId) {
     final scripted = results[localId];
     if (scripted != null) return scripted;
+    final fallback = _defaultResultOverride;
+    if (fallback != null) {
+      return ScanResult.fake(
+        localIdentifier: localId,
+        category: fallback.topCategory,
+        confidence: fallback.topConfidence,
+      );
+    }
     return ScanResult.fake(
       localIdentifier: localId,
       category: NsfwCategory.safe,
@@ -144,6 +202,9 @@ class FakeNsfwPlatform extends NsfwPlatformInterface
   Future<bool> downloadModel(String modelId, {String? url}) async {
     calls.add(
         FakeNsfwCall('downloadModel', {'modelId': modelId, 'url': url}));
+    if (downloadShouldFail) {
+      throw StateError('FakeNsfwPlatform: simulated download failure');
+    }
     return true;
   }
 
