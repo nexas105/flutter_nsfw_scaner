@@ -6,40 +6,33 @@
 [![platform](https://img.shields.io/badge/platform-iOS%20%7C%20Android-blue)](https://pub.dev/packages/nsfw_detect)
 [![license](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
 
-Privacy-friendly NSFW detection for Flutter apps, running fully on-device.
+Privacy-friendly NSFW detection for Flutter apps. **On-device**, no telemetry, no media uploads.
 
-Use `nsfw_detect` to scan images, videos, selected media, photo libraries, and camera frames locally with Core ML on iOS and TensorFlow Lite on Android.
+```dart
+import 'package:nsfw_detect/nsfw_detect.dart';
+
+final result = await NsfwDetector.instance.scanFile('/path/to/image.jpg');
+if (result.isNsfw) {
+  // Blur, block, or route to review — your choice.
+}
+```
+
+That's the whole API for the most common case. No init, no permission for files on disk. Add more entry points as you need them.
 
 > Detection is probabilistic. Use it as a local moderation signal and one layer in a broader safety workflow.
 
-## Features
+---
 
-- On-device NSFW detection for Flutter apps
-- Image, video, photo library, native picker, file, bytes, and camera scanning
-- iOS support via Core ML and Vision
-- Android support via TensorFlow Lite
-- Stream-based scan results and progress updates
-- Configurable confidence thresholds and model selection
-- Classification categories: safe, suggestive, nudity, explicit nudity, unknown
-- Optional detection mode with body-part bounding boxes
-- Incremental scan cache for large media libraries
-- Ready-to-use widgets and headless Dart APIs
-- No telemetry or automatic media transmission by the plugin
-
-## Installation
+## Install
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.2.0
+  nsfw_detect: ^2.3.0
 ```
-
-Then run:
 
 ```bash
 flutter pub get
 ```
-
-## Platform requirements
 
 | Platform | Minimum |
 | --- | --- |
@@ -49,117 +42,203 @@ flutter pub get
 | Dart | 3.4+ |
 | Xcode | 15+ |
 
-## Quickstart
+---
 
-### 0. Optional one-time init
+## What you can scan
 
-Wrap your app's bootstrap in `NsfwDetector.instance.init(...)` to warm models on a splash screen — first scans become fast.
+| Source | API | Permission |
+| --- | --- | --- |
+| File on disk | `scanFile` · `isNsfwFile` | none |
+| Bytes in memory | `scanBytes` · `isNsfwBytes` | none |
+| Flutter `ImageProvider` | `scanImageProvider` | none |
+| Remote URL | `scanUrl` | none (network) |
+| Photo-library asset id | `scanAsset` · `isNsfwAsset` | photo library |
+| System picker | `pickMedia` · `pickAndScan` | none (per-item access) |
+| Whole library | `startScan` | photo library |
+| Live camera | `startCameraScan` | camera |
+| Mixed batch | `scanPaths(['file://…', 'https://…', '/abs/path', 'asset-id'])` | per-source |
+
+Each headless API returns a `ScanResult` (full label list + detections) or a shortcut `Future<bool>` via the `isNsfw*` variants.
+
+---
+
+## Common patterns
+
+### Gate an image before display
+
+```dart
+NsfwModerationGate.file(
+  '/path/to/upload.jpg',
+  child: Image.file(File('/path/to/upload.jpg')),
+)
+```
+
+Constructors: `.bytes(...)`, `.file(...)`, `.asset(...)`. Optional `confidenceFloor` adds a manual-review band; pass `nsfwBuilder` / `uncertainBuilder` / `errorBuilder` for custom UI.
+
+### Pick + scan in one call
+
+```dart
+final session = await NsfwDetector.instance.pickAndScan(maxItems: 5);
+await for (final r in session.results) {
+  if (r.isNsfw) { /* … */ }
+}
+```
+
+`pickMedia` (returns the picked items without scanning) is the other half of that API.
+
+### Scan a URL before showing it
+
+```dart
+final r = await NsfwDetector.instance.scanUrl(
+  Uri.parse('https://cdn.example.com/avatar.jpg'),
+  timeout: const Duration(seconds: 8),
+);
+if (r.isNsfw) /* hide / report */
+```
+
+Hard-capped at 32 MB by default to keep a malicious server from OOM-ing you. Override via `maxBytes`.
+
+### Find perceptual duplicates
+
+```dart
+final clusters = await NsfwDetector.instance.findDuplicates(
+  items, // List<MediaItem>
+  loadBytes: (id) async => await myStorage.read(id),
+);
+// clusters: List<List<MediaItem>> — each cluster ≥ 2 visually-identical items.
+```
+
+dHash + LRU cache; the detector decouples from your storage layer via `loadBytes`.
+
+### Redact detector boxes in place
+
+```dart
+final redacted = await NsfwDetector.instance.redactBytes(
+  bytes,
+  result,
+  mode: RedactionMode.blur, // or .pixelate, .blackBox
+  intensity: 0.8,
+);
+```
+
+When `result.detections` is non-empty, only the per-detection boxes are redacted. Falls back to whole-image redaction for classifier-only results.
+
+### Whole-library scan with progress
+
+```dart
+final session = await NsfwDetector.instance.requestPermissionAndStartScan(
+  const ScanConfiguration.strict(includeVideos: true),
+);
+if (session == null) return; // User denied — show your permission UI.
+
+session.results.listen((r) { if (r.isNsfw) /* … */ });
+session.progress.listen((p) => print('${p.scannedCount}/${p.totalCount}'));
+final summary = await session.done;
+```
+
+Presets: `.strict()` (threshold 0.85), `.moderate()` (0.7), `.permissive()` (0.5), `.fastScan()` (concurrency 8).
+
+### Pre-warm models on splash
 
 ```dart
 await NsfwDetector.instance.init(const NsfwInitOptions(
   preloadModels: [ModelIds.openNsfw2],
-  downloadIfMissing: [], // add ids you want auto-downloaded on first launch
   enableNativeLogging: false,
 ));
 ```
 
-If you skip `init`, the plugin lazy-loads on first use — no errors, just a slightly slower first scan.
+Skipping `init` is fine — the plugin lazy-loads on first use. Use `NsfwInitOptions.lazy()` / `.debug()` / `.production()` for typical shapes.
 
-Pick the entry point that matches your use case. Everything runs fully on-device.
-
-### 1. `pickMedia` — easiest, no library permission
-
-Opens the system picker, scans only what the user selected. Because the picker grants per-item access, you do **not** need full photo-library permission.
+### Drop-in permissions UI
 
 ```dart
-import 'package:nsfw_detect/nsfw_detect.dart';
-
-final picked = await NsfwDetector.instance.pickMedia(
-  type: MediaPickerType.any, // image | video | any
-  multiple: true,
-  maxItems: 5,
-);
-
-for (final item in picked) {
-  final result = await NsfwDetector.instance.scanAsset(
-    item.localId,
-    confidenceThreshold: 0.75,
-  );
-
-  if (result.isNsfw) {
-    // Block, blur, or route to review.
-  }
-}
-```
-
-Prefer `pickAndScan` if you want the picker and the scan in a single streamed call:
-
-```dart
-final session = await NsfwDetector.instance.pickAndScan(maxItems: 5);
-session.results.listen((r) { if (r.isNsfw) { /* ... */ } });
-await session.done;
-```
-
-### 2. `scanFile` / `scanBytes` — already have the media
-
-Use these when your app already has a file path or raw bytes (captures, downloads, clipboard, generated images). No permission, no picker.
-
-```dart
-// From a path on disk
-final result = await NsfwDetector.instance.scanFile(
-  '/path/to/image.jpg',
-  confidenceThreshold: 0.75,
-);
-
-if (result.isNsfw) {
-  // Keep it local and show a policy message.
-}
-
-// From bytes in memory (Uint8List)
-final fromBytes = await NsfwDetector.instance.scanBytes(imageBytes);
-
-// One-shot boolean variants when you don't need the full result:
-final flagged = await NsfwDetector.instance.isNsfwFile('/path/to/image.jpg');
-```
-
-### 2b. `NsfwModerationGate` — drop-in widget
-
-Wrap any image-rendering widget and the gate blurs it if NSFW:
-
-```dart
-NsfwModerationGate.bytes(
-  imageBytes,
-  child: Image.memory(imageBytes),
-  onResult: (r) => debugPrint('scanned: ${r.topCategory}'),
+NsfwPermissionsView(
+  kinds: const [PermissionKind.photoLibrary, PermissionKind.camera],
+  onOpenSettings: () => /* host opens system Settings */,
 )
 ```
 
-Available constructors: `.bytes(...)`, `.file(...)`, `.asset(...)`. Provide `nsfwBuilder` / `errorBuilder` for custom UI.
+The plugin doesn't pull in `permission_handler` or `app_settings`; pass `onOpenSettings` to wire your preferred deep-link package.
 
-### 3. `startScan` — full photo library scan
+---
 
-Use this only when you want to scan a user's whole library. Requires photo-library permission.
+## What's new in 2.3
+
+- **New headless entry points** — `scanUrl`, `scanImageProvider`, `scanPaths` (auto-routing batch).
+- **`findDuplicates`** — perceptual-hash duplicate detection; `PerceptualHash.toJson` / `fromJson` for persistence.
+- **Native redaction** — `redactBytes` / `redactFile` with `RedactionMode.blur` / `.pixelate` / `.blackBox`.
+- **`prefetchAssets`** — pre-warm OS-level asset cache before a `startScan`.
+- **`cachedResult` + `cacheUpdates`** — query the on-device scan cache without re-classifying.
+- **`NsfwSafetyProfile.evaluate(result)`** — one-call "does this pass at this profile?" check.
+- **`NsfwModerationGate.confidenceFloor`** — opt-in uncertainty band between safe / blocked, with `uncertainBuilder` for review UIs.
+- **`NsfwScanProgressBar.showEta`** — humanised remaining-time label powered by `ScanProgress.estimatedRemaining`.
+- **iOS hardening** — PhotoKit fetches gated by 30 s timeout, resume-once locks on picker / image continuations, scan-task cancellation reaches the video sampler.
+- **Android hardening** — `READ_MEDIA_VIDEO` requested + checked together with images on API 33+, start/cancel race fix, https-only + SHA-256-pinned model downloads, zip-bomb defence, engine-detach teardown, OpenNSFW2 is download-on-demand (placeholder asset removed).
+- **Detector models in one-shot APIs** — `scanFile` / `scanBytes` / `scanSingleAsset` now route NudeNet through `detectorEngine` and emit `detections` alongside synthetic labels.
+
+Full list in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Result shape
 
 ```dart
-// Combined permission request + scan — returns null on denial.
-final session = await NsfwDetector.instance.requestPermissionAndStartScan(
-  const ScanConfiguration.strict(includeVideos: true),
-);
-if (session == null) return; // Show your permission UI / fallback.
-
-session.results.listen((r) { if (r.isNsfw) { /* ... */ } });
-session.progress.listen((p) => debugPrint('${p.scannedCount}/${p.totalCount}'));
-
-final summary = await session.done;
+class ScanResult {
+  final MediaItem item;
+  final ScanStatus status;       // completed | failed | skipped
+  final DateTime scannedAt;
+  final List<NsfwLabel> labels;  // sorted: NSFW labels first, then by confidence
+  final List<BodyPartDetection> detections; // detector-mode only
+  // … convenience getters: isNsfw, topCategory, topConfidence,
+  //   hasNudity, hasExplicitContent, isSuggestive, hasDetections,
+  //   confidenceDescription
+}
 ```
 
-Presets available: `ScanConfiguration.strict()` (threshold 0.85), `.moderate()` (0.7), `.permissive()` (0.5), `.fastScan()` (concurrency 8). Equivalent presets for camera: `CameraConfiguration.realtime()`, `.balanced()`, `.batteryEfficient()`.
+| Category | `isNsfw` | Typical handling |
+| --- | --- | --- |
+| `safe` | false | allow |
+| `suggestive` | false | optional warning |
+| `nudity` | true | block or blur |
+| `explicitNudity` | true | block / route to review |
+| `unknown` | false | apply your fallback policy |
 
-For camera scans, configuration details, and model handling, see the guides below.
+`result.isNsfw` is true **only** when the scan completed AND the top category is NSFW AND confidence ≥ the threshold.
+
+`ScanResult.toJson()` / `fromJson(...)` round-trip preserves the threshold so `isNsfw` is stable across persistence.
+
+---
+
+## Models
+
+| Id | Shape | Size | Source |
+| --- | --- | --- | --- |
+| `ModelIds.openNsfw2` | classifier, 224 | ~11 MB | downloaded on first use |
+| `ModelIds.falconsai` | classifier, 224 (ViT) | ~75 MB | opt-in download |
+| `ModelIds.adamcodd` | classifier, 384 (ViT) | ~75 MB | opt-in download |
+| `ModelIds.nudenet` | detector, 640 (YOLOv8m body-parts) | ~46 MB | opt-in download |
+
+Set a custom mirror URL with `setModelUrl(modelId, url)`. The model archive's SHA-256 is verified before extraction when pinned on the descriptor. Manage downloads / preloads via `NsfwDetector.instance.models` (`NsfwModelManager`).
+
+---
+
+## Permissions
+
+| Workflow | iOS | Android |
+| --- | --- | --- |
+| `scanFile` · `scanBytes` · `scanUrl` · `scanImageProvider` | none | none |
+| `pickMedia` · `pickAndScan` | none (picker grants per item) | none |
+| `scanAsset` · `startScan` | `NSPhotoLibraryUsageDescription` | `READ_MEDIA_IMAGES` + `READ_MEDIA_VIDEO` (API 33+) / `READ_EXTERNAL_STORAGE` (≤32) |
+| `startCameraScan` | `NSCameraUsageDescription` | `CAMERA` |
+
+The plugin requests at runtime via `requestPermission` / `requestCameraPermission`. `NsfwPermissionsView` is a drop-in panel showing live status with a Request button.
+
+---
 
 ## Documentation
 
 - [Getting started](doc/getting-started.md)
+- [Cookbook — common patterns](doc/cookbook.md)
 - [Permissions](doc/permissions.md)
 - [Media precheck](doc/media-precheck.md)
 - [Picker workflows](doc/picker-workflows.md)
@@ -170,15 +249,14 @@ For camera scans, configuration details, and model handling, see the guides belo
 - [Platform gotchas (iOS / Android)](doc/platform-gotchas.md)
 - [Performance tuning](doc/performance-tuning.md)
 - [False positives FAQ](doc/false-positives-faq.md)
-- [Migration: 2.1 → 2.2](doc/migration-2.1-to-2.2.md)
 - [Privacy and limitations](doc/privacy-and-limitations.md)
 - [Troubleshooting](doc/troubleshooting.md)
 
-API reference is available on [pub.dev](https://pub.dev/documentation/nsfw_detect/latest/).
+API reference on [pub.dev](https://pub.dev/documentation/nsfw_detect/latest/).
+
+---
 
 ## Example app
-
-Run the example app from the repository:
 
 ```bash
 git clone https://github.com/nexas105/flutter_nsfw_scaner.git
@@ -187,26 +265,29 @@ flutter pub get
 flutter run
 ```
 
-A real iOS or Android device is recommended for photo library and camera workflows. The example app demonstrates gallery scanning, headless API usage, result detail screens, model selection, confidence thresholds, and video frame options.
+A real device is recommended for photo-library and camera workflows — the iOS simulator has no camera, and emulator photo libraries are usually empty. The example covers the gallery view, picker flow, camera scanner, result detail, moderation gate, and model selection.
+
+---
 
 ## Privacy
 
-`nsfw_detect` is designed for local-first media analysis.
+- Inference runs **on-device** on Core ML (iOS) and TFLite (Android). No analytics, no telemetry.
+- Picker-based scanning avoids full photo-library permission — the system picker grants per-item access.
+- `scanUrl` is the only Dart-initiated network egress the plugin performs; everything else is local. Model downloads are explicit calls or the auto-download path the host opts into via `NsfwInitOptions.downloadIfMissing`.
 
-- Inference runs on-device
-- Inference runs in the native iOS and Android layers
-- The plugin does not include analytics or telemetry
-- Picker-based scanning can avoid full photo-library permission
+Your app remains responsible for explaining permissions, handling results, storing any moderation state, and complying with platform / privacy / safety requirements.
 
-Your app is still responsible for explaining permissions, handling results, storing any moderation state, and complying with platform, privacy, and safety requirements.
+---
 
 ## Limitations
 
-NSFW detection is probabilistic. Results can include false positives and false negatives, especially with unusual lighting, partial visibility, illustrations, screenshots, low-resolution media, compressed videos, or ambiguous content.
+NSFW detection is probabilistic. Expect false positives and false negatives on unusual lighting, partial visibility, illustrations, screenshots, low-resolution media, compressed video, or ambiguous content.
 
-Tune confidence thresholds for your product risk. For sensitive workflows, combine on-device detection with user reporting, human review, policy-specific rules, or other moderation layers.
+Tune `confidenceThreshold` for your product risk. For sensitive workflows, combine on-device detection with user reporting, human review, policy-specific rules, or additional moderation layers.
 
-## Package links
+---
+
+## Links
 
 - [pub.dev package](https://pub.dev/packages/nsfw_detect)
 - [API documentation](https://pub.dev/documentation/nsfw_detect/latest/)

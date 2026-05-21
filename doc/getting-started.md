@@ -4,7 +4,7 @@
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.2.0
+  nsfw_detect: ^2.3.0
 ```
 
 Then run:
@@ -41,7 +41,7 @@ Future<void> main() async {
 }
 ```
 
-Use `NsfwInitOptions.lazy()` or `NsfwInitOptions.debug()` for the common shapes. Call `reinit(options)` to reconfigure at runtime (toggle logging, swap models). See the [models guide](models.md) for `NsfwModelManager` — the high-level facade behind `NsfwDetector.instance.models`.
+Use `NsfwInitOptions.lazy()`, `NsfwInitOptions.debug()`, or `NsfwInitOptions.production()` for the common shapes. Call `reinit(options)` to reconfigure at runtime (toggle logging, swap models). See the [models guide](models.md) for `NsfwModelManager` — the high-level facade behind `NsfwDetector.instance.models`.
 
 ## Basic file scan
 
