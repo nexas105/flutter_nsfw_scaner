@@ -14,11 +14,14 @@ enum ModelStatus {
   /// Model exists in the registry but its bytes aren't on the device yet.
   missing,
 
-  /// Model is currently being downloaded.
+  /// Model is currently being downloaded to disk.
   downloading,
 
   /// Model is on disk but hasn't been loaded into memory.
   downloaded,
+
+  /// Model bytes are on disk and currently being loaded into memory.
+  loading,
 
   /// Model is loaded and warm — first scan will be fast.
   ready,
@@ -109,7 +112,7 @@ class NsfwModelManager {
   Future<void> preload(String modelId) async {
     _publish(ModelStateSnapshot(
       modelId: modelId,
-      status: ModelStatus.downloading, // close enough — "loading into memory"
+      status: ModelStatus.loading,
     ));
     try {
       await _platform.preloadModel(modelId);
@@ -157,11 +160,13 @@ class NsfwModelManager {
     String? overrideUrl,
   }) async {
     final descriptors = await _platform.availableModels();
-    final descriptor =
-        descriptors.where((d) => d.id == modelId).cast<ModelDescriptor?>().firstWhere(
-              (_) => true,
-              orElse: () => null,
-            );
+    ModelDescriptor? descriptor;
+    for (final d in descriptors) {
+      if (d.id == modelId) {
+        descriptor = d;
+        break;
+      }
+    }
 
     if (descriptor == null) {
       _publish(ModelStateSnapshot(

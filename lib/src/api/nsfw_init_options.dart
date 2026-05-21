@@ -42,8 +42,9 @@ class NsfwInitOptions {
     this.defaultThreshold = 0.7,
   });
 
-  /// Convenience: minimum-cost init — only registers the platform channel,
-  /// preloads nothing.
+  /// Minimum-cost init — only registers the platform channel, preloads
+  /// nothing. Useful when you want a `NsfwInitReport` for symmetry but don't
+  /// need the model loaded yet.
   const NsfwInitOptions.lazy()
       : preloadModels = const [],
         downloadIfMissing = const [],
@@ -51,9 +52,10 @@ class NsfwInitOptions {
         enableNativeLogging = false,
         defaultThreshold = 0.7;
 
-  /// Convenience: warm-start preset — preloads the default classifier and
-  /// turns on native logging. Suitable for development.
-  const NsfwInitOptions.warm()
+  /// Development preset — preloads the default classifier, turns on native
+  /// logging, and uses the standard threshold. Use [NsfwInitOptions]
+  /// directly for production tunings.
+  const NsfwInitOptions.debug()
       : preloadModels = const [ModelIds.openNsfw2],
         downloadIfMissing = const [],
         tolerateModelErrors = true,

@@ -18,10 +18,19 @@ final NsfwTheme appNsfwTheme = NsfwTheme.dark(
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (kDebugMode) {
-    NsfwDetector.instance.setLogging(true);
-  }
   final settings = await AppSettings.load();
+
+  // Demo of NsfwDetector.init — preloads the default model and toggles
+  // native logging based on the build mode. tolerateModelErrors (default
+  // true) keeps the app launching even if the model fails to load.
+  final report = await NsfwDetector.instance.init(const NsfwInitOptions(
+    preloadModels: [ModelIds.openNsfw2],
+    enableNativeLogging: kDebugMode,
+  ));
+  if (kDebugMode) {
+    debugPrint('nsfw_detect init: $report');
+  }
+
   runApp(NsfwDetectExampleApp(settings: settings));
 }
 

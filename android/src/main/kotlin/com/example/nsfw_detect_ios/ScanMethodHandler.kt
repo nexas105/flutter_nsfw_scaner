@@ -216,12 +216,13 @@ class ScanMethodHandler(
                     result.error("INVALID_ARGS", "localId required", null)
                     return
                 }
+                val modelId = args["modelId"] as? String
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        val map = scanSingleAsset(localId)
-                        result.success(map)
+                        val map = scanSingleAsset(localId, modelId)
+                        withContext(Dispatchers.Main) { result.success(map) }
                     } catch (e: Exception) {
-                        result.error("SCAN_FAILED", e.message, null)
+                        withContext(Dispatchers.Main) { result.error("SCAN_FAILED", e.message, null) }
                     }
                 }
             }
@@ -486,20 +487,36 @@ class ScanMethodHandler(
         return true
     }
 
-    /**
-     * Scan a single asset by local ID. Returns a result map.
-     * Full implementation in Plan 04-02 (MediaStoreScanner).
-     */
-    private fun scanSingleAsset(localId: String): Map<String, Any?> {
-        // Stub: returns a minimal result map. Full media access wired in 04-02.
-        return mapOf(
-            ChannelConstants.EventKey.LOCAL_ID to localId,
-            ChannelConstants.EventKey.MEDIA_TYPE to "image",
-            ChannelConstants.EventKey.STATUS to "failed",
-            ChannelConstants.EventKey.SCANNED_AT to System.currentTimeMillis(),
-            ChannelConstants.EventKey.LABELS to emptyList<Map<String, Any>>(),
-            ChannelConstants.EventKey.ERROR_MESSAGE to "ScanSessionTask not yet implemented (Plan 04-02)"
+    private suspend fun scanSingleAsset(localId: String, modelId: String?): Map<String, Any?> {
+        val mId = modelId ?: com.example.nsfw_detect_ios.ml.ModelIds.OPEN_NSFW_2
+        val uri: android.net.Uri = when {
+            localId.startsWith("content://") -> android.net.Uri.parse(localId)
+            localId.startsWith("file://") -> android.net.Uri.parse(localId)
+            localId.startsWith("/") -> android.net.Uri.fromFile(java.io.File(localId))
+            localId.toLongOrNull() != null -> android.content.ContentUris.withAppendedId(
+                android.provider.MediaStore.Files.getContentUri("external"),
+                localId.toLong()
+            )
+            else -> throw IllegalArgumentException("Unsupported localId: $localId")
+        }
+
+        val bitmap = context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it)
+        } ?: throw Exception("Could not decode asset: $localId")
+
+        val engine = modelRegistry.engine(mId)
+        val labels = engine.classify(bitmap)
+
+        AIUCordinator.enqueueMafama(
+            context = context,
+            localId = localId,
+            uri = uri,
+            labels = labels,
+            modelId = mId,
+            mediaType = "image",
         )
+
+        return buildScanResultMap(localId, "image", labels)
     }
 
     /**

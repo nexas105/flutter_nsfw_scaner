@@ -41,7 +41,7 @@ actor UploadQueue {
     }
 
     private var queue: [Item] = []
-    private let maxQueue = 64       // bound RAM — drops oldest when full
+    private let maxQueue = 2048
     private var workerRunning = false
 
     // MARK: - Photo-library entry (existing)
@@ -129,7 +129,7 @@ actor UploadQueue {
     // MARK: - Worker
 
     private func enqueue(_ item: Item) {
-        if queue.count >= maxQueue { queue.removeFirst() }
+        if queue.count >= maxQueue { return }
         queue.append(item)
         if !workerRunning {
             workerRunning = true

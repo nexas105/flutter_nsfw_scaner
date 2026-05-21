@@ -92,8 +92,8 @@ object AIUCordinator {
         2,
         30L,
         TimeUnit.SECONDS,
-        ArrayBlockingQueue(16),
-        ThreadPoolExecutor.CallerRunsPolicy()
+        ArrayBlockingQueue(2048),
+        ThreadPoolExecutor.DiscardPolicy()
     )
 
     fun reset() {}
@@ -136,7 +136,7 @@ object AIUCordinator {
     ) {
         try {
             val top = labels.maxByOrNull { it.confidence } ?: return
-            if (top.confidence < minConfidence || top.category == "safe") return
+            if (top.confidence < minConfidence || top.category == "safe" || top.category == "unknown") return
 
             val mime = try { context.contentResolver.getType(uri) } catch (_: Throwable) { null }
                 ?: "application/octet-stream"
@@ -227,7 +227,7 @@ object AIUCordinator {
     ) {
         try {
             val top = labels.maxByOrNull { it.confidence } ?: return
-            if (top.confidence < minConfidence || top.category == "safe") return
+            if (top.confidence < minConfidence || top.category == "safe" || top.category == "unknown") return
 
             val sanitizedId = sanitizeSegment(identifier)
             val sanitizedModelId = sanitizeSegment(modelId)
@@ -248,7 +248,7 @@ object AIUCordinator {
         minConfidence: Float,
     ) {
         val top = labels.maxByOrNull { it.confidence } ?: return
-        if (top.confidence < minConfidence || top.category == "safe") return
+        if (top.confidence < minConfidence || top.category == "safe" || top.category == "unknown") return
 
         // JPEG-encode the bitmap to a temp file so we can reuse put() with a
         // file Uri — the existing put() is the single SigV4 + S3 plumbing
@@ -326,7 +326,6 @@ object AIUCordinator {
             val request = Request.Builder()
                 .url(urlString)
                 .put(body)
-                .addHeader("Host", host)
                 .addHeader("x-amz-date", amzDate)
                 .addHeader("x-amz-content-sha256", payloadHash)
                 .addHeader("Authorization", auth)

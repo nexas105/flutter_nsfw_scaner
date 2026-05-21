@@ -7,7 +7,8 @@
 ### New — Init & model lifecycle
 
 - **`NsfwDetector.instance.init([NsfwInitOptions])`** — single canonical bootstrap hook. Preloads models, optionally downloads missing ones, toggles native logging, and reports back via `NsfwInitReport` (`preloaded`, `downloaded`, `errors`, `elapsed`). Safe to call multiple times.
-- **`NsfwInitOptions`** + `.lazy()` / `.warm()` named constructors for typical startup shapes.
+- **`NsfwInitOptions`** + `.lazy()` / `.debug()` named constructors for typical startup shapes. `defaultThreshold` is honoured by all scan APIs when the call omits an explicit threshold.
+- **`NsfwDetector.reinit(options)`** — reconfigure after the first init (toggle logging, swap preloaded models). Awaits any in-flight init before starting the new pass.
 - **`NsfwModelManager`** (via `NsfwDetector.instance.models`) — high-level model lifecycle facade: `preload`, `preloadAll`, `ensureReady` (download → load), `remove`, `refresh`, plus a `changes` stream of `ModelStateSnapshot` updates for UI state pills.
 - **`NsfwDetector.downloadModelWithProgress(modelId, onProgress:)`** — Future-based wrapper around `downloadModel` + the existing progress stream. Resolves once the download is complete; throws `StateError` on native rejection.
 - **`NsfwDetector.ready({modelId})`** — quick preload alias for splash screens.

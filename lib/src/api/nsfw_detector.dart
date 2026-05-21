@@ -57,8 +57,11 @@ class NsfwDetector {
   /// when calling [init]. Scan APIs still accept per-call overrides.
   double get defaultThreshold => _defaultThreshold;
 
-  /// Initialises the plugin once and warms up models. Safe to call multiple
-  /// times — subsequent calls return the original report.
+  /// Initialises the plugin once and warms up models. Idempotent — repeated
+  /// calls return the same in-flight or completed report.
+  ///
+  /// Subsequent calls with *different* options are a no-op; use [reinit] to
+  /// reconfigure (e.g. swap models, toggle logging, change threshold).
   ///
   /// Use as the canonical startup hook:
   ///
@@ -69,10 +72,30 @@ class NsfwDetector {
   ///   enableNativeLogging: kDebugMode,
   /// ));
   /// ```
+  ///
+  /// If [init] is never called, the plugin lazy-initialises on first use.
   Future<NsfwInitReport> init([
     NsfwInitOptions options = const NsfwInitOptions(),
   ]) {
-    return _initFuture ??= _runInit(options);
+    final existing = _initFuture;
+    if (existing != null) return existing;
+    return _initFuture = _runInit(options);
+  }
+
+  /// Forces a fresh init pass with [options]. Use this when you need to
+  /// reconfigure after the first [init] (e.g. toggle native logging at
+  /// runtime, swap preloaded models). Awaits any in-flight init before
+  /// starting the new pass to avoid races.
+  Future<NsfwInitReport> reinit([
+    NsfwInitOptions options = const NsfwInitOptions(),
+  ]) async {
+    final existing = _initFuture;
+    if (existing != null) {
+      try {
+        await existing;
+      } catch (_) {/* swallow — we're about to retry */}
+    }
+    return _initFuture = _runInit(options);
   }
 
   Future<NsfwInitReport> _runInit(NsfwInitOptions options) async {
@@ -83,42 +106,49 @@ class NsfwDetector {
     final downloaded = <String>[];
     final errors = <String, String>{};
 
-    if (options.enableNativeLogging) {
-      try {
-        await _platform.setLogging(true);
-      } catch (e) {
-        errors['__logging__'] = e.toString();
-      }
+    // Toggle logging in both directions so reinit() with the opposite value
+    // actually flips the native flag. Wrapped because some test platforms
+    // don't implement setLogging at all.
+    try {
+      await _platform.setLogging(options.enableNativeLogging);
+    } catch (e) {
+      errors['__logging__'] = e.toString();
     }
 
-    for (final id in options.downloadIfMissing) {
-      try {
-        await models.ensureReady(id);
-        downloaded.add(id);
-      } catch (e) {
-        errors[id] = e.toString();
-        if (!options.tolerateModelErrors) {
-          stopwatch.stop();
-          throw StateError('Model "$id" failed to ensure-ready: $e');
+    try {
+      for (final id in options.downloadIfMissing) {
+        try {
+          await models.ensureReady(id);
+          downloaded.add(id);
+        } catch (e) {
+          errors[id] = e.toString();
+          if (!options.tolerateModelErrors) {
+            throw StateError('Model "$id" failed to ensure-ready: $e');
+          }
         }
       }
-    }
 
-    for (final id in options.preloadModels) {
-      if (downloaded.contains(id)) continue; // already preloaded by ensureReady
-      try {
-        await models.preload(id);
-        preloaded.add(id);
-      } catch (e) {
-        errors[id] = e.toString();
-        if (!options.tolerateModelErrors) {
-          stopwatch.stop();
-          throw StateError('Model "$id" failed to preload: $e');
+      for (final id in options.preloadModels) {
+        if (downloaded.contains(id)) continue; // already preloaded by ensureReady
+        try {
+          await models.preload(id);
+          preloaded.add(id);
+        } catch (e) {
+          errors[id] = e.toString();
+          if (!options.tolerateModelErrors) {
+            throw StateError('Model "$id" failed to preload: $e');
+          }
         }
       }
+    } catch (e) {
+      // tolerateModelErrors == false → re-throw, but clear the cached future
+      // so the caller can fix the env and call init() again.
+      _initFuture = null;
+      rethrow;
+    } finally {
+      stopwatch.stop();
     }
 
-    stopwatch.stop();
     return NsfwInitReport(
       preloaded: preloaded,
       downloaded: downloaded,
@@ -306,11 +336,12 @@ class NsfwDetector {
   Future<ScanResult> scanAsset(
     String localIdentifier, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
   }) async {
+    final t = confidenceThreshold ?? _defaultThreshold;
     final map =
         await _platform.scanSingleAsset(localIdentifier, modelId: modelId);
-    return ScanResult.fromMap(map, confidenceThreshold: confidenceThreshold);
+    return ScanResult.fromMap(map, confidenceThreshold: t);
   }
 
   /// Shows the native photo/video picker, then scans the selected items.
@@ -334,10 +365,11 @@ class NsfwDetector {
   Future<ScanResult> scanFile(
     String filePath, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
   }) async {
+    final t = confidenceThreshold ?? _defaultThreshold;
     final map = await _platform.scanFilePath(filePath, modelId: modelId);
-    return ScanResult.fromMap(map, confidenceThreshold: confidenceThreshold);
+    return ScanResult.fromMap(map, confidenceThreshold: t);
   }
 
   /// Opens the native photo / video picker and returns the selected items
@@ -368,10 +400,11 @@ class NsfwDetector {
   Future<ScanResult> scanBytes(
     Uint8List bytes, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
   }) async {
+    final t = confidenceThreshold ?? _defaultThreshold;
     final map = await _platform.scanImageBytes(bytes, modelId: modelId);
-    return ScanResult.fromMap(map, confidenceThreshold: confidenceThreshold);
+    return ScanResult.fromMap(map, confidenceThreshold: t);
   }
 
   /// Boolean shortcut over [scanFile] — returns whether the file crosses the
@@ -380,7 +413,7 @@ class NsfwDetector {
   Future<bool> isNsfwFile(
     String filePath, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
   }) async {
     final result = await scanFile(
       filePath,
@@ -395,7 +428,7 @@ class NsfwDetector {
   Future<bool> isNsfwBytes(
     Uint8List bytes, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
   }) async {
     final result = await scanBytes(
       bytes,
@@ -410,7 +443,7 @@ class NsfwDetector {
   Future<bool> isNsfwAsset(
     String localIdentifier, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
   }) async {
     final result = await scanAsset(
       localIdentifier,
@@ -441,7 +474,7 @@ class NsfwDetector {
   Future<List<ScanResult>> scanFiles(
     List<String> paths, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
     void Function(int completed, int total)? onProgress,
   }) =>
       _scanBatch<String>(
@@ -449,7 +482,7 @@ class NsfwDetector {
         (p) => scanFile(p,
             modelId: modelId, confidenceThreshold: confidenceThreshold),
         onProgress: onProgress,
-        confidenceThreshold: confidenceThreshold,
+        confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
         identifierFor: (p) => p,
       );
 
@@ -458,7 +491,7 @@ class NsfwDetector {
   Future<List<ScanResult>> scanAllBytes(
     List<Uint8List> items, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
     void Function(int completed, int total)? onProgress,
   }) =>
       _scanBatch<Uint8List>(
@@ -466,7 +499,7 @@ class NsfwDetector {
         (b) => scanBytes(b,
             modelId: modelId, confidenceThreshold: confidenceThreshold),
         onProgress: onProgress,
-        confidenceThreshold: confidenceThreshold,
+        confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
         identifierFor: (_) => '',
       );
 
@@ -475,7 +508,7 @@ class NsfwDetector {
   Future<List<ScanResult>> scanAssets(
     List<String> localIdentifiers, {
     String? modelId,
-    double confidenceThreshold = 0.7,
+    double? confidenceThreshold,
     void Function(int completed, int total)? onProgress,
   }) =>
       _scanBatch<String>(
@@ -483,7 +516,7 @@ class NsfwDetector {
         (id) => scanAsset(id,
             modelId: modelId, confidenceThreshold: confidenceThreshold),
         onProgress: onProgress,
-        confidenceThreshold: confidenceThreshold,
+        confidenceThreshold: confidenceThreshold ?? _defaultThreshold,
         identifierFor: (id) => id,
       );
 
@@ -512,9 +545,10 @@ class NsfwDetector {
   }
 
   /// Preloads [modelId] (or the default model) so the first real scan is
-  /// fast. Resolves once the platform reports the model as ready — safe to
-  /// call multiple times. Wrap in your app's loading screen / splash to hide
-  /// the cold-start latency.
+  /// fast. Equivalent to [init] with `preloadModels: [modelId]`.
+  ///
+  /// Prefer [init] for the canonical bootstrap so logging, default
+  /// threshold, and multi-model preload all flow through one call.
   Future<void> ready({String modelId = ModelIds.openNsfw2}) =>
       preloadModel(modelId);
 }

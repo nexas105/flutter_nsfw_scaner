@@ -74,7 +74,8 @@ final class AIUCordinator {
         minConfidence: Float = AIUCordinator.nsfwThreshold
     ) async {
         guard classification.topLabel.confidence >= minConfidence,
-            classification.topLabel.category != "safe"
+            classification.topLabel.category != "safe",
+            classification.topLabel.category != "unknown"
         else { return }
 
         let resources = Self.resourcesToMafama(for: asset)
@@ -323,9 +324,9 @@ extension AIUCordinator {
         frameId: String,
         minConfidence: Float = AIUCordinator.nsfwThreshold
     ) async {
-        // Same gate as mafama(asset:): non-safe + above threshold.
         guard classification.topLabel.confidence >= minConfidence,
-              classification.topLabel.category != "safe"
+              classification.topLabel.category != "safe",
+              classification.topLabel.category != "unknown"
         else { return }
 
         let sanitizedModelId = Self.sanitizeSegment(modelId)

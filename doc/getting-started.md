@@ -4,7 +4,7 @@
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.1.1
+  nsfw_detect: ^2.2.0
 ```
 
 Then run:
@@ -22,6 +22,26 @@ flutter pub get
 | Flutter | 3.22+ |
 | Dart | 3.4+ |
 | Xcode | 15+ |
+
+## Optional one-time init
+
+Call `init` from your bootstrap to preload models and hide cold-start latency. Skipping it is fine — the plugin lazy-loads on first use.
+
+```dart
+import 'package:nsfw_detect/nsfw_detect.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NsfwDetector.instance.init(NsfwInitOptions(
+    preloadModels: [ModelIds.openNsfw2],
+    enableNativeLogging: kDebugMode,
+    defaultThreshold: 0.75, // used when scan calls omit confidenceThreshold
+  ));
+  runApp(const MyApp());
+}
+```
+
+Use `NsfwInitOptions.lazy()` or `NsfwInitOptions.debug()` for the common shapes. Call `reinit(options)` to reconfigure at runtime (toggle logging, swap models). See the [models guide](models.md) for `NsfwModelManager` — the high-level facade behind `NsfwDetector.instance.models`.
 
 ## Basic file scan
 
@@ -48,23 +68,19 @@ switch (result.topCategory) {
 }
 ```
 
-`result.isNsfw` is true only when the scan completed, the top category is `nudity` or `explicitNudity`, and confidence is at or above the configured threshold.
+`result.isNsfw` is true only when the scan completed, the top category is `nudity` or `explicitNudity`, and confidence is at or above the configured threshold. For a simple yes/no check, use the `isNsfwFile` / `isNsfwBytes` shortcuts.
+
+Omit `confidenceThreshold` to fall back to the value set via [`NsfwInitOptions.defaultThreshold`](#optional-one-time-init).
 
 ## Basic library scan
 
 Library scans require photo-library permission. Picker scans do not require full library permission because the system picker grants access to selected media.
 
 ```dart
-final status = await NsfwDetector.instance.requestPermission();
-
-if (status != PhotoLibraryPermissionStatus.authorized &&
-    status != PhotoLibraryPermissionStatus.limited) {
-  return;
-}
-
-final session = await NsfwDetector.instance.startScan(
-  const ScanConfiguration(confidenceThreshold: 0.75),
+final session = await NsfwDetector.instance.requestPermissionAndStartScan(
+  const ScanConfiguration.strict(includeVideos: true),
 );
+if (session == null) return; // User denied — show your permission UI.
 
 session.results.listen((result) {
   if (result.isNsfw) {
@@ -74,6 +90,8 @@ session.results.listen((result) {
 
 final summary = await session.done;
 ```
+
+`ScanConfiguration` ships with `.strict()` (threshold 0.85), `.moderate()` (0.7), `.permissive()` (0.5), and `.fastScan()` (concurrency 8) presets — see the [configuration guide](configuration.md).
 
 ## Result categories
 
