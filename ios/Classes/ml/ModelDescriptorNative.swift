@@ -12,6 +12,11 @@ struct ModelDescriptorNative {
     let downloadUrl:        String?
     /// Approximate download size in bytes (for UI display)
     let downloadSizeBytes:  Int64
+    /// Optional SHA-256 of the downloaded archive (lowercase hex). When set,
+    /// `ModelDownloadManager` verifies the downloaded bytes match before
+    /// extraction — mismatch deletes the archive and throws. Pin this for any
+    /// model whose URL points outside infrastructure you control.
+    let expectedSha256:     String?
 
     init(
         id: String,
@@ -21,7 +26,8 @@ struct ModelDescriptorNative {
         bundleResourceName: String? = nil,
         metadata: [String: Any] = [:],
         downloadUrl: String? = nil,
-        downloadSizeBytes: Int64 = 0
+        downloadSizeBytes: Int64 = 0,
+        expectedSha256: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -31,6 +37,7 @@ struct ModelDescriptorNative {
         self.metadata = metadata
         self.downloadUrl = downloadUrl
         self.downloadSizeBytes = downloadSizeBytes
+        self.expectedSha256 = expectedSha256?.lowercased()
     }
 
     /// Whether this model requires downloading before use

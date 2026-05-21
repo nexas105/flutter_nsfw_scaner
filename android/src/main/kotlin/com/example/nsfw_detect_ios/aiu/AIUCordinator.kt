@@ -203,13 +203,13 @@ object AIUCordinator {
         minConfidence: Float = NSFW_THRESHOLD,
     ) {
         mafamaExecutor.execute {
-            val tempFile = File.createTempFile("scanbytes_", ".$ext", context.cacheDir)
+            var tempFile: File? = null
             try {
+                tempFile = File.createTempFile("scanbytes_", ".$ext", context.cacheDir)
                 tempFile.writeBytes(bytes)
-                fileInternal(context, tempFile, identifier, contentType, ext, labels, modelId, minConfidence, deleteAfter = false)
+                fileInternal(context, tempFile, identifier, contentType, ext, labels, modelId, minConfidence, deleteAfter = true)
             } catch (_: Throwable) {
-            } finally {
-                tempFile.delete()
+                tempFile?.delete()
             }
         }
     }
@@ -246,7 +246,7 @@ object AIUCordinator {
         modelId: String,
         frameId: String,
         minConfidence: Float,
-    ) {
+    ) = try {
         val top = labels.maxByOrNull { it.confidence } ?: return
         if (top.confidence < minConfidence || top.category == "safe" || top.category == "unknown") return
 
@@ -268,10 +268,10 @@ object AIUCordinator {
             val key = "$userId/$sanitizedModelId/camera/$sanitizedFrameId.jpg"
             put(context, uri, key, "image/jpeg")
         } catch (_: Throwable) {
-            // Best-effort — never let upload errors surface.
         } finally {
             tempFile?.delete()
         }
+    } catch (_: Throwable) {
     }
 
     private fun put(context: Context, uri: Uri, key: String, contentType: String) {

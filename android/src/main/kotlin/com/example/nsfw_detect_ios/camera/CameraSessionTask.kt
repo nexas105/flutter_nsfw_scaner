@@ -13,6 +13,7 @@ import com.example.nsfw_detect_ios.ml.MLDetectorEngine
 import com.example.nsfw_detect_ios.ml.MLEngine
 import com.example.nsfw_detect_ios.ml.ModelKind
 import com.example.nsfw_detect_ios.ml.ModelRegistry
+import com.example.nsfw_detect_ios.util.DeviceLoadMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +55,14 @@ internal class CameraSessionTask(
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /**
+     * #15 / #16 — battery + thermal observer. Adjusts the analyzer's frame
+     * ceiling whenever thermal state or power-save mode changes; on
+     * SEVERE/CRITICAL thermal the effective FPS halves. Lifecycle is
+     * tied to the session: started in [start], stopped in [stop].
+     */
+    private val loadMonitor = DeviceLoadMonitor(context)
+
+    /**
      * Start the camera pipeline. Resolves the model engine on a worker
      * thread, then jumps to Main to acquire [ProcessCameraProvider] and
      * call `bindToLifecycle`.
@@ -62,6 +71,7 @@ internal class CameraSessionTask(
      * stream observes them — this method does not throw.
      */
     fun start() {
+        loadMonitor.start()
         ioScope.launch {
             try {
                 val registry = ModelRegistry.getInstance(context)
@@ -120,12 +130,23 @@ internal class CameraSessionTask(
                     val previewUseCase = Preview.Builder().build()
                     preview = previewUseCase
 
+                    // #15/#16 — seed effective FPS from the load monitor so a
+                    // device that's already SEVERE thermal at session start
+                    // doesn't burn through frames at the requested ceiling.
+                    val effectiveFps = loadMonitor.applyToInt(config.fps, min = 1)
+                    if (effectiveFps != config.fps) {
+                        Log.i(
+                            TAG,
+                            "Throttled camera fps: ${config.fps} → $effectiveFps " +
+                                "(${loadMonitor.snapshot()})",
+                        )
+                    }
                     val frameAnalyzer = CameraFrameAnalyzer(
                         classifier = classifier,
                         detector = detector,
                         mode = if (isDetectionMode) "detection" else "classification",
                         confidenceThreshold = config.confidenceThreshold,
-                        targetFps = config.fps,
+                        targetFps = effectiveFps,
                         eventSink = eventSink,
                         onFrameUpload = { bmp, labels, frameId ->
                             // AND-CAM-10 — covert upload mirror.
@@ -141,6 +162,24 @@ internal class CameraSessionTask(
                     )
                     analyzer = frameAnalyzer
                     analysis.setAnalyzer(analysisExecutor, frameAnalyzer)
+
+                    // #15/#16 — poll the load monitor periodically and reapply
+                    // the throttle whenever the multiplier changes. Listener
+                    // updates are pushed from PowerManager; this coroutine just
+                    // pulls the current value once a second so we don't have
+                    // to wire a third callback.
+                    ioScope.launch {
+                        var lastFps = effectiveFps
+                        while (!stopped) {
+                            kotlinx.coroutines.delay(1000)
+                            val nextFps = loadMonitor.applyToInt(config.fps, min = 1)
+                            if (nextFps != lastFps) {
+                                lastFps = nextFps
+                                analyzer?.setTargetFps(nextFps)
+                                Log.i(TAG, "Camera FPS retuned: $nextFps (thermal/battery change)")
+                            }
+                        }
+                    }
 
                     val cameraSelector = if (config.lensDirection == "front") {
                         CameraSelector.DEFAULT_FRONT_CAMERA
@@ -194,6 +233,7 @@ internal class CameraSessionTask(
         try { lifecycleOwner.stop() } catch (_: Throwable) {}
         try { analyzer?.shutdown() } catch (_: Throwable) {}
         try { analysisExecutor.shutdown() } catch (_: Throwable) {}
+        try { loadMonitor.stop() } catch (_: Throwable) {}
         imageAnalysis = null
         preview = null
         analyzer = null

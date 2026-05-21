@@ -20,6 +20,13 @@ data class ModelDescriptorNative(
     val downloadUrl: String? = null,
     /** Approximate download size in bytes (0 = unknown / bundled). */
     val downloadSizeBytes: Long = 0,
+    /**
+     * Optional SHA-256 of the downloaded archive (lowercase hex). When set,
+     * [ModelDownloadManager] verifies the downloaded bytes match before
+     * extraction — mismatch deletes the temp file and throws. Pin this for
+     * any URL the integrator does not fully control.
+     */
+    val expectedSha256: String? = null,
 ) {
     /** True if the model needs an online download before it can be used. */
     val requiresDownload: Boolean get() = downloadUrl != null

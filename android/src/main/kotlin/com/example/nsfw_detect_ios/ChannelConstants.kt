@@ -29,6 +29,15 @@ object ChannelConstants {
         // existing scan_events EventChannel via the `type` discriminator.
         const val START_CAMERA_SCAN = "startCameraScan"
         const val STOP_CAMERA_SCAN = "stopCameraScan"
+
+        /**
+         * Reports the actual TFLite delegate the engine ended up loaded with
+         * for a given model — "gpu", "nnapi" or "cpu". When the requested
+         * delegate fails to instantiate the native side silently falls back
+         * to CPU; this method lets Dart consumers detect that transparently.
+         * The Dart agent has not wired this up yet (#20).
+         */
+        const val GET_DELEGATE_INFO = "getDelegateInfo"
     }
 
     object EventKey {

@@ -56,9 +56,22 @@ final class CameraFrameProcessor {
     /// Presentation timestamp of the last accepted frame.
     private var lastAcceptedPts: CMTime = .invalid
 
-    /// Minimum spacing between accepted frames, derived from `config.fps`.
+    /// Effective FPS after DeviceLoadMonitor multipliers (low-power +
+    /// thermal). Read on every ingest so power-state / thermal changes
+    /// apply within a frame or two. Guarded by `fpsLock` — the observer
+    /// block fires on an arbitrary thread.
+    private let fpsLock = NSLock()
+    private var _effectiveFps: Int
+    private var loadObserver: NSObjectProtocol?
+
+    /// Minimum spacing between accepted frames, derived from the live FPS.
     private var minFrameInterval: CMTime {
-        CMTime(value: 1, timescale: Int32(max(1, config.fps)))
+        CMTime(value: 1, timescale: Int32(max(1, effectiveFps)))
+    }
+
+    private var effectiveFps: Int {
+        fpsLock.lock(); defer { fpsLock.unlock() }
+        return max(1, _effectiveFps)
     }
 
     /// Reused across frames — `CIContext` allocation is non-trivial.
@@ -72,6 +85,34 @@ final class CameraFrameProcessor {
     init(config: CameraConfiguration, eventSink: ScanEventSink) {
         self.config = config
         self.eventSink = eventSink
+        let base = max(1, config.fps)
+        self._effectiveFps = DeviceLoadMonitor.shared.scaledFps(base: base)
+
+        // Listen for load-factor changes — adapt FPS without restarting
+        // the AVCaptureSession.
+        loadObserver = NotificationCenter.default.addObserver(
+            forName: DeviceLoadMonitor.loadFactorDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            let updated = DeviceLoadMonitor.shared.scaledFps(base: base)
+            self.fpsLock.lock()
+            let previous = self._effectiveFps
+            self._effectiveFps = updated
+            self.fpsLock.unlock()
+            if previous != updated {
+                NSLog("[NSFW] CameraFrameProcessor FPS %d → %d (factor=%.2f)",
+                      previous, updated,
+                      DeviceLoadMonitor.shared.currentLoadFactor)
+            }
+        }
+    }
+
+    deinit {
+        if let observer = loadObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     /// Spin-wait until the in-flight counter drops to zero or `timeoutMs`
@@ -138,7 +179,18 @@ final class CameraFrameProcessor {
             let inputSize = registry.descriptor(for: config.modelId)?
                 .metadata["inputSize"] as? Int ?? 224
 
-            guard let resized = Self.resizeToBGRA(source,
+            // Task #21 — optional ROI crop before resize-to-input. The
+            // cropped buffer is fed to `resizeToBGRA`, which then handles
+            // the aspect-fill + center-crop the rest of the path expects.
+            let preResize: CVPixelBuffer = {
+                if let region = config.roi,
+                   let cropped = RoiCropper.crop(source, region: region) {
+                    return cropped
+                }
+                return source
+            }()
+
+            guard let resized = Self.resizeToBGRA(preResize,
                                                   target: inputSize,
                                                   ciContext: ciContext) else {
                 eventSink.emit([

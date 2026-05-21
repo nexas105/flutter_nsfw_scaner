@@ -51,27 +51,39 @@ class TFLiteEngine(
         if (interpreter != null) return@withLock
         val buffer = loadModelBuffer()
         val options = Interpreter.Options()
+        var delegateActuallyApplied = false
         when (preferredDelegate?.lowercase()) {
-            "gpu" -> tryAddDelegate(
-                options,
-                listOf(
-                    "org.tensorflow.lite.gpu.GpuDelegate",
-                    "org.tensorflow.lite.gpu.GpuDelegate",
-                ),
-                "GPU",
-            )
-            "nnapi" -> tryAddDelegate(
-                options,
-                listOf(
-                    "org.tensorflow.lite.nnapi.NnApiDelegate",
-                    "org.tensorflow.lite.nnapi.NnApiDelegate",
-                ),
-                "NNAPI",
-            )
+            "gpu" -> {
+                delegateActuallyApplied = tryAddDelegate(
+                    options,
+                    listOf(
+                        "org.tensorflow.lite.gpu.GpuDelegate",
+                        "com.google.ai.edge.litert.gpu.GpuDelegate",
+                    ),
+                    "GPU",
+                )
+            }
+            "nnapi" -> {
+                delegateActuallyApplied = tryAddDelegate(
+                    options,
+                    listOf(
+                        "org.tensorflow.lite.nnapi.NnApiDelegate",
+                        "com.google.ai.edge.litert.nnapi.NnApiDelegate",
+                    ),
+                    "NNAPI",
+                )
+            }
         }
         interpreter = Interpreter(buffer, options)
-        actualLoadedDelegate = preferredDelegate
-        Log.i(TAG, "Loaded model ${descriptor.id} (delegate=${actualLoadedDelegate ?: "cpu"})")
+        // #20: surface the *actual* delegate that was applied so callers can
+        // tell when we silently fell back to CPU. `loadedDelegate` returns
+        // "cpu" instead of (say) "gpu" if the GPU delegate JAR is missing
+        // from the host app.
+        actualLoadedDelegate = when (preferredDelegate?.lowercase()) {
+            null -> "cpu"
+            else -> if (delegateActuallyApplied) preferredDelegate else "cpu"
+        }
+        Log.i(TAG, "Loaded model ${descriptor.id} (requested=${preferredDelegate ?: "cpu"}, actual=$actualLoadedDelegate)")
     }
 
     override fun unload() {
@@ -160,6 +172,7 @@ class TFLiteEngine(
             val tfliteFile = resolveTFLiteFile(file)
                 ?: throw MLEngineError.ModelNotFound(descriptor.id)
             val bytes = tfliteFile.readBytes()
+            validateTFLiteBytes(descriptor.id, bytes)
             return ByteBuffer.allocateDirect(bytes.size).apply {
                 order(ByteOrder.nativeOrder())
                 put(bytes)
@@ -177,22 +190,27 @@ class TFLiteEngine(
             if (resourceName == "open_nsfw_2") add("open_nsfw2.tflite")
         }
 
+        var lastError: Throwable? = null
         for (assetName in candidates) {
-            try {
+            val bytes: ByteArray = try {
                 context.assets.openFd(assetName).use { afd ->
-                    afd.createInputStream().use { input ->
-                        val bytes = input.readBytes()
-                        return ByteBuffer.allocateDirect(bytes.size).apply {
-                            order(ByteOrder.nativeOrder())
-                            put(bytes)
-                            rewind()
-                        }
-                    }
+                    afd.createInputStream().use { it.readBytes() }
                 }
-            } catch (_: Throwable) {
-                // Try next candidate
+            } catch (t: Throwable) {
+                lastError = t
+                continue
+            }
+            // Validate before allocating direct buffer — a placeholder asset
+            // would otherwise propagate as an opaque TFLite runtime crash
+            // ("did not get magic number") later in Interpreter(buffer, …).
+            validateTFLiteBytes(descriptor.id, bytes)
+            return ByteBuffer.allocateDirect(bytes.size).apply {
+                order(ByteOrder.nativeOrder())
+                put(bytes)
+                rewind()
             }
         }
+        Log.w(TAG, "No bundled TFLite asset found for ${descriptor.id}; last error: ${lastError?.message}")
         throw MLEngineError.ModelNotFound(descriptor.id)
     }
 
@@ -207,11 +225,20 @@ class TFLiteEngine(
 
     // MARK: - Delegate reflection
 
+    /**
+     * Try every `candidates` class until one succeeds. Returns `true` when
+     * a delegate was applied, `false` if all candidates failed (caller can
+     * then mark [actualLoadedDelegate] = "cpu" for transparency — #20).
+     *
+     * Failure path stops swallowing: every candidate failure logs at WARN
+     * with the underlying exception, and a final WARN summarises the
+     * fallback so users have something to grep in their logs.
+     */
     private fun tryAddDelegate(
         options: Interpreter.Options,
         candidates: List<String>,
         tag: String,
-    ) {
+    ): Boolean {
         for (className in candidates) {
             try {
                 val delegateCls = Class.forName(className)
@@ -221,12 +248,13 @@ class TFLiteEngine(
                 } ?: continue
                 method.invoke(options, delegate)
                 Log.i(TAG, "$tag delegate enabled via $className")
-                return
+                return true
             } catch (t: Throwable) {
-                Log.w(TAG, "$tag delegate $className unavailable: ${t.message}")
+                Log.w(TAG, "Falling back to CPU: $tag delegate $className unavailable — ${t.message}", t)
             }
         }
-        Log.w(TAG, "$tag delegate could not be loaded — falling back to CPU")
+        Log.w(TAG, "Falling back to CPU: $tag delegate could not be loaded for ${descriptor.id}")
+        return false
     }
 
     private companion object {

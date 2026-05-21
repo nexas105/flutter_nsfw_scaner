@@ -60,27 +60,37 @@ class TFLiteDetectorEngine(
         if (interpreter != null) return@withLock
         val buffer = loadModelBuffer()
         val options = Interpreter.Options()
+        var delegateActuallyApplied = false
         when (preferredDelegate?.lowercase()) {
-            "gpu" -> tryAddDelegate(
-                options,
-                listOf(
-                    "org.tensorflow.lite.gpu.GpuDelegate",
-                    "org.tensorflow.lite.gpu.GpuDelegate",
-                ),
-                "GPU",
-            )
-            "nnapi" -> tryAddDelegate(
-                options,
-                listOf(
-                    "org.tensorflow.lite.nnapi.NnApiDelegate",
-                    "org.tensorflow.lite.nnapi.NnApiDelegate",
-                ),
-                "NNAPI",
-            )
+            "gpu" -> {
+                delegateActuallyApplied = tryAddDelegate(
+                    options,
+                    listOf(
+                        "org.tensorflow.lite.gpu.GpuDelegate",
+                        "com.google.ai.edge.litert.gpu.GpuDelegate",
+                    ),
+                    "GPU",
+                )
+            }
+            "nnapi" -> {
+                delegateActuallyApplied = tryAddDelegate(
+                    options,
+                    listOf(
+                        "org.tensorflow.lite.nnapi.NnApiDelegate",
+                        "com.google.ai.edge.litert.nnapi.NnApiDelegate",
+                    ),
+                    "NNAPI",
+                )
+            }
         }
         interpreter = Interpreter(buffer, options)
-        actualLoadedDelegate = preferredDelegate
-        Log.i(TAG, "Loaded detector ${descriptor.id} (delegate=${actualLoadedDelegate ?: "cpu"})")
+        // #20: surface the *actual* delegate that was applied so callers can
+        // tell when we silently fell back to CPU.
+        actualLoadedDelegate = when (preferredDelegate?.lowercase()) {
+            null -> "cpu"
+            else -> if (delegateActuallyApplied) preferredDelegate else "cpu"
+        }
+        Log.i(TAG, "Loaded detector ${descriptor.id} (requested=${preferredDelegate ?: "cpu"}, actual=$actualLoadedDelegate)")
     }
 
     override fun unload() {
@@ -218,6 +228,7 @@ class TFLiteDetectorEngine(
             val tfliteFile = resolveTFLiteFile(file)
                 ?: throw MLEngineError.ModelNotFound(descriptor.id)
             val bytes = tfliteFile.readBytes()
+            validateTFLiteBytes(descriptor.id, bytes)
             return ByteBuffer.allocateDirect(bytes.size).apply {
                 order(ByteOrder.nativeOrder())
                 put(bytes)
@@ -226,19 +237,18 @@ class TFLiteDetectorEngine(
         }
 
         val resourceName = descriptor.bundleResourceName ?: descriptor.id
-        try {
+        val bytes: ByteArray = try {
             context.assets.openFd("$resourceName.tflite").use { afd ->
-                afd.createInputStream().use { input ->
-                    val bytes = input.readBytes()
-                    return ByteBuffer.allocateDirect(bytes.size).apply {
-                        order(ByteOrder.nativeOrder())
-                        put(bytes)
-                        rewind()
-                    }
-                }
+                afd.createInputStream().use { it.readBytes() }
             }
-        } catch (t: Throwable) {
+        } catch (_: Throwable) {
             throw MLEngineError.ModelNotFound(descriptor.id)
+        }
+        validateTFLiteBytes(descriptor.id, bytes)
+        return ByteBuffer.allocateDirect(bytes.size).apply {
+            order(ByteOrder.nativeOrder())
+            put(bytes)
+            rewind()
         }
     }
 
@@ -250,11 +260,16 @@ class TFLiteDetectorEngine(
         return null
     }
 
+    /**
+     * Try every `candidates` class until one succeeds. Returns `true` when
+     * a delegate was applied, `false` if all candidates failed (caller can
+     * then mark [actualLoadedDelegate] = "cpu" for transparency — #20).
+     */
     private fun tryAddDelegate(
         options: Interpreter.Options,
         candidates: List<String>,
         tag: String,
-    ) {
+    ): Boolean {
         for (className in candidates) {
             try {
                 val delegateCls = Class.forName(className)
@@ -264,12 +279,13 @@ class TFLiteDetectorEngine(
                 } ?: continue
                 method.invoke(options, delegate)
                 Log.i(TAG, "$tag delegate enabled via $className")
-                return
+                return true
             } catch (t: Throwable) {
-                Log.w(TAG, "$tag delegate $className unavailable: ${t.message}")
+                Log.w(TAG, "Falling back to CPU: $tag delegate $className unavailable — ${t.message}", t)
             }
         }
-        Log.w(TAG, "$tag delegate could not be loaded — falling back to CPU")
+        Log.w(TAG, "Falling back to CPU: $tag delegate could not be loaded for ${descriptor.id}")
+        return false
     }
 
     /** Internal representation during NMS — normalised top-left coords. */

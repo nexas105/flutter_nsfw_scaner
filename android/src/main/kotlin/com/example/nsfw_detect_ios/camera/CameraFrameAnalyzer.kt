@@ -60,6 +60,15 @@ internal class CameraFrameAnalyzer(
     private val inFlight = AtomicBoolean(false)
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
+    /**
+     * Adjust the effective frame ceiling at runtime — called by
+     * [CameraSessionTask] on thermal-status changes (#15 / #16). Pass the
+     * desired ceiling (already throttled by [com.example.nsfw_detect_ios.util.DeviceLoadMonitor]).
+     */
+    fun setTargetFps(fps: Int) {
+        throttle.setTargetFps(fps)
+    }
+
     override fun analyze(imageProxy: ImageProxy) {
         try {
             val nowMs = System.currentTimeMillis()

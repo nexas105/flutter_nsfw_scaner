@@ -457,23 +457,25 @@ final class ScanSessionTask: @unchecked Sendable {
         // 1. Load pixel buffers concurrently; record failures immediately.
         //    Capture the underlying error so it surfaces in Dart logs instead
         //    of the opaque "pixelBuffer unavailable" message.
+        //    SendablePixelBuffer lets us cross the TaskGroup boundary cleanly
+        //    under Swift 6 strict concurrency — CVPixelBuffer itself isn't Sendable.
         var orderedBuffers: [CVPixelBuffer?] = Array(repeating: nil, count: assets.count)
         var bufferErrors:   [String?]        = Array(repeating: nil, count: assets.count)
         let region = config.roi
-        await withTaskGroup(of: (Int, CVPixelBuffer?, String?).self) { group in
+        await withTaskGroup(of: (Int, SendablePixelBuffer?, String?).self) { group in
             for (i, pair) in assets.enumerated() {
                 group.addTask {
                     do {
                         let buf = try await analyzer.pixelBuffer(for: pair.asset, region: region)
-                        return (i, buf, nil)
+                        return (i, SendablePixelBuffer(buf), nil)
                     } catch {
                         let desc = "\(type(of: error)): \(error.localizedDescription)"
                         return (i, nil, desc)
                     }
                 }
             }
-            for await (i, buf, err) in group {
-                orderedBuffers[i] = buf
+            for await (i, wrapped, err) in group {
+                orderedBuffers[i] = wrapped?.value
                 bufferErrors[i]   = err
             }
         }

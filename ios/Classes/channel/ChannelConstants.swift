@@ -24,6 +24,10 @@ enum ChannelConstants {
         static let clearScanCache     = "clearScanCache"
         static let startCameraScan    = "startCameraScan"
         static let stopCameraScan     = "stopCameraScan"
+        /// iOS-only diagnostics: returns the `MLComputeUnits` the supplied
+        /// modelId is currently loaded with (or `.all` if not yet loaded).
+        /// See Task #20 / CoreMLEngine.loadedComputeUnits.
+        static let getComputeUnits    = "getComputeUnits"
     }
 
     enum EventKey {

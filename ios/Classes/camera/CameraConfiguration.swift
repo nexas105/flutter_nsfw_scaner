@@ -18,6 +18,10 @@ struct CameraConfiguration {
     let iouThreshold: Double
     let iosComputeUnits: ComputeUnitsPreference
 
+    /// Optional normalised ROI rect (top-left origin, all in [0, 1]) applied
+    /// to every captured frame before the model resize. `nil` = no crop.
+    let roi: RoiCropper.Region?
+
     init(from dict: [String: Any]) {
         modelId             = dict["modelId"] as? String ?? ModelIds.openNsfw2
         confidenceThreshold = dict["confidenceThreshold"] as? Double ?? 0.7
@@ -32,5 +36,6 @@ struct CameraConfiguration {
         } else {
             iosComputeUnits = .all
         }
+        roi = RoiCropper.Region.from(map: dict["roi"] as? [String: Any])
     }
 }

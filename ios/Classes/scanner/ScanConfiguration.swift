@@ -55,6 +55,24 @@ struct ScanConfiguration {
     /// originates from Dart `ScanMode.wireValue`.
     let mode: String
 
+    /// Optional normalised ROI rect (top-left origin, all in [0, 1]) that the
+    /// analyzer crops the source frame to before resizing for the model.
+    /// `nil` means "no crop". Passed by Dart as
+    /// `roi: {x, y, width, height}` on scan/startScan calls.
+    let roi: RoiCropper.Region?
+
+    /// Video early-exit gate. When true, the per-frame classifier loop in
+    /// `ScanSessionTask.classifyFrames` short-circuits as soon as a frame
+    /// returns top-confidence > 0.95 with category != "safe". Default true.
+    let earlyExitOnHighConfidence: Bool
+
+    /// Photo-library filtering by `PHAsset.localIdentifier`. Both are
+    /// optional and additive — `skipAssetIds` is subtracted from the
+    /// fetched set, then `includeOnlyAssetIds` (if non-empty) restricts
+    /// the result. Mirrors the args the Dart agent is wiring up.
+    let skipAssetIds: Set<String>?
+    let includeOnlyAssetIds: Set<String>?
+
     /// Number of assets / video frames submitted per CoreML batch call.
     /// Derived from concurrency so no Dart-API change is needed.
     var batchSize: Int { max(1, concurrency) }
@@ -82,6 +100,18 @@ struct ScanConfiguration {
             computeUnits = .all
         }
         mode = (dict["mode"] as? String) ?? "classification"
+        roi = RoiCropper.Region.from(map: dict["roi"] as? [String: Any])
+        earlyExitOnHighConfidence = dict["earlyExitOnHighConfidence"] as? Bool ?? true
+        if let raw = dict["skipAssetIds"] as? [String], !raw.isEmpty {
+            skipAssetIds = Set(raw)
+        } else {
+            skipAssetIds = nil
+        }
+        if let raw = dict["includeOnlyAssetIds"] as? [String], !raw.isEmpty {
+            includeOnlyAssetIds = Set(raw)
+        } else {
+            includeOnlyAssetIds = nil
+        }
     }
 
     static let `default` = ScanConfiguration(from: [:])

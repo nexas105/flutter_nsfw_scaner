@@ -64,6 +64,7 @@ import Photos
                         modelId: modelId,
                         resourceName: resourceName,
                         from: url,
+                        expectedSha256: desc.expectedSha256,
                         progress: { _ in }
                     )
                 }

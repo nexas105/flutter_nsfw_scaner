@@ -19,7 +19,8 @@ package com.example.nsfw_detect_ios.camera
  * or accept one extra frame, which is harmless.
  */
 internal class FpsThrottle(targetFps: Int) {
-    private val minIntervalMs: Long =
+    @Volatile
+    private var minIntervalMs: Long =
         (1000.0 / targetFps.coerceIn(1, 60)).toLong().coerceAtLeast(1L)
 
     @Volatile
@@ -33,5 +34,14 @@ internal class FpsThrottle(targetFps: Int) {
         if (nowMs - lastAcceptedMs < minIntervalMs) return false
         lastAcceptedMs = nowMs
         return true
+    }
+
+    /**
+     * Update the effective FPS ceiling at runtime — used by the thermal +
+     * battery backoff (#15 / #16) to halve the throttle on SEVERE thermal
+     * state without restarting the camera session.
+     */
+    fun setTargetFps(targetFps: Int) {
+        minIntervalMs = (1000.0 / targetFps.coerceIn(1, 60)).toLong().coerceAtLeast(1L)
     }
 }
