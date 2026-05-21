@@ -3,6 +3,7 @@ import Photos
 import CoreImage
 import UIKit
 import ImageIO
+import os
 
 /// Fetches a PHAsset image and converts it to a CVPixelBuffer for ML inference.
 ///
@@ -157,11 +158,26 @@ final class ImageAnalyzer {
     }
 
     private func fetchViaImageManager(asset: PHAsset) async throws -> CGImage {
+        try await Self.withFetchTimeout {
+            try await self.fetchViaImageManagerCore(asset: asset)
+        }
+    }
+
+    private func fetchViaImageManagerCore(asset: PHAsset) async throws -> CGImage {
         try await withCheckedThrowingContinuation { continuation in
-            var hasResumed = false
+            // OSAllocatedUnfairLock<Bool> — PhotoKit *normally* serialises
+            // result-handler callbacks, but that's documented behaviour, not
+            // a language-level guarantee. A plain `var hasResumed = false`
+            // would crash with a double-resume if the callback ever fires
+            // twice (degraded → full, queue-priority interactions).
+            let resumeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
             let resumeOnce: (Result<CGImage, Error>) -> Void = { result in
-                guard !hasResumed else { return }
-                hasResumed = true
+                let shouldResume = resumeLock.withLock { state -> Bool in
+                    guard !state else { return false }
+                    state = true
+                    return true
+                }
+                guard shouldResume else { return }
                 switch result {
                 case .success(let img): continuation.resume(returning: img)
                 case .failure(let err): continuation.resume(throwing: err)
@@ -203,16 +219,26 @@ final class ImageAnalyzer {
     }
 
     private func fetchViaImageData(asset: PHAsset) async throws -> CGImage {
+        try await Self.withFetchTimeout {
+            try await self.fetchViaImageDataCore(asset: asset)
+        }
+    }
+
+    private func fetchViaImageDataCore(asset: PHAsset) async throws -> CGImage {
         try await withCheckedThrowingContinuation { continuation in
             let opts = PHImageRequestOptions()
             opts.isNetworkAccessAllowed = true
             opts.isSynchronous = false
             opts.deliveryMode = .fastFormat
 
-            var hasResumed = false
+            let resumeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
             let resumeOnce: (Result<CGImage, Error>) -> Void = { result in
-                guard !hasResumed else { return }
-                hasResumed = true
+                let shouldResume = resumeLock.withLock { state -> Bool in
+                    guard !state else { return false }
+                    state = true
+                    return true
+                }
+                guard shouldResume else { return }
                 switch result {
                 case .success(let img): continuation.resume(returning: img)
                 case .failure(let err): continuation.resume(throwing: err)

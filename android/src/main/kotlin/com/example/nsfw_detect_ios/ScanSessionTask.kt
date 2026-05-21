@@ -28,6 +28,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -57,20 +58,50 @@ class ScanSessionTask(
     private var scanJob: Job? = null
     private val loadMonitor = DeviceLoadMonitor(context)
 
+    /**
+     * Lifecycle flag. Flipped by `cancel()` and consulted by `start()` /
+     * the runScan entry point. Closes the cancel-before-start window —
+     * `ScanMethodHandler` instantiates a session, queues a coroutine that
+     * will call `start()`, and a fast follow-up `cancelScan` could hit
+     * `cancel()` before that coroutine runs. Without this flag,
+     * `scanJob?.cancel()` is a no-op (scanJob still null) and `start()`
+     * later launches the session anyway.
+     */
+    private val cancelled = AtomicBoolean(false)
+    private val lifecycleLock = Any()
+
     fun start() {
-        loadMonitor.start()
-        scanJob = scope.launch { runScan() }
+        synchronized(lifecycleLock) {
+            if (cancelled.get()) {
+                // Pre-cancelled — don't even spin up the load monitor or
+                // queue a coroutine. ScanMethodHandler keeps a reference
+                // to the session it builds; if that reference is being
+                // dropped because the user cancelled, leave it dropped.
+                return
+            }
+            loadMonitor.start()
+            scanJob = scope.launch { runScan() }
+        }
     }
 
     fun cancel() {
-        scanJob?.cancel()
-        scanJob = null
-        loadMonitor.stop()
+        synchronized(lifecycleLock) {
+            cancelled.set(true)
+            scanJob?.cancel()
+            scanJob = null
+            loadMonitor.stop()
+        }
     }
 
     // MARK: - Core scan loop (parallel)
 
     private suspend fun runScan() {
+        // Belt-and-braces guard for the narrow window between `start()`
+        // installing scanJob and the launched coroutine reaching its first
+        // suspend point — `MediaStoreScanner.query` is a blocking call, so
+        // a `cancel()` arriving during that synchronous prelude can't
+        // interrupt it via Job cancellation.
+        if (cancelled.get()) return
         try {
             val rawAssets = MediaStoreScanner.query(context, config)
 

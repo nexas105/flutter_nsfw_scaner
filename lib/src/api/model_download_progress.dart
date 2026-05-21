@@ -72,4 +72,26 @@ class ModelDownloadProgress {
       'ModelDownloadProgress($modelId ${(fraction * 100).toStringAsFixed(1)}%, '
       '${isComplete ? 'done' : 'in-flight'}'
       '${error != null ? ', error=$error' : ''})';
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ModelDownloadProgress &&
+          runtimeType == other.runtimeType &&
+          modelId == other.modelId &&
+          fraction == other.fraction &&
+          bytesDownloaded == other.bytesDownloaded &&
+          totalBytes == other.totalBytes &&
+          isComplete == other.isComplete &&
+          error == other.error;
+
+  @override
+  int get hashCode => Object.hash(
+        modelId,
+        fraction,
+        bytesDownloaded,
+        totalBytes,
+        isComplete,
+        error,
+      );
 }

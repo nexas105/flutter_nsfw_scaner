@@ -37,7 +37,7 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   Future<List<ModelDescriptor>> availableModels() async {
     final result =
         await _methodChannel.invokeListMethod<Map>('availableModels');
-    return (result ?? []).map((m) => ModelDescriptor.fromMap(m)).toList();
+    return (result ?? []).map(ModelDescriptor.fromMap).toList();
   }
 
   @override

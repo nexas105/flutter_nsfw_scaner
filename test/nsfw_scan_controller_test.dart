@@ -160,6 +160,6 @@ void main() {
     controller.updateConfig(next);
     expect(notifies, 1);
 
-    controller.dispose();
+    unawaited(controller.dispose());
   });
 }

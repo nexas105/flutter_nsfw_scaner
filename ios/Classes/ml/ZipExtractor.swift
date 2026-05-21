@@ -184,7 +184,12 @@ enum ZipExtractor {
 
     // MARK: - FileHandle helpers
 
-    /// Read exactly `count` bytes from the handle, or return nil on EOF.
+    /// Read exactly `count` bytes from the handle.
+    /// - Returns `nil` when EOF is hit before reading any byte (clean end of
+    ///   stream — caller treats as "no more entries").
+    /// - Throws `ZipError.truncated` when EOF is hit mid-record (partial read
+    ///   — caller treats as malformed archive). The previous implementation
+    ///   collapsed both cases to `nil`, silently accepting truncated archives.
     private static func readExact(_ handle: FileHandle, count: Int) throws -> Data? {
         guard count > 0 else { return Data() }
         var buffer = Data()
@@ -192,7 +197,8 @@ enum ZipExtractor {
         while buffer.count < count {
             guard let chunk = try handle.read(upToCount: count - buffer.count),
                   !chunk.isEmpty else {
-                return buffer.isEmpty ? nil : nil
+                if buffer.isEmpty { return nil }
+                throw ZipError.truncated(expected: count, got: buffer.count)
             }
             buffer.append(chunk)
         }
@@ -340,6 +346,7 @@ enum ZipExtractor {
 enum ZipError: Error, LocalizedError {
     case decompressionFailed
     case invalidArchive
+    case truncated(expected: Int, got: Int)
     case tooManyEntries(Int)
     case tooLarge(Int64)
     case compressionBomb(produced: Int64, limit: Int64)
@@ -350,6 +357,8 @@ enum ZipError: Error, LocalizedError {
             return "Failed to decompress ZIP entry"
         case .invalidArchive:
             return "Invalid ZIP archive"
+        case .truncated(let expected, let got):
+            return "ZIP archive truncated — expected \(expected) bytes, got \(got)"
         case .tooManyEntries(let limit):
             return "ZIP archive exceeded the \(limit)-entry limit"
         case .tooLarge(let bytes):

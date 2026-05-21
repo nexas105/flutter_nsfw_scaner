@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../api/media_item.dart';
 import '../api/nsfw_gallery_filter.dart';
@@ -262,8 +264,10 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
 
   Future<void> _startScan({bool resume = false}) async {
     await _controller.startScan(resume: resume);
-    // Fire onScanComplete once the session reports done.
-    _onScanCompleteWatcher();
+    // Fire onScanComplete once the session reports done. Fire-and-forget —
+    // _onScanCompleteWatcher disposes itself on widget teardown, and we
+    // don't want to block the button handler on the whole scan run.
+    unawaited(_onScanCompleteWatcher());
   }
 
   // ── Build ─────────────────────────────────────────────────────────────
@@ -355,7 +359,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
           SizedBox(width: t.spacing.sm),
           Expanded(
             child: OutlinedButton.icon(
-              onPressed: () => _startScan(),
+              onPressed: _startScan,
               icon: const Icon(Icons.refresh, size: 18),
               label: const Text('New Scan'),
               style: OutlinedButton.styleFrom(
@@ -371,7 +375,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
       isScanning: isScanning,
       onStart: _controller.permissionStatus == null
           ? _controller.requestPermission
-          : () => _startScan(),
+          : _startScan,
       onStop: isScanning ? _controller.stopScan : null,
     );
   }
@@ -473,7 +477,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
     return RefreshIndicator(
       color: t.accent,
       backgroundColor: t.surface,
-      onRefresh: () => _startScan(),
+      onRefresh: _startScan,
       child: grid,
     );
   }

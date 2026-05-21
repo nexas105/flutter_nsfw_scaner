@@ -169,11 +169,12 @@ class NsfwScanController extends ChangeNotifier {
     // Notify when the scan finishes so consumers can refresh derived state
     // (e.g. `isScanning` flips back to false). The summary itself isn't
     // exposed here — hosts that care should listen to `session.done`
-    // directly via [session].
-    session.done.then((_) {
+    // directly via [session]. Fire-and-forget; the controller is alive
+    // beyond this `then`, and `_disposed` guards the callback.
+    unawaited(session.done.then((_) {
       if (_disposed) return;
       _safeNotify();
-    });
+    }));
   }
 
   Future<void> stopScan() async {

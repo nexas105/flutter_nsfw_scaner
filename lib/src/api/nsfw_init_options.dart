@@ -39,7 +39,7 @@ class NsfwInitOptions {
     this.downloadIfMissing = const [],
     this.tolerateModelErrors = true,
     this.enableNativeLogging = false,
-    this.defaultThreshold = 0.7,
+    this.defaultThreshold = 0.75,
   });
 
   /// Minimum-cost init — only registers the platform channel, preloads
@@ -53,7 +53,7 @@ class NsfwInitOptions {
         downloadIfMissing = const [],
         tolerateModelErrors = true,
         enableNativeLogging = false,
-        defaultThreshold = 0.7;
+        defaultThreshold = 0.75;
 
   /// Development preset — preloads the default classifier, turns on native
   /// logging, and uses the standard threshold.
@@ -66,7 +66,7 @@ class NsfwInitOptions {
         downloadIfMissing = const [],
         tolerateModelErrors = true,
         enableNativeLogging = true,
-        defaultThreshold = 0.7;
+        defaultThreshold = 0.75;
 
   /// Production preset — preloads the default classifier with logging off and
   /// uses the standard threshold. No automatic downloads.
@@ -80,7 +80,7 @@ class NsfwInitOptions {
         downloadIfMissing = const [],
         tolerateModelErrors = true,
         enableNativeLogging = false,
-        defaultThreshold = 0.7;
+        defaultThreshold = 0.75;
 }
 
 /// Aggregated result returned by [NsfwDetector.init].

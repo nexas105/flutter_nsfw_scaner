@@ -458,10 +458,13 @@ class NsfwDetector {
   /// without worrying about a parallel `reinit` flipping the field underneath.
   Future<double> _resolveThreshold(double? override) async {
     if (override != null) {
-      assert(
-        override >= 0.0 && override <= 1.0,
-        'confidenceThreshold must be in [0.0, 1.0]',
-      );
+      if (!override.isFinite || override < 0.0 || override > 1.0) {
+        throw ArgumentError.value(
+          override,
+          'confidenceThreshold',
+          'must be a finite value in [0.0, 1.0]',
+        );
+      }
       return override;
     }
     // Await in-flight init so default-threshold reads after any pending
