@@ -135,12 +135,48 @@ final class ModelDownloadManager {
     ) async throws -> URL {
         NSLog("[NSFW] Downloading model: %@ from %@", resourceName, url.absoluteString)
 
+        // Why this isn't using `session.download(from:delegate:)`:
+        //
+        // The iOS 15 async download API silently hangs under iOS 17/18 when
+        // the URLSession is built with a session-level URLSessionDownloadDelegate
+        // (progress reporter) AND a per-task delegate is also passed — the
+        // continuation never resumes, progress callbacks fire normally on
+        // the session delegate, but the await blocks forever. No error.
+        //
+        // The fallback that works everywhere: kick off a plain
+        // `downloadTask`, race the session-level delegate's progress /
+        // completion / failure against a CheckedThrowingContinuation, and
+        // move the file out of the URLSession temp slot *inside the
+        // delegate's didFinishDownloadingTo* before URLSession reclaims it.
+        let callbackQueue = OperationQueue()
+        callbackQueue.qualityOfService = .utility
+        callbackQueue.maxConcurrentOperationCount = 1
         let delegate = DownloadDelegate(onProgress: progress,
                                         maxBytes: Self.maxDownloadBytes)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: .default,
+                                 delegate: delegate,
+                                 delegateQueue: callbackQueue)
         defer { session.invalidateAndCancel() }
 
-        let (tempURL, response) = try await session.download(from: url, delegate: delegate)
+        let request: URLRequest = {
+            var r = URLRequest(url: url)
+            r.timeoutInterval = 120
+            return r
+        }()
+
+        let (tempURL, response): (URL, URLResponse) = try await
+            withTaskCancellationHandler { @Sendable [delegate, session, request] in
+                try await withCheckedThrowingContinuation { cont in
+                    delegate.completion = { result in
+                        cont.resume(with: result)
+                    }
+                    let task = session.downloadTask(with: request)
+                    delegate.attachTask(task)
+                    task.resume()
+                }
+            } onCancel: { @Sendable [delegate] in
+                delegate.cancel()
+            }
         // URLSession moves `tempURL` out from under us once this scope ends —
         // copy to our own staging file so the post-download checks operate on
         // a stable path even if the call site retries.
@@ -271,7 +307,13 @@ final class ModelDownloadManager {
 
 // MARK: - URLSession Download Delegate
 
-private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
+/// Lifts `URLSessionDownloadTask` callbacks into a single-shot
+/// `Result<(URL, URLResponse), Error>` continuation. Required because the
+/// iOS 15 async `URLSession.download(from:delegate:)` API hangs under
+/// iOS 17/18 when both a session-level delegate AND a per-task delegate
+/// are wired — see comment in `performDownload`.
+private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate,
+                                       @unchecked Sendable {
     let onProgress: (Double) -> Void
     let maxBytes:   Int64
     /// Flipped to `true` when we cancel the task for exceeding `maxBytes`.
@@ -279,9 +321,36 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     /// download from one that was cut short by us.
     private(set) var aborted = false
 
+    /// Single-shot continuation resolved on first completion / failure.
+    /// Cleared after firing so subsequent delegate callbacks become no-ops.
+    var completion: ((Result<(URL, URLResponse), Error>) -> Void)?
+
+    private let lock = NSLock()
+    private weak var task: URLSessionDownloadTask?
+
     init(onProgress: @escaping (Double) -> Void, maxBytes: Int64) {
         self.onProgress = onProgress
         self.maxBytes   = maxBytes
+    }
+
+    func attachTask(_ task: URLSessionDownloadTask) {
+        lock.lock(); defer { lock.unlock() }
+        self.task = task
+    }
+
+    func cancel() {
+        lock.lock()
+        let t = task
+        lock.unlock()
+        t?.cancel()
+    }
+
+    private func deliver(_ result: Result<(URL, URLResponse), Error>) {
+        lock.lock()
+        let cb = completion
+        completion = nil
+        lock.unlock()
+        cb?(result)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
@@ -302,7 +371,31 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
-        // Handled by async download(from:)
+        // URLSession deletes `location` as soon as this method returns, so
+        // move it to a staging file in the system temp dir *here* — every
+        // post-download check (size cap, SHA verification, extraction)
+        // operates on the staged copy from here on.
+        let staged = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nsfw_dl_\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: location, to: staged)
+        } catch {
+            deliver(.failure(error))
+            return
+        }
+        guard let resp = downloadTask.response else {
+            deliver(.failure(URLError(.badServerResponse)))
+            return
+        }
+        deliver(.success((staged, resp)))
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        // Only fires for the error path or for graceful cancellation.
+        // The success path is resolved earlier inside `didFinishDownloadingTo`.
+        guard let error = error else { return }
+        deliver(.failure(error))
     }
 }
 
