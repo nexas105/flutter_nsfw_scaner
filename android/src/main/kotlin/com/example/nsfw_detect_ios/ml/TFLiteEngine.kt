@@ -101,30 +101,42 @@ class TFLiteEngine(
         if (interpreter == null) load()
         val interp = interpreter ?: throw MLEngineError.NotLoaded()
 
-        val resized = if (bitmap.width == inputSize && bitmap.height == inputSize) {
-            bitmap
-        } else {
-            Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
-        }
+        // Hold runMutex across the entire pipeline — TFLite Interpreter is
+        // not thread-safe, and Bitmap.createScaledBitmap leaks native pixel
+        // memory if two coroutines race the same input. Centralising under
+        // one lock also lets us reliably recycle the scaled copy.
+        return runMutex.withLock {
+            val resized: Bitmap
+            val ownsResized: Boolean
+            if (bitmap.width == inputSize && bitmap.height == inputSize) {
+                resized = bitmap
+                ownsResized = false
+            } else {
+                resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+                ownsResized = resized !== bitmap
+            }
 
-        val inputBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
-            order(ByteOrder.nativeOrder())
-        }
-        for (y in 0 until inputSize) {
-            for (x in 0 until inputSize) {
-                val pixel = resized.getPixel(x, y)
-                inputBuffer.putFloat(Color.red(pixel) / 255f)
-                inputBuffer.putFloat(Color.green(pixel) / 255f)
-                inputBuffer.putFloat(Color.blue(pixel) / 255f)
+            try {
+                val inputBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
+                    order(ByteOrder.nativeOrder())
+                }
+                for (y in 0 until inputSize) {
+                    for (x in 0 until inputSize) {
+                        val pixel = resized.getPixel(x, y)
+                        inputBuffer.putFloat(Color.red(pixel) / 255f)
+                        inputBuffer.putFloat(Color.green(pixel) / 255f)
+                        inputBuffer.putFloat(Color.blue(pixel) / 255f)
+                    }
+                }
+                inputBuffer.rewind()
+
+                val outputArray = Array(1) { FloatArray(outputSize) }
+                interp.run(inputBuffer, outputArray)
+                parseOutput(outputArray[0])
+            } finally {
+                if (ownsResized && !resized.isRecycled) resized.recycle()
             }
         }
-        inputBuffer.rewind()
-
-        val outputArray = Array(1) { FloatArray(outputSize) }
-        runMutex.withLock {
-            interp.run(inputBuffer, outputArray)
-        }
-        return parseOutput(outputArray[0])
     }
 
     // MARK: - Output parsing

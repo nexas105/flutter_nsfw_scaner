@@ -107,6 +107,31 @@ final class ImageAnalyzer {
         return opts
     }
 
+    /// Bound any PhotoKit fetch by a hard wall-clock deadline.
+    ///
+    /// `requestImage` / `requestImageDataAndOrientation` can hang indefinitely
+    /// for iCloud-only assets when the network is offline or PhotoKit's
+    /// internal queue is blocked — observed in the wild as scans that never
+    /// emit a per-asset result and never finish. Race the fetch against a
+    /// sleep so a hung asset surfaces as `frameSamplingFailed` instead.
+    private static func withFetchTimeout<T: Sendable>(
+        seconds: TimeInterval = 30,
+        _ operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw ScanError.frameSamplingFailed
+            }
+            guard let result = try await group.next() else {
+                throw ScanError.frameSamplingFailed
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
     func pixelBuffer(for asset: PHAsset) async throws -> CVPixelBuffer {
         return try await pixelBuffer(for: asset, region: nil)
     }

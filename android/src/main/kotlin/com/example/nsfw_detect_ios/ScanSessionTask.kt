@@ -90,6 +90,11 @@ class ScanSessionTask(
             scanJob?.cancel()
             scanJob = null
             loadMonitor.stop()
+            // Cancel any other children still alive inside scope. scanJob is
+            // the only consumer today, but leaving the SupervisorJob open
+            // across cancel() would leak any future child coroutine started
+            // outside the runScan path and survive the host Activity.
+            scope.coroutineContext[Job]?.cancelChildren()
         }
     }
 

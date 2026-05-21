@@ -1289,30 +1289,54 @@ extension ScanMethodHandler: PHPickerViewControllerDelegate {
         } ?? types.first(where: { $0.hasPrefix("public.") }) ?? types.first
         guard let typeId = preferred else { return nil }
 
-        return await withCheckedContinuation { (cont: CheckedContinuation<[String: Any]?, Never>) in
-            provider.loadFileRepresentation(forTypeIdentifier: typeId) { srcURL, _ in
-                guard let srcURL = srcURL else {
-                    cont.resume(returning: nil)
-                    return
+        // Race the provider against a wall-clock cap. iCloud-only assets with
+        // no network can leave `loadFileRepresentation` pending forever; bound
+        // to 30 s so the picker flow can't deadlock indefinitely.
+        return await withTaskGroup(of: [String: Any]?.self) { group in
+            group.addTask {
+                await withCheckedContinuation { (cont: CheckedContinuation<[String: Any]?, Never>) in
+                    let resumeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+                    let resumeOnce: ([String: Any]?) -> Void = { value in
+                        let shouldResume = resumeLock.withLock { state -> Bool in
+                            guard !state else { return false }
+                            state = true
+                            return true
+                        }
+                        guard shouldResume else { return }
+                        cont.resume(returning: value)
+                    }
+                    provider.loadFileRepresentation(forTypeIdentifier: typeId) { srcURL, _ in
+                        guard let srcURL = srcURL else {
+                            resumeOnce(nil)
+                            return
+                        }
+                        let ext = srcURL.pathExtension.isEmpty
+                            ? (UTType(typeId)?.preferredFilenameExtension ?? "bin")
+                            : srcURL.pathExtension
+                        let dst = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("picked_\(UUID().uuidString).\(ext)")
+                        do {
+                            try? FileManager.default.removeItem(at: dst)
+                            try FileManager.default.copyItem(at: srcURL, to: dst)
+                        } catch {
+                            resumeOnce(nil)
+                            return
+                        }
+                        resumeOnce([
+                            "localId":   "file://" + dst.path,
+                            "mediaType": isVideo ? "video" : "image",
+                            "filePath":  dst.path,
+                        ])
+                    }
                 }
-                let ext = srcURL.pathExtension.isEmpty
-                    ? (UTType(typeId)?.preferredFilenameExtension ?? "bin")
-                    : srcURL.pathExtension
-                let dst = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("picked_\(UUID().uuidString).\(ext)")
-                do {
-                    try? FileManager.default.removeItem(at: dst)
-                    try FileManager.default.copyItem(at: srcURL, to: dst)
-                } catch {
-                    cont.resume(returning: nil)
-                    return
-                }
-                cont.resume(returning: [
-                    "localId":   "file://" + dst.path,
-                    "mediaType": isVideo ? "video" : "image",
-                    "filePath":  dst.path,
-                ])
             }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
         }
     }
 }

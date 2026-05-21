@@ -61,6 +61,12 @@ class ScanCheckpoint(
     private var totalCount: Int = 0
     private var counter: Int = 0
     private var lastWriteMs: Long = 0L
+    // Tracks whether in-memory state has changed since the last successful
+    // flush. Lets flush() short-circuit a no-op rewrite — important because
+    // record() may trigger flush() on a time-throttle even when no new asset
+    // was processed in the window, and large libraries make each serialize()
+    // pass non-trivial (whole processedAssetIds set rebuilt into a JSONArray).
+    private var dirty: Boolean = false
 
     /**
      * Load any previously-written checkpoint for this [configHash]. Returns
@@ -131,12 +137,16 @@ class ScanCheckpoint(
         synchronized(lock) {
             if (processedAssetIds.add(assetId)) {
                 processedCount += 1
+                dirty = true
             }
             lastProcessedAssetId = assetId
-            if (total > 0) totalCount = total
+            if (total > 0 && total != totalCount) {
+                totalCount = total
+                dirty = true
+            }
             counter += 1
             val now = System.currentTimeMillis()
-            shouldWrite = counter >= everyN || (now - lastWriteMs) >= everyMs
+            shouldWrite = dirty && (counter >= everyN || (now - lastWriteMs) >= everyMs)
             if (shouldWrite) {
                 lastWriteMs = now
                 counter = 0
@@ -147,16 +157,19 @@ class ScanCheckpoint(
 
     /** Force a disk write of the current in-memory state. */
     fun flush() {
-        val payload: String
+        val payload: String?
         synchronized(lock) {
+            if (!dirty) return
             payload = serialize()
             lastWriteMs = System.currentTimeMillis()
             counter = 0
+            dirty = false
         }
         try {
-            file.writeText(payload, Charsets.UTF_8)
+            file.writeText(payload!!, Charsets.UTF_8)
         } catch (e: Exception) {
             Log.w(TAG, "flush failed for $configHash: ${e.message}")
+            synchronized(lock) { dirty = true } // retry next time
         }
     }
 

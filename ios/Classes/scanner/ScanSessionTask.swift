@@ -354,6 +354,7 @@ final class ScanSessionTask: @unchecked Sendable {
                         group.addTask { [weak self] in
                             guard let self = self, !Task.isCancelled else { return }
                             do {
+                                try Task.checkCancellation()
                                 let frames = try await sampler.sample(asset: asset, config: self.config, inputSize: inputSize)
                                 let classification: NsfwClassification
                                 if frames.isEmpty {

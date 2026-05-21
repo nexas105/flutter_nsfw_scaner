@@ -28,18 +28,20 @@ final class ScanEventSink: NSObject, FlutterStreamHandler {
 
     func emit(_ event: [String: Any]) {
         lock.lock()
-        let s = sink
+        let hasSink = (sink != nil)
         lock.unlock()
-        guard let captured = s else { return }
-        // Re-check on main: between the lock release here and the closure
-        // running, `onCancel` may have niled `sink`. Flutter's EventChannel
-        // documents that invoking a sink past onCancel is undefined.
+        guard hasSink else { return }
+        // Read the *current* sink inside the main-queue block — not a stale
+        // capture from before dispatch. onCancel → onListen between the
+        // unlock above and this closure firing would leave `self.sink`
+        // non-nil but pointing at a DIFFERENT sink than the one captured;
+        // invoking the captured (now-dead) sink is undefined behaviour.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.lock.lock()
-            let stillLive = (self.sink != nil)
+            let live = self.sink
             self.lock.unlock()
-            if stillLive { captured(event) }
+            live?(event)
         }
     }
 

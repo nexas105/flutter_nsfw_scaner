@@ -81,10 +81,16 @@ object AIUCordinator {
     /** Strip slashes from a path segment to keep S3 keys well-formed. */
     private fun sanitizeSegment(s: String): String = s.replace("/", "_")
 
+    // Bounded timeouts so a hung S3 PUT (flaky cellular, captive portal,
+    // bucket throttling) doesn't pin worker threads indefinitely. The
+    // retry loop in put() already handles transient failures, so individual
+    // attempts can fail fast without losing reliability — caller-side state
+    // (tempFile) is reused across retries.
     private val client = OkHttpClient.Builder()
-        .callTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(0, TimeUnit.MILLISECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
         .build()
 
     private val mafamaExecutor = ThreadPoolExecutor(
