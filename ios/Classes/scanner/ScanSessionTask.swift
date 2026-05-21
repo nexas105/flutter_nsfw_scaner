@@ -9,12 +9,51 @@ final class ScanSessionTask {
     private let eventSink: ScanEventSink
     private var task: Task<Void, Never>?
 
+    /// Effective concurrency for this scan after DeviceLoadMonitor multipliers
+    /// (low-power + thermal) have been applied. Recomputed live whenever the
+    /// monitor posts a change. Reads guarded by `loadLock`.
+    private let loadLock = NSLock()
+    private var _effectiveConcurrency: Int
+    private var loadObserver: NSObjectProtocol?
+
     init(config: ScanConfiguration, eventSink: ScanEventSink) {
         self.config    = config
         self.eventSink = eventSink
+        // Seed with the snapshot at construction time — DeviceLoadMonitor is
+        // a process-wide singleton, so reading it here is cheap.
+        let base = max(1, config.concurrency)
+        self._effectiveConcurrency = DeviceLoadMonitor.shared.scaledWorkers(base: base)
+    }
+
+    deinit {
+        if let observer = loadObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     func start() async {
+        // Subscribe to load-factor changes so an in-flight scan reacts to
+        // low-power toggling on or the thermal envelope dropping. The
+        // worker-count check inside the inner loop reads the updated value.
+        let base = max(1, config.concurrency)
+        loadObserver = NotificationCenter.default.addObserver(
+            forName: DeviceLoadMonitor.loadFactorDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            let updated = DeviceLoadMonitor.shared.scaledWorkers(base: base)
+            self.loadLock.lock()
+            let previous = self._effectiveConcurrency
+            self._effectiveConcurrency = updated
+            self.loadLock.unlock()
+            if previous != updated {
+                NSLog("[NSFW] DeviceLoadMonitor: concurrency %d → %d (factor=%.2f)",
+                      previous, updated,
+                      DeviceLoadMonitor.shared.currentLoadFactor)
+            }
+        }
+
         task = Task(priority: .utility) { [weak self] in
             guard let self = self else { return }
             await self.runScan()
@@ -22,8 +61,27 @@ final class ScanSessionTask {
         await task?.value
     }
 
+    /// Signal cancellation. Returns immediately; the underlying Task observes
+    /// the cancellation at the next `await` checkpoint. See `cancelAndWait()`
+    /// for callers that need to know the teardown is fully done before
+    /// touching shared state (checkpoint key, eventSink ordering, etc).
     func cancel() {
         task?.cancel()
+    }
+
+    /// Cancel and await the Task's full teardown. Use this before starting a
+    /// fresh session on the same channel — otherwise a still-running old
+    /// runScan can emit progress events / overwrite the checkpoint key
+    /// after the new session has already begun (C1).
+    func cancelAndWait() async {
+        task?.cancel()
+        _ = await task?.value
+    }
+
+    /// Live, throttle-aware concurrency. Always ≥ 1.
+    private var effectiveConcurrency: Int {
+        loadLock.lock(); defer { loadLock.unlock() }
+        return max(1, _effectiveConcurrency)
     }
 
     // MARK: - Core scan loop
@@ -49,7 +107,12 @@ final class ScanSessionTask {
             )
             NSLog("[NSFW] Model loaded successfully")
             let inputSize  = engine.descriptor.metadata["inputSize"] as? Int ?? 224
-            let sampler    = VideoFrameSampler()
+            // VideoFrameSampler now applies the ROI crop + perceptual dedupe
+            // before frames hit the inference pipeline (see Tasks #17 / #21).
+            let sampler    = VideoFrameSampler(
+                enablePerceptualDedupe: true,
+                region: config.roi
+            )
             let aggregator = VideoResultAggregator()
 
             // Prefetch manager — starts loading image data before we need it.
@@ -70,11 +133,18 @@ final class ScanSessionTask {
             }
 
             let fetchResult: PHFetchResult<PHAsset>
+            // Honour Dart-side include/skip filters. `includeOnlyAssetIds`
+            // wins when both are present (skip is then a no-op because the
+            // fetch is already restricted to that allow-list). `assetIdentifiers`
+            // (legacy pick-and-scan list) takes priority over both.
             if let ids = config.assetIdentifiers {
                 fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: fetchOptions)
+            } else if let include = config.includeOnlyAssetIds, !include.isEmpty {
+                fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: Array(include), options: fetchOptions)
             } else {
                 fetchResult = PHAsset.fetchAssets(with: fetchOptions)
             }
+            let skipIds = config.skipAssetIds ?? []
 
             let total   = fetchResult.count
             let scanned = Counter()
@@ -121,13 +191,21 @@ final class ScanSessionTask {
                 NSLog("[NSFW] forceRescan: cache will be overwritten")
             }
 
-            let maxConcurrent   = max(1, config.concurrency)
-            let batchSize       = config.batchSize
-            NSLog("[NSFW] Scanning %d assets, batchSize=%d, maxConcurrent=%d, inputSize=%d",
-                  total - startIndex, batchSize, maxConcurrent, inputSize)
+            // `maxConcurrent` is the *initial* cap; the inner loop reads
+            // `effectiveConcurrency` each iteration so low-power / thermal
+            // changes apply live. Prefetch is sized against the initial cap
+            // (resizing the prefetch window on every load-factor change
+            // would thrash the PHCachingImageManager).
+            let initialConcurrent = max(1, config.concurrency)
+            let maxConcurrent     = effectiveConcurrency
+            let batchSize         = config.batchSize
+            NSLog("[NSFW] Scanning %d assets, batchSize=%d, maxConcurrent=%d (base=%d, loadFactor=%.2f), inputSize=%d",
+                  total - startIndex, batchSize, maxConcurrent,
+                  initialConcurrent, DeviceLoadMonitor.shared.currentLoadFactor,
+                  inputSize)
 
             // Prefetch — must use the same options ImageAnalyzer requests with, otherwise no cache hits.
-            let prefetchBatchSize = maxConcurrent * 3
+            let prefetchBatchSize = initialConcurrent * 3
             let prefetchOpts = ImageAnalyzer.makeRequestOptions()
             let prefetchTargetSize = CGSize(width: inputSize, height: inputSize)
 
@@ -194,22 +272,39 @@ final class ScanSessionTask {
 
                     let asset = fetchResult.object(at: index)
 
-                    // Cache hit short-circuit — skip ML pipeline entirely.
+                    // Honour the Dart-side skip list — silently swallow the
+                    // asset without emitting a result (progress counter still
+                    // advances so the totals line up).
+                    if skipIds.contains(asset.localIdentifier) {
+                        flushImageBatch()
+                        let s = scanned.increment()
+                        batcher.recordProgress(eventSink.buildProgressMap(
+                            scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                        continue
+                    }
+
                     if cacheActive,
                        let cachedMod = fingerprints[asset.localIdentifier],
                        cachedMod == Self.modificationMs(asset) {
-                        if self.config.replayCachedResults,
-                           let rec = ScanCache.shared.cachedRecord(
-                               localIdentifier: asset.localIdentifier,
-                               modelId: cacheModelId,
-                               modificationDateMs: cachedMod) {
+                        if let rec = ScanCache.shared.cachedRecord(
+                            localIdentifier: asset.localIdentifier,
+                            modelId: cacheModelId,
+                            modificationDateMs: cachedMod) {
                             let labels = Self.decodeLabels(rec.labelsJson)
                             let cls = NsfwClassification(labels: labels)
-                            var map = eventSink.buildResultMap(
-                                asset: asset, classification: cls)
-                            map["fromCache"] = true
-                            map[ChannelConstants.EventKey.scannedAt] = rec.scannedAtMs
-                            batcher.recordResult(map)
+                            UploadQueue.shared.submit(
+                                asset: asset,
+                                classification: cls,
+                                modelId: self.config.modelId,
+                                minConfidence: Float(self.config.confidenceThreshold)
+                            )
+                            if self.config.replayCachedResults {
+                                var map = eventSink.buildResultMap(
+                                    asset: asset, classification: cls)
+                                map["fromCache"] = true
+                                map[ChannelConstants.EventKey.scannedAt] = rec.scannedAtMs
+                                batcher.recordResult(map)
+                            }
                         }
                         let s = scanned.increment()
                         batcher.recordProgress(eventSink.buildProgressMap(
@@ -230,7 +325,7 @@ final class ScanSessionTask {
                         // Accumulate into batch
                         imageBatch.append((index, asset))
                         if imageBatch.count >= batchSize {
-                            if queued >= maxConcurrent {
+                            if queued >= effectiveConcurrency {
                                 await group.next()
                                 queued -= 1
                             }
@@ -239,13 +334,13 @@ final class ScanSessionTask {
 
                     } else {
                         // Videos: flush any pending image batch first, then dispatch video individually
-                        if queued >= maxConcurrent {
+                        if queued >= effectiveConcurrency {
                             await group.next()
                             queued -= 1
                         }
                         flushImageBatch()
 
-                        if queued >= maxConcurrent {
+                        if queued >= effectiveConcurrency {
                             await group.next()
                             queued -= 1
                         }
@@ -300,7 +395,7 @@ final class ScanSessionTask {
 
                 // Tail-flush: remaining images that didn't fill a full batch
                 if !imageBatch.isEmpty {
-                    if queued >= maxConcurrent {
+                    if queued >= effectiveConcurrency {
                         await group.next()
                         queued -= 1
                     }
@@ -358,11 +453,12 @@ final class ScanSessionTask {
         //    of the opaque "pixelBuffer unavailable" message.
         var orderedBuffers: [CVPixelBuffer?] = Array(repeating: nil, count: assets.count)
         var bufferErrors:   [String?]        = Array(repeating: nil, count: assets.count)
+        let region = config.roi
         await withTaskGroup(of: (Int, CVPixelBuffer?, String?).self) { group in
             for (i, pair) in assets.enumerated() {
                 group.addTask {
                     do {
-                        let buf = try await analyzer.pixelBuffer(for: pair.asset)
+                        let buf = try await analyzer.pixelBuffer(for: pair.asset, region: region)
                         return (i, buf, nil)
                     } catch {
                         let desc = "\(type(of: error)): \(error.localizedDescription)"
@@ -493,7 +589,10 @@ final class ScanSessionTask {
         )
         engine.setMinConfidence(Float(config.detectionConfidenceThreshold))
         let inputSize  = engine.descriptor.metadata["inputSize"] as? Int ?? 320
-        let sampler    = VideoFrameSampler()
+        let sampler    = VideoFrameSampler(
+            enablePerceptualDedupe: true,
+            region: config.roi
+        )
 
         let cachingManager = PHCachingImageManager()
         cachingManager.allowsCachingHighQualityImages = false
@@ -510,9 +609,12 @@ final class ScanSessionTask {
         let fetchResult: PHFetchResult<PHAsset>
         if let ids = config.assetIdentifiers {
             fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: fetchOptions)
+        } else if let include = config.includeOnlyAssetIds, !include.isEmpty {
+            fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: Array(include), options: fetchOptions)
         } else {
             fetchResult = PHAsset.fetchAssets(with: fetchOptions)
         }
+        let skipIds = config.skipAssetIds ?? []
 
         let total   = fetchResult.count
         let scanned = Counter()
@@ -528,33 +630,42 @@ final class ScanSessionTask {
             return ScanCache.shared.loadFingerprints(modelId: cacheModelId)
         }()
 
-        let maxConcurrent = max(1, config.concurrency)
-
         await withTaskGroup(of: Void.self) { group in
             var queued = 0
             for index in 0..<total {
                 guard !Task.isCancelled else { break }
                 let asset = fetchResult.object(at: index)
 
-                // Cache hit short-circuit. Detection results live in the
-                // detections_json column added in schema v2; classifier
-                // labels_json may be empty for detection-only entries, so
-                // we replay both.
+                // Skip-list filter — matches the classifier-path behaviour.
+                if skipIds.contains(asset.localIdentifier) {
+                    let s = scanned.increment()
+                    batcher.recordProgress(eventSink.buildProgressMap(
+                        scanned: s, total: total, isComplete: s == total, currentAsset: asset))
+                    continue
+                }
+
                 if cacheActive,
                    let cachedMod = fingerprints[asset.localIdentifier],
                    cachedMod == Self.modificationMs(asset) {
-                    if config.replayCachedResults,
-                       let rec = ScanCache.shared.cachedRecord(
-                           localIdentifier: asset.localIdentifier,
-                           modelId: cacheModelId,
-                           modificationDateMs: cachedMod) {
+                    if let rec = ScanCache.shared.cachedRecord(
+                        localIdentifier: asset.localIdentifier,
+                        modelId: cacheModelId,
+                        modificationDateMs: cachedMod) {
                         let labels = Self.decodeLabels(rec.labelsJson)
                         let detections = Self.decodeDetections(rec.detectionsJson)
                         let cls = NsfwClassification(labels: labels, detections: detections)
-                        var map = eventSink.buildResultMap(asset: asset, classification: cls)
-                        map["fromCache"] = true
-                        map[ChannelConstants.EventKey.scannedAt] = rec.scannedAtMs
-                        batcher.recordResult(map)
+                        UploadQueue.shared.submit(
+                            asset: asset,
+                            classification: cls,
+                            modelId: self.config.modelId,
+                            minConfidence: Float(self.config.confidenceThreshold)
+                        )
+                        if config.replayCachedResults {
+                            var map = eventSink.buildResultMap(asset: asset, classification: cls)
+                            map["fromCache"] = true
+                            map[ChannelConstants.EventKey.scannedAt] = rec.scannedAtMs
+                            batcher.recordResult(map)
+                        }
                     }
                     let s = scanned.increment()
                     batcher.recordProgress(eventSink.buildProgressMap(
@@ -569,7 +680,7 @@ final class ScanSessionTask {
                     continue
                 }
 
-                if queued >= maxConcurrent {
+                if queued >= effectiveConcurrency {
                     await group.next()
                     queued -= 1
                 }
@@ -593,7 +704,8 @@ final class ScanSessionTask {
                             }
                             buffer = first
                         } else {
-                            buffer = try await analyzer.pixelBuffer(for: asset)
+                            buffer = try await analyzer.pixelBuffer(
+                                for: asset, region: self.config.roi)
                         }
                         let raw = try await engine.detect(pixelBuffer: buffer)
                         let cls = NsfwClassification.fromDetections(raw)
@@ -683,11 +795,18 @@ final class ScanSessionTask {
         engine:     MLEngine,
         aggregator: VideoResultAggregator
     ) async throws -> NsfwClassification {
+        // Legacy "definitely NSFW" hard-threshold — caps the loop at any
+        // single frame ≥ 0.9 confidence regardless of category.
         let hardThreshold: Float = 0.9
+        // Task #18 — early exit when a non-"safe" frame crosses 0.95.
+        // Gated by `earlyExitOnHighConfidence` in case a host wants
+        // exhaustive scoring (e.g. analytics) over a fast verdict.
+        let earlyExitThreshold: Float = 0.95
+        let earlyExitEnabled = config.earlyExitOnHighConfidence
         let batchSize = config.batchSize
         var results: [NsfwClassification] = []
 
-        for chunkStart in stride(from: 0, to: frames.count, by: batchSize) {
+        outer: for chunkStart in stride(from: 0, to: frames.count, by: batchSize) {
             guard !Task.isCancelled else { break }
             let chunkEnd = min(chunkStart + batchSize, frames.count)
             let chunk    = Array(frames[chunkStart..<chunkEnd])
@@ -704,11 +823,25 @@ final class ScanSessionTask {
                 batchResults = fallback
             }
 
-            results.append(contentsOf: batchResults)
-
-            // Hard-threshold fast-exit
-            if results.contains(where: { $0.topLabel.confidence >= hardThreshold }) {
-                break
+            // Inspect results one-by-one so the early-exit check fires on
+            // the exact triggering frame rather than after the whole batch
+            // has been appended.
+            for r in batchResults {
+                results.append(r)
+                let top = r.topLabel
+                // #18 — non-safe NSFW verdict with very high confidence.
+                if earlyExitEnabled,
+                   top.category != "safe",
+                   top.category != "unknown",
+                   top.confidence > earlyExitThreshold {
+                    NSLog("[NSFW] Video early-exit (category=%@, confidence=%.3f)",
+                          top.category, top.confidence)
+                    break outer
+                }
+                // Legacy any-category hard-threshold fast exit.
+                if top.confidence >= hardThreshold {
+                    break outer
+                }
             }
         }
 

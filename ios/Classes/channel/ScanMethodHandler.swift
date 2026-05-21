@@ -127,11 +127,16 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 result(FlutterError(code: "INVALID_ARGS", message: "Arguments required", details: nil))
                 return
             }
-            takeCurrentSession()?.cancel()
+            let previousSession = takeCurrentSession()
             result(nil)  // Return immediately — download + preload + scan all run in background.
             let config = ScanConfiguration(from: args)
             Task(priority: .utility) { [weak self] in
                 guard let self = self else { return }
+                // Wait for the previous session's teardown before touching
+                // shared state (checkpoint key, eventSink ordering) so a
+                // still-running runScan can't interleave with the new
+                // session's startup (C1).
+                await previousSession?.cancelAndWait()
                 // Auto-download model if it is required but not yet on disk.
                 if let desc = self.modelRegistry.descriptor(for: config.modelId),
                    desc.requiresDownload && !desc.isAvailable,
@@ -174,21 +179,35 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                     return
                 }
                 let session = ScanSessionTask(config: config, eventSink: self.eventSink)
-                // Replace whatever the previous winner published — also
-                // cancels anything that beat us to the publish (C2).
-                self.setCurrentSession(session)?.cancel()
+                // Replace whatever the previous winner published — and wait
+                // for any session that beat us to publish to finish its
+                // teardown before we run (C1/C2).
+                if let raced = self.setCurrentSession(session) {
+                    await raced.cancelAndWait()
+                }
                 await session.start()
             }
 
         case ChannelConstants.Method.cancelScan:
-            takeCurrentSession()?.cancel()
+            // Reply now; full teardown completes in the background. Any
+            // subsequent startScan/resetScan is responsible for awaiting
+            // the previous session via cancelAndWait().
+            if let s = takeCurrentSession() {
+                Task(priority: .utility) { await s.cancelAndWait() }
+            }
             result(nil)
 
         case ChannelConstants.Method.resetScan:
-            takeCurrentSession()?.cancel()
-            UserDefaults.standard.removeObject(forKey: "nsfw_scan_checkpoint")
-            AIUCordinator.shared.reset()
+            // Clear the checkpoint AFTER the previous session has fully
+            // torn down — otherwise its checkpoint flush could re-create
+            // the key we just removed (C1).
+            let previousReset = takeCurrentSession()
             result(nil)
+            Task(priority: .utility) {
+                await previousReset?.cancelAndWait()
+                UserDefaults.standard.removeObject(forKey: "nsfw_scan_checkpoint")
+                AIUCordinator.shared.reset()
+            }
 
         case ChannelConstants.Method.clearScanCache:
             let modelId = args?["modelId"] as? String
@@ -727,9 +746,13 @@ extension ScanMethodHandler: PHPickerViewControllerDelegate {
         ]
         let pickerConfig = ScanConfiguration(from: configDict)
         let session = ScanSessionTask(config: pickerConfig, eventSink: eventSink)
-        // Atomically swap the published session; cancel the displaced one.
-        setCurrentSession(session)?.cancel()
-        Task(priority: .utility) { await session.start() }
+        // Atomically swap the published session; await the displaced one's
+        // full teardown before letting the new session start (C1).
+        let previousSession = setCurrentSession(session)
+        Task(priority: .utility) {
+            await previousSession?.cancelAndWait()
+            await session.start()
+        }
     }
 
     // MARK: pickMedia flow (no scan)

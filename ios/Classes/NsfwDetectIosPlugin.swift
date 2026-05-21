@@ -4,8 +4,6 @@ import Photos
 
 @objc public class NsfwDetectIosPlugin: NSObject, FlutterPlugin {
 
-    private static var eventSink: ScanEventSink?
-
     public static func register(with registrar: FlutterPluginRegistrar) {
         runMigrations()  // ← migration guard — must be first
 
@@ -18,11 +16,12 @@ import Photos
             binaryMessenger: registrar.messenger()
         )
 
+        // The sink is retained by the EventChannel (as its stream handler)
+        // and by the ScanMethodHandler (as a stored property), so we don't
+        // need a static reference. Previously kept around in a static var
+        // that was never read — leaked across Flutter hot-restarts (H1).
         let sink = ScanEventSink()
-        eventSink = sink
-
         let handler = ScanMethodHandler(eventSink: sink)
-        let instance = NsfwDetectIosPlugin()
         registrar.addMethodCallDelegate(handler, channel: methodChannel)
         eventChannel.setStreamHandler(sink)
 
