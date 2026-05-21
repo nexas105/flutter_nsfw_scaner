@@ -93,11 +93,22 @@ class BodyPartDetection {
   /// unknown, the helper [aggregateCategoryFromLabel] is used as a fallback.
   final NsfwCategory aggregatedCategory;
 
+  /// Optional per-crop classifier verdict from the detect-then-classify
+  /// pipeline (`ScanMode.detectThenClassify`). When set, the labels rank
+  /// the *cropped region* through the second-pass classifier — e.g. an
+  /// `FEMALE_BREAST_EXPOSED` box might come back with `[nudity 0.92,
+  /// suggestive 0.05, safe 0.03]` so callers can weight per-region risk
+  /// instead of relying on the detector aggregator alone.
+  ///
+  /// `null` for plain classification / detection runs.
+  final List<NsfwLabel>? labels;
+
   const BodyPartDetection({
     required this.label,
     required this.confidence,
     required this.box,
     required this.aggregatedCategory,
+    this.labels,
   });
 
   /// Defensive map parser. Unknown / malformed entries collapse to
@@ -126,11 +137,22 @@ class BodyPartDetection {
       category = aggregateCategoryFromLabel(rawLabel);
     }
 
+    final rawLabels = map['labels'];
+    List<NsfwLabel>? labels;
+    if (rawLabels is List && rawLabels.isNotEmpty) {
+      labels = rawLabels
+          .whereType<Map<dynamic, dynamic>>()
+          .map(NsfwLabel.fromMap)
+          .toList(growable: false);
+      if (labels.isEmpty) labels = null;
+    }
+
     return BodyPartDetection(
       label: rawLabel,
       confidence: confidence,
       box: box,
       aggregatedCategory: category,
+      labels: labels,
     );
   }
 
@@ -139,6 +161,8 @@ class BodyPartDetection {
         'confidence': confidence,
         'box': box.toMap(),
         'aggregatedCategory': aggregatedCategory.name,
+        if (labels != null && labels!.isNotEmpty)
+          'labels': labels!.map((l) => l.toMap()).toList(),
       };
 
   /// Canonical mapping from a NudeNet class label to [NsfwCategory]. Keep this
@@ -211,13 +235,20 @@ class BodyPartDetection {
           label == other.label &&
           confidence == other.confidence &&
           box == other.box &&
-          aggregatedCategory == other.aggregatedCategory;
+          aggregatedCategory == other.aggregatedCategory &&
+          listEquals(labels, other.labels);
 
   @override
-  int get hashCode =>
-      Object.hash(label, confidence, box, aggregatedCategory);
+  int get hashCode => Object.hash(
+        label,
+        confidence,
+        box,
+        aggregatedCategory,
+        labels == null ? null : Object.hashAll(labels!),
+      );
 
   @override
   String toString() =>
-      'BodyPartDetection($label @ ${(confidence * 100).toStringAsFixed(1)}%, $box, $aggregatedCategory)';
+      'BodyPartDetection($label @ ${(confidence * 100).toStringAsFixed(1)}%, $box, $aggregatedCategory'
+      '${labels == null ? '' : ', crop=${labels!.map((l) => l.category.name).join("/")}'})';
 }

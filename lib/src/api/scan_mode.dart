@@ -13,7 +13,21 @@ enum ScanMode {
   classification('classification'),
 
   /// Detection mode. Bounding-box body-part detector (NudeNet).
-  detection('detection');
+  detection('detection'),
+
+  /// Detect-then-classify pipeline. Runs the registered detector first,
+  /// crops each emitted box, runs the registered NSFW *classifier* on every
+  /// crop, and attaches the crop-level [NsfwLabel] list to each
+  /// [BodyPartDetection]. Strictly stronger signal than classifier-only
+  /// (per-region attribution) and detector-only (graded confidence per
+  /// region) — at the cost of one extra classifier call per box.
+  ///
+  /// The detector picked from `ScanConfiguration.modelId` must be a detector
+  /// kind; the classifier used for the second pass is the registered default
+  /// classifier (currently OpenNSFW2). Configure both via
+  /// `NsfwInitOptions.preloadModels` so the second-pass classifier is warm
+  /// before the first detection lands.
+  detectThenClassify('detectThenClassify');
 
   const ScanMode(this.wireValue);
 

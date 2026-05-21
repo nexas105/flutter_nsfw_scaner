@@ -931,6 +931,177 @@ class NsfwDetector {
     );
   }
 
+  /// Run the detect-then-classify pipeline on [bytes]: NudeNet-style
+  /// detector first, classifier on each emitted crop second. Returns a
+  /// `ScanResult` whose `detections` array carries per-crop NSFW labels
+  /// in `BodyPartDetection.labels`, alongside the aggregated category
+  /// signal you'd get from a detector-only run.
+  ///
+  /// [detectorModelId] picks the detector (must be a registered detector
+  /// kind, e.g. `nudenet`). [classifierModelId] picks the second-pass
+  /// classifier (defaults to `ModelIds.openNsfw2`).
+  ///
+  /// Cost is one detector call + N classifier calls per image — only opt
+  /// in when per-region attribution justifies the latency.
+  ///
+  /// Throws [ArgumentError] when the detector pass does not return any
+  /// detections (use plain `scanBytes` with the classifier instead).
+  Future<ScanResult> scanBytesDetectThenClassify(
+    Uint8List bytes, {
+    required String detectorModelId,
+    String? classifierModelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+  }) =>
+      _detectThenClassifyInternal(
+        bytes: bytes,
+        detectorModelId: detectorModelId,
+        classifierModelId: classifierModelId,
+        confidenceThreshold: confidenceThreshold,
+        region: region,
+        telemetrySource: 'detectThenClassify-bytes',
+        identifier: 'bytes:${bytes.length}',
+      );
+
+  /// File equivalent of [scanBytesDetectThenClassify]. Reads the file into
+  /// memory once and reuses the bytes for every per-crop classifier call.
+  Future<ScanResult> scanFileDetectThenClassify(
+    String filePath, {
+    required String detectorModelId,
+    String? classifierModelId,
+    double? confidenceThreshold,
+    ScanRegion? region,
+  }) async {
+    final bytes = await File(filePath).readAsBytes();
+    return _detectThenClassifyInternal(
+      bytes: bytes,
+      detectorModelId: detectorModelId,
+      classifierModelId: classifierModelId,
+      confidenceThreshold: confidenceThreshold,
+      region: region,
+      telemetrySource: 'detectThenClassify-file',
+      identifier: filePath,
+    );
+  }
+
+  Future<ScanResult> _detectThenClassifyInternal({
+    required Uint8List bytes,
+    required String detectorModelId,
+    required String? classifierModelId,
+    required double? confidenceThreshold,
+    required ScanRegion? region,
+    required String telemetrySource,
+    required String identifier,
+  }) async {
+    final t = await _resolveThreshold(confidenceThreshold);
+    final classifierId = classifierModelId ?? ModelIds.openNsfw2;
+    final stopwatch = Stopwatch()..start();
+
+    final detectorResult = await scanBytes(
+      bytes,
+      modelId: detectorModelId,
+      confidenceThreshold: confidenceThreshold,
+      region: region,
+    );
+    final detections = detectorResult.detections;
+    if (detections == null || detections.isEmpty) {
+      stopwatch.stop();
+      _emitClassifyTime(
+        result: detectorResult,
+        modelId: detectorModelId,
+        source: telemetrySource,
+        elapsed: stopwatch.elapsed,
+      );
+      return detectorResult;
+    }
+
+    final ui.Image source = await _decodeImage(bytes);
+    try {
+      final enriched = <BodyPartDetection>[];
+      for (final det in detections) {
+        final cropBytes = await _cropToPng(source, det.box);
+        if (cropBytes == null) {
+          enriched.add(det);
+          continue;
+        }
+        final classifierResult = await scanBytes(
+          cropBytes,
+          modelId: classifierId,
+          confidenceThreshold: confidenceThreshold,
+        );
+        enriched.add(BodyPartDetection(
+          label: det.label,
+          confidence: det.confidence,
+          box: det.box,
+          aggregatedCategory: det.aggregatedCategory,
+          labels: classifierResult.labels,
+        ));
+      }
+      stopwatch.stop();
+      final merged = ScanResult(
+        item: detectorResult.item,
+        status: detectorResult.status,
+        labels: detectorResult.labels,
+        scannedAt: detectorResult.scannedAt,
+        confidenceThreshold: t,
+        errorMessage: detectorResult.errorMessage,
+        fromCache: detectorResult.fromCache,
+        detections: enriched,
+        thresholdsByCategory: detectorResult.thresholdsByCategory,
+        userDecision: detectorResult.userDecision,
+      );
+      _emitClassifyTime(
+        result: merged,
+        modelId: detectorModelId,
+        source: telemetrySource,
+        elapsed: stopwatch.elapsed,
+      );
+      return merged;
+    } finally {
+      source.dispose();
+    }
+  }
+
+  Future<ui.Image> _decodeImage(Uint8List bytes) async {
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    return frame.image;
+  }
+
+  /// Crops [source] to [box] (normalised 0..1) and returns PNG-encoded
+  /// bytes. Returns `null` when the crop collapses to a zero-pixel area
+  /// so callers can fall back to the un-enriched detection.
+  Future<Uint8List?> _cropToPng(ui.Image source, BoundingBox box) async {
+    final imgWidth = source.width;
+    final imgHeight = source.height;
+    final int xPx = (box.x * imgWidth).floor().clamp(0, imgWidth - 1);
+    final int yPx = (box.y * imgHeight).floor().clamp(0, imgHeight - 1);
+    final int wPx = (box.width * imgWidth).ceil().clamp(1, imgWidth - xPx);
+    final int hPx = (box.height * imgHeight).ceil().clamp(1, imgHeight - yPx);
+    if (wPx <= 0 || hPx <= 0) return null;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    final srcRect = ui.Rect.fromLTWH(
+      xPx.toDouble(),
+      yPx.toDouble(),
+      wPx.toDouble(),
+      hPx.toDouble(),
+    );
+    final dstRect = ui.Rect.fromLTWH(0, 0, wPx.toDouble(), hPx.toDouble());
+    canvas.drawImageRect(source, srcRect, dstRect, ui.Paint());
+    final picture = recorder.endRecording();
+    final cropped = await picture.toImage(wPx, hPx);
+    try {
+      final data =
+          await cropped.toByteData(format: ui.ImageByteFormat.png);
+      return data?.buffer.asUint8List();
+    } finally {
+      picture.dispose();
+      cropped.dispose();
+    }
+  }
+
   /// Fan an input out to every model in [strategy.modelIds], then combine
   /// the per-model results via the strategy.
   ///
