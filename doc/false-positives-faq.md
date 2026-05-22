@@ -47,7 +47,13 @@ if (result.topCategory != NsfwCategory.safe) { /* block */ }
 if (result.isNsfw) { /* block */ }
 ```
 
-Use `result.isSuggestive` (added in 2.2) when you want a separate path for suggestive content.
+Use `result.isSuggestive` (added in 2.2) when you want a separate path for suggestive content. To tolerate `suggestive` while staying strict on explicit content, set a high per-category threshold instead of one scalar — see [per-category thresholds](configuration.md#per-category-thresholds):
+
+```dart
+ScanConfiguration.moderate().copyWith(
+  thresholdsByCategory: {NsfwCategory.suggestive: 0.95},
+);
+```
 
 ## "Screenshots and memes get flagged"
 
@@ -75,6 +81,18 @@ Camera detection is per-frame. A scene near the threshold will flip safe→NSFW�
 ## "Detection mode misses partial coverage"
 
 Detection mode reports per-class bounding boxes. If your product policy treats *covered* and *exposed* body parts differently, branch on the specific labels in `result.detections` rather than the top-level NSFW boolean. Lower `detectionConfidenceThreshold` (default 0.25) to surface lower-confidence boxes for review.
+
+## Measure your false-positive rate — the eval harness
+
+Guessing at a threshold is fragile. The plugin ships an evaluation harness under `tools/eval/` (added in 2.4.0) that runs a labelled image dataset through `scanFile` and produces per-category precision / recall / F1 reports — so you can pick a threshold from your own numbers instead of the illustrative table above.
+
+```bash
+dart run tools/eval/bin/run.dart dataset.json --model opennsfw2_coreml --out report.md
+```
+
+`--format json` emits machine-readable output. The dataset is a JSON manifest of `{path, truth}` rows; malformed rows are skipped with a one-line reason.
+
+For false-positive tracking specifically, the harness includes a **false-positive regression suite** (`tools/eval/lib/fp_regression.dart`). Tag each safe-set item with an edge-case `subcategory` (`beach_photo`, `art_nude`, `baby_bath`, `anime`, …); `runFpRegression` filters to `truth == safe`, tallies false positives per bucket, and produces an `FpRegressionReport` with the overall rate plus a per-bucket breakdown. Pass per-bucket baselines and a `tolerance` (default 5 pp) and `report.exceeded` returns only the buckets that drifted — so CI can fail with a focused diagnostic instead of "metrics changed somewhere." The plugin's own CI wires this suite in as a gate.
 
 ## When to escalate beyond the threshold
 

@@ -1,3 +1,12 @@
+## 2.5.3 — 2026-05-22
+
+> Documentation refresh. No code change — `README.md` and the `doc/` guides are brought up to date with the 2.4.0 and 2.5.x feature set.
+
+### Docs
+
+- **`README.md`** — install constraint bumped to `^2.5.3`; "What's new" now spans 2.3 → 2.5; new patterns documented (per-category thresholds, decision store, detect-then-classify, telemetry hooks, localization); `ScanResult.userDecision` added to the result-shape reference; privacy section clarifies that `onTelemetryEvent` is a local callback, not network telemetry.
+- **`doc/` guides** — updated for the 2.4.0 / 2.5.x APIs.
+
 ## 2.5.2 — 2026-05-22
 
 > iOS build hotfix plus a small accessibility / localization polish pass. 2.5.1 does not compile against the iOS toolchain — this release restores a clean build. Additive only; existing app code keeps working unchanged.

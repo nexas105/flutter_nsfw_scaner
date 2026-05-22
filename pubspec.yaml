@@ -3,7 +3,7 @@ description: >-
   Privacy-friendly NSFW detection for Flutter apps. Analyze images, videos,
   picked media, photo libraries, and camera frames on-device.
 
-version: 2.5.2
+version: 2.5.3
 
 homepage: https://github.com/nexas105/flutter_nsfw_scaner
 repository: https://github.com/nexas105/flutter_nsfw_scaner

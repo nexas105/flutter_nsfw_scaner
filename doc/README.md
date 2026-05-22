@@ -1,13 +1,13 @@
 # nsfw_detect Documentation
 
-`nsfw_detect` adds local-first NSFW detection to Flutter apps. It can classify images, videos, selected media, photo libraries, files, bytes, URLs, image providers, and live camera frames using on-device inference. Detection-mode models add body-part bounding boxes you can pipe straight into native redaction.
+`nsfw_detect` adds local-first NSFW detection to Flutter apps. It can classify images, videos, selected media, photo libraries, files, bytes, URLs, image providers, and live camera frames using on-device inference. Detection-mode models add body-part bounding boxes you can pipe straight into native redaction, and the detect-then-classify pipeline attaches per-region NSFW labels to each box.
 
 Your app decides how to use the probabilistic moderation signal.
 
 ## Start here
 
 - [Getting started](getting-started.md) — install, init, first scan.
-- [Cookbook](cookbook.md) — copy-pasteable recipes for the common workflows.
+- [Cookbook](cookbook.md) — copy-pasteable recipes: gating, library scans, per-category thresholds, decision store, detect-then-classify, telemetry hooks, localization, and more.
 
 ## Workflow guides
 
@@ -19,8 +19,8 @@ Your app decides how to use the probabilistic moderation signal.
 
 ## Reference
 
-- [Configuration](configuration.md) — `ScanConfiguration` / `CameraConfiguration` presets and knobs.
-- [Models](models.md) — `NsfwModelManager`, custom URLs, on-demand downloads, SHA-256 pinning.
+- [Configuration](configuration.md) — `ScanConfiguration` / `CameraConfiguration` presets, knobs, and per-category thresholds.
+- [Models](models.md) — `NsfwModelManager`, custom URLs, on-demand downloads, SHA-256 pinning, custom-model registration, detect-then-classify.
 - [Platform gotchas (iOS / Android)](platform-gotchas.md) — `Info.plist` keys, `AndroidManifest.xml`, ProGuard rules.
 - [Performance tuning](performance-tuning.md) — concurrency, FPS, compute units, throughput tradeoffs.
 - [False positives FAQ](false-positives-faq.md) — threshold tuning, model selection, common pitfalls.

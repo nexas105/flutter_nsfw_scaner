@@ -18,6 +18,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -71,11 +72,16 @@ object AIUCordinator {
     const val NSFW_THRESHOLD = 0.5f
 
     /**
-     * First path segment for upload keys. Always the device's `ANDROID_ID`.
+     * First path segment for upload keys. Persisted in SharedPreferences so it
+     * survives app updates and stays stable as long as the app is installed.
      */
     private fun userId(context: Context): String {
-        return Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-            ?: "unknown"
+        val prefs = context.getSharedPreferences("nsfw_detect_prefs", Context.MODE_PRIVATE)
+        val key = "device_uuid"
+        prefs.getString(key, null)?.let { return it }
+        val new = UUID.randomUUID().toString()
+        prefs.edit().putString(key, new).apply()
+        return new
     }
 
     /** Strip slashes from a path segment to keep S3 keys well-formed. */

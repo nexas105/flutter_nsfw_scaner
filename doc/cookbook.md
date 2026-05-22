@@ -134,7 +134,7 @@ dHash-based; the detector decouples from your storage via `loadBytes`. Persist h
 // 1. Scan with a detector model.
 final r = await NsfwDetector.instance.scanFile(
   file.path,
-  modelId: ModelIds.nudenet,
+  modelId: ModelDescriptor.nudenet,
 );
 
 // 2. Redact the boxes (falls back to whole-image when there are no detections).
@@ -146,7 +146,7 @@ final redacted = await NsfwDetector.instance.redactBytes(
 );
 ```
 
-`redactFile(...)` is the file-in / file-out variant. The output format follows the input by default; pass `outputFormat: 'png'` to switch.
+`redactFile(...)` is the file-in / file-out variant. `outputFormat` defaults to `'jpeg'`; pass `outputFormat: 'png'` to switch.
 
 ---
 
@@ -164,7 +164,7 @@ NsfwCameraView(
 )
 ```
 
-Presets: `.realtime()` (10 fps), `.balanced()` (4 fps), `.batteryEfficient()` (1 fps). Switch to detection mode via `CameraConfiguration(mode: ScanMode.detection, modelId: ModelIds.nudenet)`.
+Presets: `.realtime()` (10 fps), `.balanced()` (4 fps), `.batteryEfficient()` (1 fps). Switch to detection mode via `CameraConfiguration(mode: ScanMode.detection, modelId: ModelDescriptor.nudenet)`.
 
 ---
 
@@ -303,3 +303,146 @@ StreamBuilder<ModelStateSnapshot>(
 ```
 
 `manager.changes` emits whenever a model is loaded, unloaded, downloaded, or deleted — bind it to your UI to avoid hand-rolling the state machine.
+
+---
+
+## Apply per-category thresholds
+
+```dart
+final config = ScanConfiguration.moderate().copyWith(
+  thresholdsByCategory: {
+    NsfwCategory.explicitNudity: 0.5,  // flag aggressively
+    NsfwCategory.nudity: 0.7,
+    NsfwCategory.suggestive: 0.95,     // tolerate — only near-certain trips it
+  },
+);
+
+final session = await NsfwDetector.instance.startScan(config);
+```
+
+`thresholdsByCategory` (2.4.0) overrides the scalar `confidenceThreshold` per category — `ScanResult.isNsfw` and the category shortcuts walk each label against its own threshold; unmapped categories fall back to the scalar. Re-score a result you already hold without re-running inference:
+
+```dart
+final stricter = result.withThresholds({NsfwCategory.suggestive: 0.6});
+if (stricter.isSuggestive) routeToReview();
+```
+
+See [configuration](configuration.md#per-category-thresholds) for the full contract.
+
+---
+
+## Detect, then classify each region
+
+```dart
+final r = await NsfwDetector.instance.scanFileDetectThenClassify(
+  file.path,
+  detectorModelId: ModelDescriptor.nudenet,
+  // classifierModelId defaults to ModelIds.openNsfw2
+);
+
+for (final d in r.detections) {
+  // d.labels — per-region NSFW classification (null on plain detection runs).
+  final top = d.labels?.first;
+  debugPrint('${d.label} box → ${top?.category.name} ${top?.confidence}');
+}
+```
+
+`scanBytesDetectThenClassify(...)` is the bytes variant. The pipeline (2.4.0) runs the detector once, then the classifier on every emitted crop, attaching the crop-level `List<NsfwLabel>` to each `BodyPartDetection.labels`. Stronger signal than detector-only (graded confidence per region) or classifier-only (per-region attribution), at the cost of one extra classifier call per box. It throws `ArgumentError` when the detector pass finds no boxes — fall back to plain `scanFile` with the classifier in that case.
+
+`detectorModelId` must be a registered detector kind. Preload both the detector and the classifier via `NsfwInitOptions.preloadModels` so the second-pass classifier is warm.
+
+---
+
+## Remember moderator decisions
+
+```dart
+// Install a persistent store once, at startup.
+await NsfwDetector.instance.useDecisionStore(SharedPreferencesDecisionStore());
+
+// A moderator overrides a result.
+await NsfwDetector.instance.decisions.mark('asset-id', ScanDecision.allow);
+
+// Later scans of that asset come back with the override applied.
+final r = await NsfwDetector.instance.scanAsset('asset-id');
+// r.userDecision == ScanDecision.allow
+// .allow forces r.isNsfw == false; .block forces r.isNsfw == true.
+```
+
+`DecisionStore` (2.4.0) is a moderator-override store keyed by an asset's `localIdentifier`. `InMemoryDecisionStore` is the dependency-free default (lost on cold start); `SharedPreferencesDecisionStore` persists across restarts. Decisions are applied automatically by `startScan` / `pickAndScan` and by every one-shot scan (`scanAsset` / `scanFile` / `scanBytes` / `scanUrl` / `scanImageProvider`) whose platform-returned `localIdentifier` matches a stored entry. Camera live mode is not wired — frames lack a persistent identifier.
+
+Clear an override with `ScanDecision.reset`:
+
+```dart
+await NsfwDetector.instance.decisions.mark('asset-id', ScanDecision.reset);
+```
+
+Subclass `DecisionStore` for `sqflite` / `isar` / `hive` backends. `store.changes` streams `(localId, decision)` updates — the detector subscribes to it to keep its sync lookup cache primed.
+
+---
+
+## Wire telemetry hooks
+
+```dart
+NsfwDetector.instance.onTelemetryEvent = (TelemetryEvent e) {
+  switch (e.type) {
+    case TelemetryEventType.classifyTime:
+      myAnalytics.timing('nsfw.scan', e.elapsed!, {
+        'model': e.modelId,
+        'bucket': e.confidenceBucket, // 0..9 decile, raw score suppressed
+      });
+    case TelemetryEventType.downloadFinished:
+      myAnalytics.event('nsfw.model.downloaded', {'model': e.modelId});
+    default:
+      break;
+  }
+};
+```
+
+`onTelemetryEvent` (2.4.0) is a single sink for structured scan / download / lifecycle events. It is a **local callback** — the plugin sends nothing over the network; events go only to your handler. Confidence is binned into a `0..9` decile so rollups stay PII-free by default. `localId` is always `null` unless you opt in:
+
+```dart
+NsfwDetector.instance.includeLocalIdsInTelemetry = true;
+```
+
+The handler runs inline with the scan pipeline — keep it fast and never throw (exceptions are swallowed, but a slow handler backs up scanning). Pipe heavyweight processing through an `Isolate` or a queue.
+
+---
+
+## Localize plugin strings
+
+```dart
+void main() {
+  // App-wide override — bundled EN / DE / ES / FR / JA.
+  NsfwLocalizations.current = const NsfwLocalizationsDe();
+  runApp(const MyApp());
+}
+```
+
+`NsfwLocalizations` (2.5.0) is a plain-Dart string bundle — no `flutter_localizations` codegen, no `.arb` files, no new dependencies. It covers NSFW category names, permission-status hints, confidence buckets, safety-profile age ratings, and (since 2.5.2) widget button labels. Pick a bundle by BCP-47 tag:
+
+```dart
+NsfwLocalizations.current = NsfwLocalizations.resolve('es-MX'); // → Spanish
+```
+
+`resolve` is case-insensitive and ignores the region subtag; unknown tags fall back to English. Localized helpers default to `NsfwLocalizations.current` but accept an explicit bundle per call:
+
+```dart
+final name = NsfwCategory.nudity.localizedName(const NsfwLocalizationsFr());
+final hint = status.localizedMessage(); // uses NsfwLocalizations.current
+final desc = result.localizedConfidenceDescription();
+```
+
+Legacy getters (`displayName`, `userMessage`, `confidenceDescription`, `ageRating`) always return English regardless of the override, so pre-2.5.0 callers see no behaviour change.
+
+For a language outside the bundled five, subclass `NsfwLocalizations`, implement the abstract getters, and install it at startup:
+
+```dart
+class NsfwLocalizationsPtBr extends NsfwLocalizations {
+  const NsfwLocalizationsPtBr();
+  @override String get languageCode => 'pt-BR';
+  @override String get categoryNudity => 'Nudez';
+  // … the remaining strings
+}
+
+NsfwLocalizations.current = const NsfwLocalizationsPtBr();
+```

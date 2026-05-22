@@ -4,7 +4,7 @@
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.3.0
+  nsfw_detect: ^2.5.3
 ```
 
 Then run:

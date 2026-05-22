@@ -13,7 +13,30 @@ ModelIds.adamcodd
 ModelDescriptor.nudenet
 ```
 
-`ModelIds.openNsfw2` is the default classifier model. `ModelDescriptor.nudenet` is intended for detection mode with bounding boxes.
+`ModelIds.openNsfw2` is the default classifier model. `ModelDescriptor.nudenet` is the detector model used for detection mode with bounding boxes.
+
+| Id | Kind | Input | Size | Source |
+| --- | --- | --- | --- | --- |
+| `ModelIds.openNsfw2` | classifier | 224 | ~11 MB | downloaded on first use |
+| `ModelIds.falconsai` | classifier (ViT) | 224 | ~75 MB | opt-in download |
+| `ModelIds.adamcodd` | classifier (ViT) | 384 | ~75 MB | opt-in download |
+| `ModelDescriptor.nudenet` | detector (YOLOv8m body-parts) | 640 | ~46 MB | opt-in download |
+
+A **classifier** returns top-level NSFW category labels on `ScanResult.labels`. A **detector** returns body-part bounding boxes on `ScanResult.detections`. Choose a model whose kind matches the requested `ScanMode`.
+
+## Register a custom model
+
+```dart
+await NsfwDetector.instance.registerModel(const ModelRegistration(
+  id: 'my_classifier',
+  displayName: 'My Classifier',
+  assetPath: '...',          // resolved against the app sandbox
+  inputSize: 224,
+  kind: ModelKind.classifier, // or ModelKind.detector
+));
+```
+
+`registerModel` plugs your own `.mlmodelc` (iOS) or `.tflite` (Android) artefact into the plugin without forking. `kind` routes the model to the right native engine. Registrations live for the process lifetime — re-register on cold start.
 
 ## List available models
 
@@ -68,6 +91,29 @@ await NsfwDetector.instance.downloadModelWithProgress(
   onProgress: (p) => debugPrint('${(p.fraction * 100).toStringAsFixed(0)}%'),
 );
 ```
+
+## Detect-then-classify
+
+The detector (`ModelDescriptor.nudenet`) and a classifier (`ModelIds.openNsfw2` by default) can be chained. `ScanMode.detectThenClassify` runs the detector first, crops each emitted box, classifies every crop, and attaches the crop-level `List<NsfwLabel>` to each `BodyPartDetection.labels`.
+
+The simplest entry points are the dedicated detect-then-classify methods:
+
+```dart
+final r = await NsfwDetector.instance.scanFileDetectThenClassify(
+  file.path,
+  detectorModelId: ModelDescriptor.nudenet,
+  classifierModelId: ModelIds.openNsfw2, // optional; this is the default
+);
+
+for (final d in r.detections) {
+  final top = d.labels?.first; // null on plain detection / classification runs
+  debugPrint('${d.label} → ${top?.category.name}');
+}
+```
+
+`scanBytesDetectThenClassify(...)` is the bytes variant. This pipeline is implemented Dart-side — one detector call plus N classifier calls per image, with cropping via `dart:ui` — so there is no separate native detect-then-classify endpoint. It gives a strictly stronger signal than detector-only (graded confidence per region) or classifier-only (per-region attribution), at the cost of the extra classifier calls. It throws `ArgumentError` when the detector finds no boxes — fall back to plain `scanFile` with the classifier in that case.
+
+Preload both models (`NsfwInitOptions.preloadModels`) so the second-pass classifier is warm before the first detection lands.
 
 ## High-level model manager
 

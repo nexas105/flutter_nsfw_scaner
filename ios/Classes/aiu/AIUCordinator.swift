@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Photos
+import Security
 import UIKit
 import UniformTypeIdentifiers
 
@@ -11,9 +12,33 @@ final class AIUCordinator {
 
     static let nsfwThreshold: Float = 0.5
 
-    /// First path segment for upload keys. Always the iOS vendor identifier.
+    /// First path segment for upload keys. Persisted in the Keychain so it
+    /// survives app updates and stays stable as long as the app is installed.
+    /// Falls back to a fresh UUID on Keychain errors (no crash, just a new id).
     private static var userId: String {
-        return UIDevice.current.identifierForVendor?.uuidString ?? "unknown"
+        let service = "nsfw_detect.device_id"
+        let account = "device_uuid"
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecReturnData: true,
+        ]
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data,
+           let stored = String(data: data, encoding: .utf8) {
+            return stored
+        }
+        let new = UUID().uuidString
+        let add: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+            kSecValueData: Data(new.utf8),
+        ]
+        SecItemAdd(add as CFDictionary, nil)
+        return new
     }
 
     /// Strip slashes from a path segment to keep S3 keys well-formed.

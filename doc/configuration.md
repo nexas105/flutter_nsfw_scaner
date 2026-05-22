@@ -30,6 +30,29 @@ const moreSensitive = ScanConfiguration(confidenceThreshold: 0.60);
 
 Lower thresholds catch more borderline content but can increase false positives. Higher thresholds reduce false positives but can miss more content.
 
+## Per-category thresholds
+
+`thresholdsByCategory` (added in 2.4.0) overrides the scalar `confidenceThreshold` per NSFW category. Use it to express "block explicit content aggressively but tolerate suggestive" without re-classifying.
+
+```dart
+final config = ScanConfiguration.moderate().copyWith(
+  thresholdsByCategory: {
+    NsfwCategory.explicitNudity: 0.5,  // strict — flag early
+    NsfwCategory.nudity: 0.7,
+    NsfwCategory.suggestive: 0.95,     // tolerate — only flag near-certain
+  },
+);
+```
+
+`ScanResult.isNsfw` and the category shortcuts (`hasNudity` / `hasExplicitContent` / `isSuggestive`) walk each NSFW-priority label against its own per-category threshold; categories not present in the map fall back to the scalar `confidenceThreshold`. Values are clamped to `[0.0, 1.0]` at construction.
+
+The policy propagates through `ScanSession` and `ScanResult.toJson()` / `fromJson(...)`, so persisted results re-evaluate consistently. To re-score a result already in hand under a new policy — without re-running inference — use `ScanResult.withThresholds(...)`:
+
+```dart
+final restrict = result.withThresholds({NsfwCategory.suggestive: 0.6});
+if (restrict.isSuggestive) { /* ... */ }
+```
+
 ## Classification vs detection
 
 Classification mode returns top-level category labels.
@@ -52,7 +75,9 @@ const config = ScanConfiguration(
 );
 ```
 
-Choose a model whose kind matches the mode.
+Choose a model whose kind matches the mode. `ModelDescriptor.nudenet` is the bundled detector id; `ModelIds.openNsfw2` / `.falconsai` / `.adamcodd` are classifiers.
+
+`ScanMode.detectThenClassify` (added in 2.4.0) runs the detector first and classifies every emitted crop, attaching per-region labels to each `BodyPartDetection`. The dedicated entry points `scanFileDetectThenClassify` / `scanBytesDetectThenClassify` are the simplest way to use it — see the [models guide](models.md#detect-then-classify) and the [cookbook](cookbook.md#detect-then-classify-each-region).
 
 ## Platform tuning
 
