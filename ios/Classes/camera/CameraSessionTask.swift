@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 /// Owns the `AVCaptureSession`, the active `AVCaptureDeviceInput`, and the
 /// chosen output preset for the live camera scan. Created lazily by
@@ -27,7 +28,22 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
     var deviceInput: AVCaptureDeviceInput?
 
     private(set) var isRunning = false
-    private var stopRequested = false
+
+    /// Set `true` by `stop()` — synchronously, before any `await` — so a
+    /// `start()` still in flight (e.g. awaiting the permission prompt)
+    /// observes it and refuses to publish a session the caller has already
+    /// torn down. Lock-protected: written from the arbitrary task that calls
+    /// `stop()`, read on both `outputQueue` and the `MainActor`.
+    private let stopRequestedLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private var stopRequested: Bool {
+        get { stopRequestedLock.withLock { $0 } }
+        set { stopRequestedLock.withLock { $0 = newValue } }
+    }
+
+    /// `AVCaptureSession` interruption / runtime-error observers. Registered
+    /// once the session is running, removed on `stop()`/`deinit`. Mutated
+    /// only on `outputQueue`.
+    private var sessionObservers: [NSObjectProtocol] = []
 
     init(config: CameraConfiguration, eventSink: ScanEventSink, processor: CameraFrameProcessor) {
         self.config = config
@@ -62,6 +78,7 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
                 if ok {
                     self.session.startRunning()
                     self.isRunning = true
+                    self.registerSessionObservers()
                 }
                 cont.resume(returning: ok)
             }
@@ -76,8 +93,15 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
         // the Phase-04 `NsfwCameraPreviewFactory` can attach
         // `AVCaptureVideoPreviewLayer` to the same session the analyzer is
         // already feeding from. One session, two outputs (data + preview).
+        // Re-check `stopRequested` first: a `stop()` that landed while this
+        // `start()` was awaiting permission/configuration sets the flag
+        // *before* it enqueues its `clear()` on the MainActor. So if we read
+        // `false` here, our `set` was enqueued before that `clear` and the
+        // serial MainActor runs `clear` last — the registry never ends up
+        // publishing a session `stop()` has already torn down.
         let publishedSession = session
         await MainActor.run {
+            guard !self.stopRequested else { return }
             CameraPreviewRegistry.shared.set(session: publishedSession)
         }
         return true
@@ -88,6 +112,13 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
     /// `ScanMethodHandler` discards the instance after this call returns —
     /// restart works because each `startCameraScan` builds a fresh task.
     func stop() async {
+        // Mark stopped *before* any await — a `start()` still in flight must
+        // see this and skip publishing the session for preview (see start()).
+        stopRequested = true
+        // Tell the processor too: an inference that outlives drainInflight's
+        // timeout must not emit into the torn-down session / event sink.
+        processor.markStopped()
+
         // WIDGET-01 cross-phase contract — clear the published session so
         // any active `NsfwCameraPreviewView` detaches its preview layer
         // before we tear the session down.
@@ -99,7 +130,10 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             outputQueue.async { [weak self] in
                 guard let self = self else { cont.resume(); return }
-                self.stopRequested = true
+                // stopRequested is already set synchronously at the top of
+                // stop(); detach the interruption observers regardless of
+                // whether a session was ever brought up.
+                self.removeSessionObservers()
                 guard self.isRunning || self.videoOutput != nil || self.deviceInput != nil else {
                     cont.resume()
                     return
@@ -244,6 +278,70 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
             session.addOutput(out)
             videoOutput = out
         }
+    }
+
+    // MARK: - Interruption / runtime-error recovery
+
+    /// Registers observers for `AVCaptureSession` interruption and runtime
+    /// errors. iOS interrupts the capture session whenever the app is
+    /// backgrounded, or another app / a phone call takes the camera; without
+    /// an `.interruptionEnded` handler the preview stays frozen because
+    /// nobody calls `startRunning()` again. Runs on `outputQueue`.
+    private func registerSessionObservers() {
+        let nc = NotificationCenter.default
+
+        let interrupted = nc.addObserver(
+            forName: AVCaptureSession.wasInterruptedNotification,
+            object: session, queue: nil
+        ) { note in
+            let reason = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int)
+                .flatMap(AVCaptureSession.InterruptionReason.init(rawValue:))
+            NSLog("[NSFW] CameraSessionTask: session interrupted (%@)",
+                  String(describing: reason))
+        }
+
+        let resumed = nc.addObserver(
+            forName: AVCaptureSession.interruptionEndedNotification,
+            object: session, queue: nil
+        ) { [weak self] _ in
+            self?.restartIfNeeded(context: "interruption ended")
+        }
+
+        let runtimeError = nc.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification,
+            object: session, queue: nil
+        ) { [weak self] note in
+            let err = note.userInfo?[AVCaptureSessionErrorKey] as? Error
+            NSLog("[NSFW] CameraSessionTask: runtime error: %@",
+                  err?.localizedDescription ?? "unknown")
+            self?.restartIfNeeded(context: "runtime error")
+        }
+
+        sessionObservers = [interrupted, resumed, runtimeError]
+    }
+
+    /// Removes the interruption / runtime-error observers. Idempotent.
+    private func removeSessionObservers() {
+        let nc = NotificationCenter.default
+        for observer in sessionObservers { nc.removeObserver(observer) }
+        sessionObservers.removeAll()
+    }
+
+    /// Restarts `startRunning()` on `outputQueue` when the scan is still
+    /// logically active but the session has stopped (interrupted / errored).
+    private func restartIfNeeded(context: String) {
+        outputQueue.async { [weak self] in
+            guard let self = self else { return }
+            guard !self.stopRequested, self.isRunning, !self.session.isRunning else { return }
+            self.session.startRunning()
+            NSLog("[NSFW] CameraSessionTask: session restarted after %@", context)
+        }
+    }
+
+    deinit {
+        // Belt-and-braces — stop() normally clears these first.
+        let nc = NotificationCenter.default
+        for observer in sessionObservers { nc.removeObserver(observer) }
     }
 }
 

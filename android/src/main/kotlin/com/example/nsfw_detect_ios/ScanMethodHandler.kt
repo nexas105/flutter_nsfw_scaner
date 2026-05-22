@@ -54,6 +54,16 @@ class ScanMethodHandler(
     /** Live camera scan session (Phase 03). Null when no camera scan running. */
     private var currentCamera: CameraSessionTask? = null
 
+    /**
+     * `true` once a camera scan is pending (permission prompt in flight) or
+     * running. Set synchronously on `START_CAMERA_SCAN` — before the async
+     * permission request assigns [currentCamera] — so a concurrent
+     * `START_CAMERA_SCAN` is rejected with `CAMERA_BUSY` and a `stop` that
+     * lands during the prompt can cancel a not-yet-created session. Matches
+     * the iOS single-session guard.
+     */
+    private var cameraSessionActive = false
+
     /** Shared model registry — replaces the legacy single-engine field. */
     private val modelRegistry: ModelRegistry = ModelRegistry.getInstance(context)
     private val downloadManager: ModelDownloadManager = ModelDownloadManager.getInstance(context)
@@ -568,6 +578,19 @@ class ScanMethodHandler(
             }
 
             ChannelConstants.Method.START_CAMERA_SCAN -> {
+                // Single-session guard — matches iOS, which rejects a
+                // concurrent startCameraScan with CAMERA_BUSY. The flag is
+                // checked synchronously so a second call during the (async)
+                // permission prompt is rejected too, before currentCamera
+                // has been assigned.
+                if (currentCamera != null || cameraSessionActive) {
+                    result.error(
+                        "CAMERA_BUSY",
+                        "A camera scan is already running; stop it before starting another.",
+                        null,
+                    )
+                    return
+                }
                 val args = (call.arguments as? Map<*, *>) ?: emptyMap<Any, Any>()
                 val cfg = CameraSessionConfig.from(args)
                 val act = activity
@@ -577,11 +600,18 @@ class ScanMethodHandler(
                         result.success(null)
                     }
                     act != null -> {
+                        cameraSessionActive = true
                         CameraPermission.request(act) { granted ->
-                            if (granted) {
-                                startCameraSessionInternal(cfg)
-                            } else {
-                                eventSink.emitCameraPermissionDenied()
+                            when {
+                                // A stopCameraScan during the prompt cleared
+                                // the flag — honour it, don't start stale.
+                                granted && cameraSessionActive ->
+                                    startCameraSessionInternal(cfg)
+                                granted -> { /* superseded by stop */ }
+                                else -> {
+                                    cameraSessionActive = false
+                                    eventSink.emitCameraPermissionDenied()
+                                }
                             }
                         }
                         result.success(null)
@@ -598,6 +628,7 @@ class ScanMethodHandler(
             }
 
             ChannelConstants.Method.STOP_CAMERA_SCAN -> {
+                cameraSessionActive = false
                 currentCamera?.stop()
                 currentCamera = null
                 result.success(null)
@@ -1168,6 +1199,7 @@ class ScanMethodHandler(
     fun dispose() {
         currentSession?.cancel()
         currentSession = null
+        cameraSessionActive = false
         currentCamera?.stop()
         currentCamera = null
     }
@@ -1194,6 +1226,7 @@ class ScanMethodHandler(
      */
     private fun startCameraSessionInternal(cfg: CameraSessionConfig) {
         currentCamera?.stop()
+        cameraSessionActive = true
         currentCamera = CameraSessionTask(context, cfg, eventSink).also { it.start() }
     }
 }

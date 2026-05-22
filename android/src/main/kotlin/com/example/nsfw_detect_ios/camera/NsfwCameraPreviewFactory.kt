@@ -61,6 +61,9 @@ internal class NsfwCameraPreviewView(
         implementationMode = PreviewView.ImplementationMode.PERFORMANCE
     }
 
+    /** The [Preview] use case currently wired to [previewView], if any. */
+    private var boundPreview: Preview? = null
+
     init {
         // Subscribe — the registry replays the current value immediately so
         // a view created mid-session attaches without waiting for the next
@@ -72,23 +75,27 @@ internal class NsfwCameraPreviewView(
 
     override fun dispose() {
         CameraPreviewRegistry.removeObserver(this)
-        // Detach surface provider so the underlying SurfaceTexture / Surface
-        // can be released by CameraX without crashing on a dead view.
+        // Detach the surface provider so CameraX releases the underlying
+        // SurfaceTexture / Surface instead of rendering into a dead view.
+        // `Preview.setSurfaceProvider(null)` is the documented detach call.
         try {
-            // Setting a no-op SurfaceProvider effectively detaches; library
-            // accepts null on newer versions, but we use the safer
-            // .surfaceProvider = null only if guaranteed.
+            boundPreview?.setSurfaceProvider(null)
         } catch (_: Throwable) {
         }
+        boundPreview = null
     }
 
     override fun onPreviewChanged(preview: Preview?) {
         // Wire (or unwire) the use case's surface provider to the
-        // PreviewView. Calling with null happens on session stop — the
-        // PreviewView retains its last frame until the next session starts,
-        // which matches the iOS behaviour.
+        // PreviewView. A null preview arrives on session stop — detach from
+        // the previously bound use case so its Surface is released; the
+        // PreviewView keeps its last frame, matching the iOS behaviour.
         if (preview != null) {
             preview.setSurfaceProvider(previewView.surfaceProvider)
+            boundPreview = preview
+        } else {
+            boundPreview?.setSurfaceProvider(null)
+            boundPreview = null
         }
     }
 }

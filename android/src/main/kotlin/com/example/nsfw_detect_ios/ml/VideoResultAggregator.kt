@@ -13,7 +13,8 @@ import kotlin.math.exp
  *     label list unchanged. Avoids dragging an "obviously NSFW" frame down
  *     by averaging it with safer surrounding frames.
  *  2. **Weighted average otherwise.** Per-category sum of
- *     `confidence * weight`, divided by total weight. Weights follow a
+ *     `confidence * weight`, divided by the summed weight of the frames
+ *     that category appeared in. Weights follow a
  *     Gaussian peak centred on the middle of the video:
  *
  *     ```
@@ -23,11 +24,9 @@ import kotlin.math.exp
  *     This biases toward the actual content (title cards and fade-to-black
  *     transitions sit at the edges) without zeroing them out entirely.
  *
- * Why the formula differs slightly from the Swift version: iOS uses a
- * linear blend `1.0 - 0.3 * abs(position - 0.5) * 2`; this Android port
- * implements the Gaussian weighting specified in #7 of the task brief.
- * Behavioural difference at common frame counts is small (within ±5% of
- * relative weighting) — both bias the middle.
+ * Both platforms use this Gaussian weighting (task brief #7); the iOS
+ * `VideoResultAggregator` was ported to match, so a given video produces
+ * the same aggregated verdict on iOS and Android.
  */
 object VideoResultAggregator {
 
@@ -40,10 +39,16 @@ object VideoResultAggregator {
     fun aggregate(frames: List<List<NsfwLabel>>): List<NsfwLabel> {
         if (frames.isEmpty()) return emptyList()
 
-        // Fast path: one frame is clearly positive on its top label.
+        // Fast path: one frame is clearly positive on an *unsafe* top label.
+        // `safe` / `unknown` are excluded — otherwise a single confidently-safe
+        // frame would short-circuit the whole video to safe even when later
+        // frames are NSFW (false negative). Matches iOS VideoResultAggregator.
         for (frameLabels in frames) {
             val top = frameLabels.maxByOrNull { it.confidence } ?: continue
-            if (top.confidence >= HARD_THRESHOLD) {
+            if (top.confidence >= HARD_THRESHOLD &&
+                top.category != "safe" &&
+                top.category != "unknown"
+            ) {
                 return frameLabels.sortedByDescending { it.confidence }
             }
         }
@@ -54,21 +59,27 @@ object VideoResultAggregator {
         val twoSigmaSq = 2.0 * sigma * sigma
 
         val weightedSums = HashMap<String, Float>()
-        var totalWeight = 0f
+        // Per-category weight: a category present in only some frames is
+        // normalised against those frames, not the whole video — otherwise a
+        // brief detection gets diluted toward zero.
+        val weightOfCategory = HashMap<String, Float>()
 
         for ((i, frameLabels) in frames.withIndex()) {
             val dx = i - center
             val weight = (1.0 + 0.5 * exp(-(dx * dx) / twoSigmaSq)).toFloat()
-            totalWeight += weight
             for (label in frameLabels) {
-                val prev = weightedSums[label.category] ?: 0f
-                weightedSums[label.category] = prev + label.confidence * weight
+                weightedSums[label.category] =
+                    (weightedSums[label.category] ?: 0f) + label.confidence * weight
+                weightOfCategory[label.category] =
+                    (weightOfCategory[label.category] ?: 0f) + weight
             }
         }
 
-        if (totalWeight <= 0f) return emptyList()
         return weightedSums.entries
-            .map { (cat, sum) -> NsfwLabel(cat, sum / totalWeight) }
+            .mapNotNull { (cat, sum) ->
+                val w = weightOfCategory[cat] ?: 0f
+                if (w <= 0f) null else NsfwLabel(cat, sum / w)
+            }
             .sortedByDescending { it.confidence }
     }
 

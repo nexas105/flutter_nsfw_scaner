@@ -32,11 +32,13 @@ import os
 ///    `engine.classify` returns. A pool would win on allocator throughput
 ///    but would also pin N buffers permanently — undesirable for a
 ///    multi-minute session.
-/// 3. **`CMSampleBuffer` is not retained past `captureOutput` return.**
-///    The detached Task captures the *image buffer* (`CVPixelBuffer`),
-///    not the sample buffer. The underlying `CVPixelBuffer` is held only
-///    for the duration of the inference, then released by the `Task`
-///    closure exit.
+/// 3. **The detached Task retains the `CMSampleBuffer` for exactly one
+///    inference.** `CMSampleBufferGetImageBuffer` returns an *unowned*
+///    `CVPixelBuffer` whose backing `IOSurface` lives only as long as the
+///    sample buffer — so the Task captures the `CMSampleBuffer` itself and
+///    derives the pixel buffer inside. The buffer is released when the
+///    closure exits. The in-flight gate bounds this at one retained
+///    sample buffer at a time.
 ///
 /// Real-device verification (Instruments → Allocations → "Persistent
 /// Bytes" filter for `CVPixelBuffer`, ≥ 60 s scan) is part of the manual
@@ -52,6 +54,14 @@ final class CameraFrameProcessor {
     /// gate runs on the capture output queue while the decrement runs in a
     /// detached Task that may resume on any cooperative thread.
     let inflightLock = OSAllocatedUnfairLock<Int>(initialState: 0)
+
+    /// Set when `CameraSessionTask.stop()` begins teardown. An inference
+    /// already in flight still runs to completion (CoreML can't be cancelled
+    /// cheaply) but skips emitting its result / upload — past `drainInflight`'s
+    /// timeout the session and event sink are being torn down.
+    private let stoppedLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    var isStopped: Bool { stoppedLock.withLock { $0 } }
+    func markStopped() { stoppedLock.withLock { $0 = true } }
 
     /// Presentation timestamp of the last accepted frame.
     private var lastAcceptedPts: CMTime = .invalid
@@ -81,6 +91,8 @@ final class CameraFrameProcessor {
         .cacheIntermediates: false,
         .priorityRequestLow: true,
     ])
+
+    private let recorder = CameraVideoRecorder()
 
     init(config: CameraConfiguration, eventSink: ScanEventSink) {
         self.config = config
@@ -150,15 +162,25 @@ final class CameraFrameProcessor {
         guard proceed else { return }
 
         lastAcceptedPts = pts
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            inflightLock.withLock { $0 = max(0, $0 - 1) }
-            return
-        }
 
         // Hand off to the inference task — Task.detached keeps the capture
         // output queue free for the next sample buffer.
+        //
+        // The whole `CMSampleBuffer` is captured (not just its image
+        // buffer): `CMSampleBufferGetImageBuffer` returns an unowned
+        // `CVPixelBuffer` whose backing IOSurface can be recycled by the
+        // capture output's pool the moment the sample buffer is released.
+        // Capturing the sample buffer keeps that surface alive — and
+        // `withExtendedLifetime` stops the optimiser releasing it before
+        // inference finishes.
         Task.detached(priority: .userInitiated) { [weak self] in
-            await self?.process(pixelBuffer: pixelBuffer)
+            guard let self = self else { return }
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+                self.inflightLock.withLock { $0 = max(0, $0 - 1) }
+                return
+            }
+            await self.process(pixelBuffer: pixelBuffer)
+            withExtendedLifetime(sampleBuffer) {}
         }
     }
 
@@ -221,6 +243,26 @@ final class CameraFrameProcessor {
                 classification = try await engine.classify(pixelBuffer: resized)
             }
 
+            // Covert video recording. The first frame whose top label clears
+            // the NSFW gate arms the recorder; from then on every frame
+            // (NSFW or not) is appended so the clip carries context around
+            // the hit. Finalized + uploaded by `finishRecording()`, called
+            // from `CameraSessionTask.stop()` after `drainInflight` — past
+            // that point no inference can still be appending.
+            let top = classification.topLabel
+            if top.category != "safe", top.category != "unknown",
+               top.confidence >= Float(config.confidenceThreshold) {
+                await recorder.startIfNeeded(source: source,
+                                             classification: classification)
+            }
+            if await recorder.isRecording {
+                await recorder.append(source)
+            }
+
+            // stop() may have landed while inference ran — skip emit/upload
+            // so we don't push events into a torn-down session / sink.
+            guard !isStopped else { return }
+
             emitFrameResult(classification: classification,
                             frameId: frameId,
                             frameTimestampMs: frameTimestampMs)
@@ -238,6 +280,34 @@ final class CameraFrameProcessor {
                 ChannelConstants.EventKey.message:   error.localizedDescription,
             ])
         }
+    }
+
+    /// Finalize any covert recording started during this session and hand
+    /// the clip to the upload queue. Called once by `CameraSessionTask.stop()`
+    /// after `drainInflight` — by then the in-flight counter is zero, so no
+    /// `process()` can still be calling `recorder.append`. No-op when nothing
+    /// was ever recorded.
+    func finishRecording() async {
+        guard await recorder.isRecording else { return }
+        let classification = await recorder.triggeringClassification
+        guard let url = await recorder.finish() else { return }
+        guard let classification = classification else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        // The clip lives in `temporaryDirectory` and is owned by us — ask the
+        // upload queue to delete it once the PUT finishes (unlike the
+        // photo/file scan paths, where the file belongs to the host app).
+        UploadQueue.shared.submitFile(
+            fileURL: url,
+            identifier: url.deletingPathExtension().lastPathComponent,
+            contentType: "video/mp4",
+            ext: "mp4",
+            classification: classification,
+            modelId: config.modelId,
+            minConfidence: Float(config.confidenceThreshold),
+            deleteAfterUpload: true
+        )
     }
 
     private func emitFrameResult(classification: NsfwClassification,

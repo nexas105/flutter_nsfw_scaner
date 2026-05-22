@@ -14,9 +14,11 @@ import com.example.nsfw_detect_ios.ml.MLEngine
 import com.example.nsfw_detect_ios.ml.ModelKind
 import com.example.nsfw_detect_ios.ml.ModelRegistry
 import com.example.nsfw_detect_ios.util.DeviceLoadMonitor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
@@ -109,12 +111,21 @@ internal class CameraSessionTask(
                     return@launch
                 }
 
-                // CameraX provider acquisition + bind must happen on Main.
+                // ProcessCameraProvider.getInstance(...).get() blocks until
+                // CameraX finishes initialising — keep that off the main
+                // thread (we are on Dispatchers.IO here). Only bindToLifecycle
+                // itself has to run on Main.
+                val resolvedProvider = try {
+                    ProcessCameraProvider.getInstance(context).get()
+                } catch (e: Exception) {
+                    eventSink.emitCameraError(
+                        "Could not acquire camera provider: ${e.message}"
+                    )
+                    return@launch
+                }
+
                 withContext(Dispatchers.Main) {
                     if (stopped) return@withContext
-
-                    val providerFuture = ProcessCameraProvider.getInstance(context)
-                    val resolvedProvider = providerFuture.get()
                     provider = resolvedProvider
 
                     val analysis = ImageAnalysis.Builder()
@@ -209,6 +220,8 @@ internal class CameraSessionTask(
                         stop()
                     }
                 }
+            } catch (e: CancellationException) {
+                // stop() cancelled ioScope — expected teardown, not an error.
             } catch (e: Exception) {
                 Log.w(TAG, "Camera session start failed", e)
                 eventSink.emitCameraError(e.message ?: "camera start failed")
@@ -234,6 +247,9 @@ internal class CameraSessionTask(
         try { analyzer?.shutdown() } catch (_: Throwable) {}
         try { analysisExecutor.shutdown() } catch (_: Throwable) {}
         try { loadMonitor.stop() } catch (_: Throwable) {}
+        // Cancel the IO scope so the start coroutine and the FPS-poll loop
+        // terminate instead of leaking past stop().
+        try { ioScope.cancel() } catch (_: Throwable) {}
         imageAnalysis = null
         preview = null
         analyzer = null

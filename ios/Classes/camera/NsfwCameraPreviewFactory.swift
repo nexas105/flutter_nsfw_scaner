@@ -52,11 +52,18 @@ import UIKit
 /// `AVCaptureSession` is published by `CameraPreviewRegistry`. Keeps the
 /// preview layer's frame in sync with the host view's bounds so
 /// orientation / size changes are picked up automatically.
+///
+/// Teardown is ARC-driven: `FlutterPlatformView` exposes no dispose hook,
+/// so the view is released when Flutter drops it. `CameraPreviewRegistry`
+/// holds observers weakly and prunes dead refs on every publish, and the
+/// `AVCaptureVideoPreviewLayer` releases its `session` when it deallocs —
+/// so no explicit `deinit` cleanup is needed. (An earlier `deinit` hopped
+/// to the main actor with `[weak self]`; that closure could never run its
+/// body, since `self` is already gone by the time the task fires.)
 final class NsfwCameraPreviewView: NSObject, FlutterPlatformView {
 
     private let containerView: PreviewContainer
     private let previewLayer: AVCaptureVideoPreviewLayer
-    private weak var observerToken: AnyObject?
 
     init(
         frame: CGRect,
@@ -87,17 +94,6 @@ final class NsfwCameraPreviewView: NSObject, FlutterPlatformView {
         _ = params  // currently unused; reserved for future knobs (zoom, etc.)
         _ = viewId
         _ = messenger
-    }
-
-    deinit {
-        // Stay defensive — registry holds observers weakly, but explicit
-        // removal prevents a stale callback during teardown.
-        let layer = previewLayer
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            CameraPreviewRegistry.shared.removeObserver(self)
-            layer.session = nil
-        }
     }
 
     // MARK: - FlutterPlatformView

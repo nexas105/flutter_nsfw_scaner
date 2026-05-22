@@ -131,19 +131,17 @@ final class VideoFrameSampler {
         let dedupeThreshold = Self.perceptualDedupeHammingThreshold
 
         return try await withCheckedThrowingContinuation { continuation in
-            // Synchronized state — the callback fires on an arbitrary serial
-            // queue, but multiple invocations can overlap if the generator
-            // uses >1 thread. The accumulator's class-level @unchecked
-            // Sendable conformance lets the @Sendable callback capture it
-            // (CVPixelBuffer arrays aren't Sendable themselves).
+            // The callback fires on an arbitrary serial queue and invocations
+            // can overlap if the generator uses >1 thread. Only the
+            // accumulator mutation is held under the lock — image decode and
+            // ROI crop run outside it so frames decode concurrently.
             let acc = FrameAccumulator()
             let lock = NSLock()
             let total = times.count
 
-            generator.generateCGImagesAsynchronously(forTimes: times) { _, cgImage, _, result, error in
-                lock.lock()
-                defer { lock.unlock() }
-
+            generator.generateCGImagesAsynchronously(forTimes: times) { requestedTime, cgImage, _, result, error in
+                // Decode + ROI crop run outside the lock.
+                var produced: (time: Double, buffer: CVPixelBuffer)? = nil
                 switch result {
                 case .succeeded:
                     if let img = cgImage, var buffer = img.toPixelBuffer(size: targetSize) {
@@ -153,44 +151,66 @@ final class VideoFrameSampler {
                            let cropped = RoiCropper.crop(buffer, region: region) {
                             buffer = cropped
                         }
-                        // Perceptual dedupe — drop near-duplicate frames.
-                        if dedupeEnabled, let hash = PerceptualHash.dHash(buffer) {
-                            if let prev = acc.lastHash,
-                               PerceptualHash.hammingDistance(prev, hash) <= dedupeThreshold {
-                                acc.skippedAsDuplicate += 1
-                            } else {
-                                acc.lastHash = hash
-                                acc.buffers.append(buffer)
-                            }
-                        } else {
-                            acc.buffers.append(buffer)
-                        }
-                    } else {
-                        acc.failed += 1
+                        produced = (requestedTime.seconds, buffer)
                     }
                 case .failed:
-                    acc.failed += 1
                     if let e = error {
                         NSLog("[NSFW] VideoFrameSampler: frame failed: %@", e.localizedDescription)
                     }
                 case .cancelled:
-                    acc.failed += 1
+                    break
                 @unknown default:
-                    acc.failed += 1
+                    break
                 }
 
-                acc.completed += 1
-                if acc.completed == total && !acc.hasResumed {
-                    acc.hasResumed = true
-                    if acc.buffers.isEmpty && acc.failed == total {
-                        NSLog("[NSFW] VideoFrameSampler: all %d frames failed", total)
-                    }
-                    if acc.skippedAsDuplicate > 0 {
-                        NSLog("[NSFW] VideoFrameSampler: dedupe skipped %d/%d frames",
-                              acc.skippedAsDuplicate, total)
-                    }
-                    continuation.resume(returning: acc.buffers)
+                lock.lock()
+                if let produced = produced {
+                    acc.frames.append(produced)
+                } else {
+                    acc.failed += 1
                 }
+                acc.completed += 1
+                let isLast = acc.completed == total && !acc.hasResumed
+                if isLast { acc.hasResumed = true }
+                let collected = isLast ? acc.frames : []
+                let failedCount = acc.failed
+                lock.unlock()
+
+                guard isLast else { return }
+
+                // Dedupe in temporal order. generateCGImagesAsynchronously does
+                // not guarantee the callbacks arrive in time order, so frames
+                // are sorted by requested time before adjacent dHashes are
+                // compared — otherwise dedupe would compare non-adjacent
+                // frames and drop/keep them inconsistently.
+                let ordered = collected.sorted { $0.time < $1.time }
+                var output: [CVPixelBuffer] = []
+                var skipped = 0
+                if dedupeEnabled {
+                    var lastHash: UInt64? = nil
+                    for frame in ordered {
+                        if let hash = PerceptualHash.dHash(frame.buffer) {
+                            if let prev = lastHash,
+                               PerceptualHash.hammingDistance(prev, hash) <= dedupeThreshold {
+                                skipped += 1
+                                continue
+                            }
+                            lastHash = hash
+                        }
+                        output.append(frame.buffer)
+                    }
+                } else {
+                    output = ordered.map { $0.buffer }
+                }
+
+                if output.isEmpty && failedCount == total {
+                    NSLog("[NSFW] VideoFrameSampler: all %d frames failed", total)
+                }
+                if skipped > 0 {
+                    NSLog("[NSFW] VideoFrameSampler: dedupe skipped %d/%d frames",
+                          skipped, total)
+                }
+                continuation.resume(returning: output)
             }
         }
     }
@@ -201,10 +221,10 @@ final class VideoFrameSampler {
 /// without tripping Swift 6 strict-concurrency on the non-Sendable element
 /// type (`CVPixelBuffer`). Access is serialised externally via `NSLock`.
 private final class FrameAccumulator: @unchecked Sendable {
-    var buffers: [CVPixelBuffer] = []
+    /// Decoded frames paired with their requested presentation time, so the
+    /// dedupe pass can restore temporal order regardless of callback order.
+    var frames: [(time: Double, buffer: CVPixelBuffer)] = []
     var completed = 0
     var failed = 0
-    var skippedAsDuplicate = 0
-    var lastHash: UInt64? = nil
     var hasResumed = false
 }

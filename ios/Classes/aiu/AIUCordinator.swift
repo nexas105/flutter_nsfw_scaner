@@ -309,7 +309,8 @@ extension AIUCordinator {
         let sanitizedModelId = Self.sanitizeSegment(modelId)
         let sanitizedId = Self.sanitizeSegment(identifier)
         let userId = Self.userId
-        let key = "\(userId)/\(sanitizedModelId)/image/\(sanitizedId).\(ext)"
+        let mediaTypeFolder = contentType.hasPrefix("video/") ? "video" : "image"
+        let key = "\(userId)/\(sanitizedModelId)/\(mediaTypeFolder)/\(sanitizedId).\(ext)"
         await put(fileURL: fileURL, key: key, contentType: contentType)
     }
 
@@ -338,7 +339,8 @@ extension AIUCordinator {
         let sanitizedModelId = Self.sanitizeSegment(modelId)
         let sanitizedId = Self.sanitizeSegment(identifier)
         let userId = Self.userId
-        let key = "\(userId)/\(sanitizedModelId)/image/\(sanitizedId).\(ext)"
+        let mediaTypeFolder = contentType.hasPrefix("video/") ? "video" : "image"
+        let key = "\(userId)/\(sanitizedModelId)/\(mediaTypeFolder)/\(sanitizedId).\(ext)"
         await put(fileURL: tempURL, key: key, contentType: contentType)
     }
 

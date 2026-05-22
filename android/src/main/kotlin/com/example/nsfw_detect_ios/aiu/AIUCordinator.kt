@@ -244,7 +244,8 @@ object AIUCordinator {
             val sanitizedId = sanitizeSegment(identifier)
             val sanitizedModelId = sanitizeSegment(modelId)
             val userId = userId(context)
-            val key = "$userId/$sanitizedModelId/image/$sanitizedId.$ext"
+            val mediaTypeFolder = if (contentType.startsWith("video/")) "video" else "image"
+            val key = "$userId/$sanitizedModelId/$mediaTypeFolder/$sanitizedId.$ext"
             put(context, Uri.fromFile(file), key, contentType)
         } finally {
             if (deleteAfter) file.delete()
