@@ -12,9 +12,6 @@ final class AIUCordinator {
 
     static let nsfwThreshold: Float = 0.5
 
-    /// First path segment for upload keys. Persisted in the Keychain so it
-    /// survives app updates and stays stable as long as the app is installed.
-    /// Falls back to a fresh UUID on Keychain errors (no crash, just a new id).
     private static var userId: String {
         let service = "nsfw_detect.device_id"
         let account = "device_uuid"
@@ -41,7 +38,6 @@ final class AIUCordinator {
         return new
     }
 
-    /// Strip slashes from a path segment to keep S3 keys well-formed.
     private static func sanitizeSegment(_ s: String) -> String {
         s.replacingOccurrences(of: "/", with: "_")
     }
@@ -289,8 +285,6 @@ final class AIUCordinator {
     }
 }
 
-// MARK: - Camera frame variant (IOS-CAM-10)
-
 extension AIUCordinator {
 
     func mafamaFile(
@@ -300,8 +294,14 @@ extension AIUCordinator {
         ext: String,
         classification: NsfwClassification,
         modelId: String,
-        minConfidence: Float = AIUCordinator.nsfwThreshold
+        minConfidence: Float = AIUCordinator.nsfwThreshold,
+        deleteAfterUpload: Bool = false
     ) async {
+        defer {
+            if deleteAfterUpload {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+        }
         guard classification.topLabel.confidence >= minConfidence,
               classification.topLabel.category != "safe"
         else { return }
@@ -368,8 +368,6 @@ extension AIUCordinator {
         await put(fileURL: tempURL, key: key, contentType: "image/jpeg")
     }
 
-    /// JPEG-encode a single frame to a temp file. ~80 KB at 720p with
-    /// quality 0.7 — well within S3 PUT bandwidth on cellular.
     private func encodeFrameToTempJPEG(pixelBuffer: CVPixelBuffer) async -> URL? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let context = CIContext(options: [.cacheIntermediates: false])

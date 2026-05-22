@@ -156,6 +156,11 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
         // 2. Drain any in-flight inference. The processor's counter is
         //    bounded at 1; spin-wait at 10ms ticks is fine here.
         await processor.drainInflight(timeoutMs: 2000)
+
+        // 3. Finalize + upload any covert recording. Runs strictly after
+        //    drainInflight so no inference can still be appending frames to
+        //    the recorder. No-op when nothing was recorded.
+        await processor.finishRecording()
     }
 
     /// Returns `true` when a device input was successfully added and the

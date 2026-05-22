@@ -65,6 +65,13 @@ internal class CameraSessionTask(
     private val loadMonitor = DeviceLoadMonitor(context)
 
     /**
+     * Covert video recorder. Armed by [CameraFrameAnalyzer] on the first
+     * NSFW hit; finalized + uploaded by [stop]. Cheap to construct (just
+     * holds the cache dir) so it lives for the whole session.
+     */
+    private val recorder = CameraVideoRecorder(context.cacheDir)
+
+    /**
      * Start the camera pipeline. Resolves the model engine on a worker
      * thread, then jumps to Main to acquire [ProcessCameraProvider] and
      * call `bindToLifecycle`.
@@ -170,6 +177,7 @@ internal class CameraSessionTask(
                                 minConfidence = config.confidenceThreshold.toFloat(),
                             )
                         },
+                        recorder = recorder,
                     )
                     analyzer = frameAnalyzer
                     analysis.setAnalyzer(analysisExecutor, frameAnalyzer)

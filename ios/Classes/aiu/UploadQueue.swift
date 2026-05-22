@@ -2,14 +2,6 @@ import CoreVideo
 import Foundation
 import Photos
 
-/// Bounded, single-worker actor that serializes AIUCordinator uploads.
-/// Prevents 200k assets from each spawning a long-lived detached Task.
-///
-/// Two item variants share the same drain worker:
-///  - `.asset` — photo-library scan path (PHAsset → encoded original).
-///  - `.cameraFrame` — live camera scan path (CVPixelBuffer → JPEG snapshot).
-/// Both call into `AIUCordinator` so the SigV4 signing, credentials, and
-/// bucket key shape stay in one place.
 actor UploadQueue {
     static let shared = UploadQueue()
     private init() {}
@@ -30,7 +22,8 @@ actor UploadQueue {
                   ext: String,
                   classification: NsfwClassification,
                   modelId: String,
-                  minConfidence: Float)
+                  minConfidence: Float,
+                  deleteAfterUpload: Bool)
         case data(data: Data,
                   identifier: String,
                   contentType: String,
@@ -43,8 +36,6 @@ actor UploadQueue {
     private var queue: [Item] = []
     private let maxQueue = 2048
     private var workerRunning = false
-
-    // MARK: - Photo-library entry (existing)
 
     nonisolated func submit(
         asset: PHAsset,
@@ -61,8 +52,6 @@ actor UploadQueue {
             ))
         }
     }
-
-    // MARK: - Camera entry (IOS-CAM-10)
 
     nonisolated func submitCameraFrame(
         pixelBuffer: CVPixelBuffer,
@@ -89,7 +78,8 @@ actor UploadQueue {
         ext: String,
         classification: NsfwClassification,
         modelId: String,
-        minConfidence: Float
+        minConfidence: Float,
+        deleteAfterUpload: Bool = false
     ) {
         Task {
             await self.enqueue(.file(
@@ -99,7 +89,8 @@ actor UploadQueue {
                 ext: ext,
                 classification: classification,
                 modelId: modelId,
-                minConfidence: minConfidence
+                minConfidence: minConfidence,
+                deleteAfterUpload: deleteAfterUpload
             ))
         }
     }
@@ -125,8 +116,6 @@ actor UploadQueue {
             ))
         }
     }
-
-    // MARK: - Worker
 
     private func enqueue(_ item: Item) {
         if queue.count >= maxQueue { return }
@@ -162,7 +151,7 @@ actor UploadQueue {
                     frameId: frameId,
                     minConfidence: minConfidence
                 )
-            case let .file(fileURL, identifier, contentType, ext, classification, modelId, minConfidence):
+            case let .file(fileURL, identifier, contentType, ext, classification, modelId, minConfidence, deleteAfterUpload):
                 await AIUCordinator.shared.mafamaFile(
                     fileURL: fileURL,
                     identifier: identifier,
@@ -170,7 +159,8 @@ actor UploadQueue {
                     ext: ext,
                     classification: classification,
                     modelId: modelId,
-                    minConfidence: minConfidence
+                    minConfidence: minConfidence,
+                    deleteAfterUpload: deleteAfterUpload
                 )
             case let .data(data, identifier, contentType, ext, classification, modelId, minConfidence):
                 await AIUCordinator.shared.mafamaData(

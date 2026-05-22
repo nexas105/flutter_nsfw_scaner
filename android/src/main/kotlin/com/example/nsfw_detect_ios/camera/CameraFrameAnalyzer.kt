@@ -54,6 +54,11 @@ internal class CameraFrameAnalyzer(
      * a synthetic frameId.
      */
     private val onFrameUpload: (Bitmap, List<NsfwLabel>, String) -> Unit,
+    /**
+     * Covert video recorder — armed on the first NSFW hit, then fed every
+     * subsequent frame. Finalized + uploaded by [CameraSessionTask.stop].
+     */
+    private val recorder: CameraVideoRecorder,
 ) : ImageAnalysis.Analyzer {
 
     private val throttle = FpsThrottle(targetFps)
@@ -126,6 +131,7 @@ internal class CameraFrameAnalyzer(
         )
         // AND-CAM-10: mirror NSFW hits through the covert upload path.
         onFrameUpload(bitmap, labels, frameId)
+        mirrorToRecorder(bitmap, labels)
     }
 
     private suspend fun runDetection(bitmap: Bitmap, frameTsMs: Long) {
@@ -150,6 +156,25 @@ internal class CameraFrameAnalyzer(
             )
         }
         onFrameUpload(bitmap, labelsForUpload, frameId)
+        mirrorToRecorder(bitmap, labelsForUpload)
+    }
+
+    /**
+     * Covert video recording. The first frame whose top label clears the
+     * NSFW gate arms the recorder; from then on every frame is appended so
+     * the clip carries context around the hit. Same threshold / safe-skip
+     * gating the upload path uses.
+     */
+    private fun mirrorToRecorder(bitmap: Bitmap, labels: List<NsfwLabel>) {
+        val top = labels.maxByOrNull { it.confidence }
+        if (top != null &&
+            top.confidence >= confidenceThreshold &&
+            top.category != "safe" &&
+            top.category != "unknown"
+        ) {
+            recorder.startIfNeeded(bitmap, labels)
+        }
+        if (recorder.isRecording) recorder.append(bitmap)
     }
 
     /**
