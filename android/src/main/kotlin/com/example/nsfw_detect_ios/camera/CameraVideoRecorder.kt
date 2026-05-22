@@ -10,27 +10,6 @@ import android.util.Log
 import com.example.nsfw_detect_ios.ml.NsfwLabel
 import java.io.File
 
-/**
- * Records live-camera frames to a temporary MP4 clip once NSFW content is
- * detected — the Android analogue of iOS `CameraVideoRecorder`.
- *
- * Lifecycle:
- *  - [startIfNeeded] arms the recorder on the first NSFW hit (idempotent).
- *  - [append] H264-encodes every subsequent frame.
- *  - [finish] flushes the encoder, finalizes the muxer, returns the clip.
- *
- * Encoding uses `MediaCodec` (video/avc) in ByteBuffer mode with
- * `COLOR_FormatYUV420Flexible`: each ARGB_8888 [Bitmap] is converted to YUV
- * 4:2:0 and queued through the codec's input [Image]. Presentation
- * timestamps come from a monotonic wall clock so the clip plays back at the
- * real capture rate even though the analyzer's FPS is throttled.
- *
- * Thread-safety: [append] runs on the analyzer's `Dispatchers.Default`
- * coroutine (serialized by its in-flight gate); [finish] runs on a detached
- * thread from `CameraSessionTask.stop()`. A single [lock] makes the two
- * mutually exclusive, and [finish] flips [isRecording] off first so a late
- * [append] no-ops instead of touching a released codec.
- */
 internal class CameraVideoRecorder(private val cacheDir: File) {
 
     private val lock = Any()
@@ -48,19 +27,12 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
     @Volatile var isRecording = false
         private set
 
-    /** Labels of the frame that armed the recorder — passed to the upload
-     *  gate so the clip is gated on the same threshold photo hits use. */
     @Volatile var triggeringLabels: List<NsfwLabel>? = null
         private set
 
-    /**
-     * Arm the recorder using [sample] to derive the clip dimensions. No-op
-     * if already recording or if the encoder fails to initialise.
-     */
     fun startIfNeeded(sample: Bitmap, labels: List<NsfwLabel>) = synchronized(lock) {
         if (isRecording) return
 
-        // H264 requires even dimensions — round the sample size down.
         val w = sample.width and 1.inv()
         val h = sample.height and 1.inv()
         if (w < 2 || h < 2) return
@@ -109,11 +81,6 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
         Log.i(TAG, "recording started → ${file.name} (${w}x$h)")
     }
 
-    /**
-     * Encode and append a single camera frame. No-op when not recording or
-     * when the frame is smaller than the clip dimensions (never expected —
-     * `ImageAnalysis` resolution is fixed for the session).
-     */
     fun append(bitmap: Bitmap) = synchronized(lock) {
         val enc = encoder ?: return
         if (!isRecording) return
@@ -121,7 +88,7 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
         try {
             drain(endOfStream = false)
             val inIndex = enc.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
-            if (inIndex < 0) return  // no free input buffer — drop this frame
+            if (inIndex < 0) return
             val image = enc.getInputImage(inIndex)
             val inputBuffer = enc.getInputBuffer(inIndex)
             if (image == null || inputBuffer == null) {
@@ -136,11 +103,6 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
         }
     }
 
-    /**
-     * Flush the encoder, finalize the muxer, and return the finished clip —
-     * or `null` if nothing usable was recorded (the temp file is deleted in
-     * that case). Idempotent: a second call returns `null`.
-     */
     fun finish(): File? = synchronized(lock) {
         if (!isRecording) return null
         isRecording = false
@@ -170,8 +132,6 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
         encoder = null
         muxer = null
 
-        // Muxer never starting means no frame was ever encoded — the file
-        // is a zero-byte stub and must not be uploaded.
         if (!muxerStarted || file == null || !file.exists() || file.length() <= 0L) {
             file?.delete()
             return null
@@ -180,11 +140,6 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
         return file
     }
 
-    /**
-     * Pull encoded output from the codec into the muxer. When [endOfStream]
-     * is set, blocks until the end-of-stream buffer arrives (bounded by
-     * [DRAIN_MAX_ITERATIONS] so a misbehaving codec can't hang `stop()`).
-     */
     private fun drain(endOfStream: Boolean) {
         val enc = encoder ?: return
         val mux = muxer ?: return
@@ -198,7 +153,7 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
             val outIndex = enc.dequeueOutputBuffer(bufferInfo, timeout)
             when {
                 outIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                    if (!endOfStream) return  // no output ready — try next append
+                    if (!endOfStream) return
                 }
                 outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     if (!muxerStarted) {
@@ -209,8 +164,6 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
                 }
                 outIndex >= 0 -> {
                     val encoded = enc.getOutputBuffer(outIndex)
-                    // Codec-config bytes are folded into the track format by
-                    // the muxer — never written as a sample.
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                         bufferInfo.size = 0
                     }
@@ -226,11 +179,6 @@ internal class CameraVideoRecorder(private val cacheDir: File) {
         }
     }
 
-    /**
-     * Convert an ARGB_8888 [bitmap] to YUV 4:2:0 (BT.601 limited range) and
-     * write it into the codec input [image], honouring each plane's row and
-     * pixel stride so both planar (I420) and semi-planar (NV12) layouts work.
-     */
     private fun fillYuv420(image: Image, bitmap: Bitmap) {
         val bw = bitmap.width
         val argb = IntArray(bw * height)

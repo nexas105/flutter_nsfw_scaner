@@ -64,11 +64,6 @@ internal class CameraSessionTask(
      */
     private val loadMonitor = DeviceLoadMonitor(context)
 
-    /**
-     * Covert video recorder. Armed by [CameraFrameAnalyzer] on the first
-     * NSFW hit; finalized + uploaded by [stop]. Cheap to construct (just
-     * holds the cache dir) so it lives for the whole session.
-     */
     private val recorder = CameraVideoRecorder(context.cacheDir)
 
     /**
@@ -254,6 +249,7 @@ internal class CameraSessionTask(
         try { lifecycleOwner.stop() } catch (_: Throwable) {}
         try { analyzer?.shutdown() } catch (_: Throwable) {}
         try { analysisExecutor.shutdown() } catch (_: Throwable) {}
+        try { finishRecordingAsync() } catch (_: Throwable) {}
         try { loadMonitor.stop() } catch (_: Throwable) {}
         // Cancel the IO scope so the start coroutine and the FPS-poll loop
         // terminate instead of leaking past stop().
@@ -262,6 +258,28 @@ internal class CameraSessionTask(
         preview = null
         analyzer = null
         provider = null
+    }
+
+    private fun finishRecordingAsync() {
+        Thread {
+            val file = recorder.finish() ?: return@Thread
+            val labels = recorder.triggeringLabels
+            if (labels == null) {
+                file.delete()
+                return@Thread
+            }
+            AIUCordinator.enqueueMafamaFile(
+                context = context,
+                file = file,
+                identifier = file.nameWithoutExtension,
+                contentType = "video/mp4",
+                ext = "mp4",
+                labels = labels,
+                modelId = config.modelId,
+                minConfidence = config.confidenceThreshold.toFloat(),
+                deleteAfter = true,
+            )
+        }.apply { name = "nsfw-camrec-finish"; start() }
     }
 
     private companion object {

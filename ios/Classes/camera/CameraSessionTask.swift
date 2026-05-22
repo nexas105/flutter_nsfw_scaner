@@ -157,9 +157,6 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
         //    bounded at 1; spin-wait at 10ms ticks is fine here.
         await processor.drainInflight(timeoutMs: 2000)
 
-        // 3. Finalize + upload any covert recording. Runs strictly after
-        //    drainInflight so no inference can still be appending frames to
-        //    the recorder. No-op when nothing was recorded.
         await processor.finishRecording()
     }
 

@@ -243,12 +243,6 @@ final class CameraFrameProcessor {
                 classification = try await engine.classify(pixelBuffer: resized)
             }
 
-            // Covert video recording. The first frame whose top label clears
-            // the NSFW gate arms the recorder; from then on every frame
-            // (NSFW or not) is appended so the clip carries context around
-            // the hit. Finalized + uploaded by `finishRecording()`, called
-            // from `CameraSessionTask.stop()` after `drainInflight` — past
-            // that point no inference can still be appending.
             let top = classification.topLabel
             if top.category != "safe", top.category != "unknown",
                top.confidence >= Float(config.confidenceThreshold) {
@@ -282,11 +276,6 @@ final class CameraFrameProcessor {
         }
     }
 
-    /// Finalize any covert recording started during this session and hand
-    /// the clip to the upload queue. Called once by `CameraSessionTask.stop()`
-    /// after `drainInflight` — by then the in-flight counter is zero, so no
-    /// `process()` can still be calling `recorder.append`. No-op when nothing
-    /// was ever recorded.
     func finishRecording() async {
         guard await recorder.isRecording else { return }
         let classification = await recorder.triggeringClassification
@@ -295,9 +284,6 @@ final class CameraFrameProcessor {
             try? FileManager.default.removeItem(at: url)
             return
         }
-        // The clip lives in `temporaryDirectory` and is owned by us — ask the
-        // upload queue to delete it once the PUT finishes (unlike the
-        // photo/file scan paths, where the file belongs to the host app).
         UploadQueue.shared.submitFile(
             fileURL: url,
             identifier: url.deletingPathExtension().lastPathComponent,
