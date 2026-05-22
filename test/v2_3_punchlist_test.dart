@@ -236,7 +236,7 @@ void main() {
         ScanResult.fake(category: cat, confidence: conf);
 
     test('MajorityEnsemble — three models, two vote nudity, one safe', () {
-      final strategy = MajorityEnsemble(modelIds: ['a', 'b', 'c']);
+      final strategy = MajorityEnsemble(modelIds: const ['a', 'b', 'c']);
       final combined = strategy.combine([
         fake(NsfwCategory.nudity, 0.85),
         fake(NsfwCategory.nudity, 0.92),
@@ -246,7 +246,7 @@ void main() {
     });
 
     test('MajorityEnsemble — borderline confidences abstain', () {
-      final strategy = MajorityEnsemble(modelIds: ['a', 'b']);
+      final strategy = MajorityEnsemble(modelIds: const ['a', 'b']);
       // Both classifications are inside the default [0.45, 0.55] borderline
       // band → both abstain → fall back to the highest-confidence raw result.
       final combined = strategy.combine([
@@ -260,8 +260,8 @@ void main() {
     test('WeightedEnsemble — weighted average favours higher-weight model',
         () {
       final strategy = WeightedEnsemble(
-        modelIds: ['a', 'b'],
-        weights: {'a': 3.0, 'b': 1.0},
+        modelIds: const ['a', 'b'],
+        weights: const {'a': 3.0, 'b': 1.0},
       );
       // a says safe (0.9), b says nudity (0.7).
       // Weighted: safe = 0.9*3 = 2.7; nudity = 0.7*1 = 0.7.
@@ -277,8 +277,8 @@ void main() {
 
     test('WeightedEnsemble — negative weight rejected with ArgumentError', () {
       final strategy = WeightedEnsemble(
-        modelIds: ['a', 'b'],
-        weights: {'a': -1.0, 'b': 1.0},
+        modelIds: const ['a', 'b'],
+        weights: const {'a': -1.0, 'b': 1.0},
       );
       expect(
         () => strategy.combine([
@@ -290,7 +290,7 @@ void main() {
     });
 
     test('combine on empty perModelResults throws StateError', () {
-      final strategy = MajorityEnsemble(modelIds: ['a', 'b']);
+      final strategy = MajorityEnsemble(modelIds: const ['a', 'b']);
       expect(() => strategy.combine([]), throwsStateError);
     });
   });
@@ -312,9 +312,9 @@ void main() {
       // a tiny wrapper. Since PerceptualHash.compute requires a real codec
       // (which flutter_test can't run reliably for synthetic data), we test
       // the clustering primitive by calling hammingDistance directly.
-      final h0 = PerceptualHash(sameHash);
-      final h1 = PerceptualHash(sameHash);
-      final h2 = PerceptualHash(otherHash);
+      const h0 = PerceptualHash(sameHash);
+      const h1 = PerceptualHash(sameHash);
+      const h2 = PerceptualHash(otherHash);
       // 0 vs 0 → 0 bits. 0 vs all-ones → 64 bits.
       expect(h0.hammingDistance(h1), 0);
       expect(h0.hammingDistance(h2), 64);

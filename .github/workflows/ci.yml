@@ -17,8 +17,16 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Install dependencies
-        run: flutter pub get
+      # `flutter analyze` at the repo root also descends into the nested
+      # packages (example app + gen/nsfw_detect_gen code generator), so each
+      # one needs its dependencies resolved or analysis fails with
+      # uri_does_not_exist for build/source_gen/analyzer.
+      - name: Install dependencies (all packages)
+        run: |
+          flutter pub get
+          flutter pub get --directory=example
+          flutter pub get --directory=gen/nsfw_detect_gen
+          flutter pub get --directory=gen/nsfw_detect_gen/example
 
       - name: Analyze
         run: flutter analyze
