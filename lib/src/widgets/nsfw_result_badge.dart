@@ -47,13 +47,13 @@ class NsfwResultBadge extends StatelessWidget {
 
   String _semanticsLabel() {
     final l = NsfwLocalizations.current;
-    if (result == null) return 'NSFW: ${l.confidenceVeryLow}';
+    if (result == null) return 'NSFW: ${l.statusScanning}';
     final r = result!;
     switch (r.status) {
       case ScanStatus.failed:
-        return 'NSFW: error';
+        return 'NSFW: ${l.statusScanFailed}';
       case ScanStatus.skipped:
-        return 'NSFW: skipped';
+        return 'NSFW: ${l.statusScanSkipped}';
       case ScanStatus.completed:
         return 'NSFW: ${r.topCategory.localizedName(l)}';
     }
@@ -66,47 +66,63 @@ class NsfwResultBadge extends StatelessWidget {
     return '$pct%';
   }
 
-  Widget _pendingBadge() => _BadgeContainer(
-        color: theme.pendingColor.withValues(alpha: theme.badgeOpacity),
-        child: style == BadgeStyle.iconOnly
-            ? const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-              )
-            : Row(mainAxisSize: MainAxisSize.min, children: [
-                const SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.white),
-                ),
-                if (style != BadgeStyle.minimal) ...[
-                  const SizedBox(width: 4),
-                  _label('Scanning'),
-                ],
-              ]),
-      );
+  Widget _pendingBadge() {
+    final fg = NsfwGalleryTheme.readableForeground(theme.pendingColor);
+    return _BadgeContainer(
+      color: theme.pendingColor.withValues(alpha: theme.badgeOpacity),
+      child: style == BadgeStyle.iconOnly
+          ? SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+            )
+          : Row(mainAxisSize: MainAxisSize.min, children: [
+              SizedBox(
+                width: 10,
+                height: 10,
+                child: CircularProgressIndicator(strokeWidth: 1.5, color: fg),
+              ),
+              if (style != BadgeStyle.minimal) ...[
+                const SizedBox(width: 4),
+                _label('Scanning', color: fg),
+              ],
+            ]),
+    );
+  }
 
-  Widget _errorBadge() => _BadgeContainer(
-        color: Colors.orange.shade700.withValues(alpha: theme.badgeOpacity),
-        child: _iconWithLabel(Icons.warning_rounded, 'Error'),
-      );
+  Widget _errorBadge() {
+    final bg = Colors.orange.shade700;
+    return _BadgeContainer(
+      color: bg.withValues(alpha: theme.badgeOpacity),
+      child: _iconWithLabel(Icons.warning_rounded, 'Error',
+          NsfwGalleryTheme.readableForeground(bg)),
+    );
+  }
 
-  Widget _skippedBadge() => _BadgeContainer(
-        color: Colors.grey.shade600.withValues(alpha: theme.badgeOpacity),
-        child: _iconWithLabel(Icons.skip_next_rounded, 'Skipped'),
-      );
+  Widget _skippedBadge() {
+    final bg = Colors.grey.shade600;
+    return _BadgeContainer(
+      color: bg.withValues(alpha: theme.badgeOpacity),
+      child: _iconWithLabel(Icons.skip_next_rounded, 'Skipped',
+          NsfwGalleryTheme.readableForeground(bg)),
+    );
+  }
 
   Widget _resultBadge(ScanResult r) {
-    final color = _colorForCategory(r.topCategory).withValues(alpha: theme.badgeOpacity);
+    final base = _colorForCategory(r.topCategory);
+    final color = base.withValues(alpha: theme.badgeOpacity);
+    final fg = NsfwGalleryTheme.readableForeground(base);
     if (style == BadgeStyle.iconOnly) {
       return _BadgeContainer(
         color: color,
-        child: Icon(_iconForCategory(r.topCategory), color: Colors.white, size: 14),
+        child: Icon(_iconForCategory(r.topCategory), color: fg, size: 14),
       );
     }
     if (style == BadgeStyle.minimal) {
-      return _BadgeContainer(color: color, child: _label(_shortLabel(r.topCategory)));
+      return _BadgeContainer(
+        color: color,
+        child: _label(_shortLabel(r.topCategory), color: fg),
+      );
     }
     if (style == BadgeStyle.detailed) {
       return _BadgeContainer(
@@ -116,9 +132,11 @@ class NsfwResultBadge extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _iconWithLabel(_iconForCategory(r.topCategory), r.topCategory.displayName),
+            _iconWithLabel(
+                _iconForCategory(r.topCategory), r.topCategory.displayName, fg),
             const SizedBox(height: 2),
-            _label('${(r.topConfidence * 100).toStringAsFixed(0)}%', fontSize: 10),
+            _label('${(r.topConfidence * 100).toStringAsFixed(0)}%',
+                fontSize: 10, color: fg),
           ],
         ),
       );
@@ -127,26 +145,26 @@ class NsfwResultBadge extends StatelessWidget {
     return _BadgeContainer(
       color: color,
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(_iconForCategory(r.topCategory), color: Colors.white, size: 12),
+        Icon(_iconForCategory(r.topCategory), color: fg, size: 12),
         const SizedBox(width: 3),
-        _label('${(r.topConfidence * 100).toStringAsFixed(0)}%'),
+        _label('${(r.topConfidence * 100).toStringAsFixed(0)}%', color: fg),
       ]),
     );
   }
 
-  Widget _iconWithLabel(IconData icon, String text) =>
+  Widget _iconWithLabel(IconData icon, String text, Color fg) =>
       Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, color: Colors.white, size: 12),
+        Icon(icon, color: fg, size: 12),
         if (style != BadgeStyle.iconOnly) ...[
           const SizedBox(width: 3),
-          _label(text),
+          _label(text, color: fg),
         ],
       ]);
 
-  Widget _label(String text, {double? fontSize}) => Text(
+  Widget _label(String text, {double? fontSize, required Color color}) => Text(
         text,
         style: (theme.badgeLabelStyle ?? const TextStyle()).copyWith(
-          color: Colors.white,
+          color: color,
           fontSize: fontSize ?? this.fontSize ?? 11,
           fontWeight: FontWeight.w600,
           height: 1.2,

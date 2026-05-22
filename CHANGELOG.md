@@ -1,3 +1,17 @@
+## 2.5.2 — 2026-05-22
+
+> iOS build hotfix. 2.5.1 does not compile against the iOS toolchain — this release restores a clean build. No API or behaviour change.
+
+### Fixed
+
+- **iOS — `CoreMLEngine.swift` compile error.** `_findModelURL(...)` is a `static` function but referenced the instance property `descriptor` (`descriptor.customAssetPath`), which Swift rejects with *"Instance member 'descriptor' cannot be used on type 'CoreMLEngine'"*. The custom-asset path is now threaded in as an explicit `customAssetPath: String?` parameter: the instance caller (`findModelURL`) passes `descriptor.customAssetPath`; static callers, including `CoreMLDetectorEngine`, can pass the registered custom path when one exists.
+- **iOS — custom registered CoreML models load correctly.** `registerModel` stores custom artefacts in `customAssetPath` without a bundled resource name; the classifier and detector engines now accept that shape and resolve the exact registered `.mlmodelc` / `.mlmodel` path instead of failing early with `modelNotFound`.
+- **iOS camera — start/stop lifecycle race closed.** A `stopCameraScan` arriving while `startCameraScan` is still awaiting permission/configuration now marks the session as stopped before the capture queue starts running, preventing an orphaned `AVCaptureSession` from staying alive after Dart has already requested stop.
+
+### Notes
+
+- Anyone stuck on 2.5.1 with `Instance member 'descriptor' cannot be used on type 'CoreMLEngine'` should upgrade to 2.5.2 — no source change is required in app code.
+
 ## 2.5.1 — 2026-05-21
 
 > Accessibility pass over the four most-surfaced widgets. Every change is additive — sighted layouts and tap behaviour are unchanged; the screen-reader experience goes from "raw icons + percentage fragments" to a single coherent announcement per widget.

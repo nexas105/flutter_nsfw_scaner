@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/nsfw_detector.dart';
 import '../api/permissions/permission_kind.dart';
+import '../l10n/nsfw_localizations.dart';
 import 'theme/nsfw_theme.dart';
 
 typedef PermissionLabelBuilder = String Function(
@@ -266,14 +267,14 @@ class _NsfwPermissionsViewState extends State<NsfwPermissionsView>
       return TextButton(
         onPressed: () => _onRequestTap(kind),
         style: TextButton.styleFrom(foregroundColor: theme.accent),
-        child: const Text('Request'),
+        child: Text(NsfwLocalizations.current.buttonRequestPermission),
       );
     }
     if (status.needsSettings && widget.onOpenSettings != null) {
       return TextButton(
         onPressed: widget.onOpenSettings,
         style: TextButton.styleFrom(foregroundColor: theme.danger),
-        child: const Text('Open Settings'),
+        child: Text(NsfwLocalizations.current.buttonOpenSettings),
       );
     }
     // permanentlyDenied / restricted with no onOpenSettings → no button.

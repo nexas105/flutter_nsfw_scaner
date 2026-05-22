@@ -53,12 +53,16 @@ final class CoreMLDetectorEngine: MLDetectorEngine {
         }
         guard let desiredUnits = earlyDesired else { return }
 
-        guard let resourceName = descriptor.bundleResourceName else {
+        guard descriptor.bundleResourceName != nil || descriptor.customAssetPath != nil else {
             throw MLEngineError.modelNotFound(descriptor.id)
         }
+        let resourceName = descriptor.bundleResourceName ?? descriptor.id
 
         // Reuse the classifier-engine resolver — same search paths.
-        guard let modelURL = CoreMLEngine.findModelURLStatic(named: resourceName) else {
+        guard let modelURL = CoreMLEngine.findModelURLStatic(
+            named: resourceName,
+            customAssetPath: descriptor.customAssetPath
+        ) else {
             NSLog("[NSFW] DETECTOR MODEL NOT FOUND: %@", resourceName)
             throw MLEngineError.modelNotFound(resourceName)
         }

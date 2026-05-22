@@ -68,14 +68,15 @@ class NsfwMediaTile extends StatelessWidget {
 
   String _semanticsLabel() {
     final l = NsfwLocalizations.current;
-    final type = item.type == MediaType.video ? 'Video' : 'Photo';
-    if (result == null) return '$type, scanning';
+    final type =
+        item.type == MediaType.video ? l.mediaKindVideo : l.mediaKindPhoto;
+    if (result == null) return '$type, ${l.statusScanning}';
     final r = result!;
     switch (r.status) {
       case ScanStatus.failed:
-        return '$type, scan failed';
+        return '$type, ${l.statusScanFailed}';
       case ScanStatus.skipped:
-        return '$type, scan skipped';
+        return '$type, ${l.statusScanSkipped}';
       case ScanStatus.completed:
         return '$type, ${r.topCategory.localizedName(l)}';
     }

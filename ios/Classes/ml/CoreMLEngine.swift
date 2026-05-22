@@ -71,10 +71,11 @@ final class CoreMLEngine: MLEngine {
         }
         guard let desiredUnits = earlyDesiredUnits else { return }
 
-        guard let resourceName = descriptor.bundleResourceName else {
-            NSLog("[NSFW] Model has no bundleResourceName: %@", descriptor.id)
+        guard descriptor.bundleResourceName != nil || descriptor.customAssetPath != nil else {
+            NSLog("[NSFW] Model has no bundleResourceName or customAssetPath: %@", descriptor.id)
             throw MLEngineError.modelNotFound(descriptor.id)
         }
+        let resourceName = descriptor.bundleResourceName ?? descriptor.id
 
         NSLog("[NSFW] Looking for model resource: %@", resourceName)
         NSLog("[NSFW] Plugin bundle path: %@", Bundle(for: CoreMLEngine.self).bundlePath)
@@ -398,19 +399,19 @@ final class CoreMLEngine: MLEngine {
     // MARK: - Helpers
 
     /// Shared model URL finder.
-    static func findModelURLStatic(named name: String) -> URL? {
-        return _findModelURL(named: name, referenceClass: CoreMLEngine.self)
+    static func findModelURLStatic(named name: String, customAssetPath: String? = nil) -> URL? {
+        return _findModelURL(named: name, referenceClass: CoreMLEngine.self, customAssetPath: customAssetPath)
     }
 
     private func findModelURL(named name: String) -> URL? {
-        return CoreMLEngine._findModelURL(named: name, referenceClass: CoreMLEngine.self)
+        return CoreMLEngine._findModelURL(named: name, referenceClass: CoreMLEngine.self, customAssetPath: descriptor.customAssetPath)
     }
 
-    private static func _findModelURL(named name: String, referenceClass: AnyClass) -> URL? {
+    private static func _findModelURL(named name: String, referenceClass: AnyClass, customAssetPath: String?) -> URL? {
         // -1. Custom-registered model — assetPath is absolute, already
         // validated by ScanMethodHandler.registerModel (sandbox + existence).
         // No further extension search: caller pointed at the exact artefact.
-        if let custom = descriptor.customAssetPath {
+        if let custom = customAssetPath {
             return URL(fileURLWithPath: custom)
         }
 

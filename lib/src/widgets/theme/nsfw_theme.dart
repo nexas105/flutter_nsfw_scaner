@@ -72,6 +72,32 @@ class NsfwGalleryTheme {
         _ => unknownColor,
       };
 
+  /// WCAG 2.1 relative-luminance contrast ratio between two opaque colours.
+  /// Range 1.0 (identical) .. 21.0 (pure black vs pure white). AA wants ≥ 4.5
+  /// for normal text, ≥ 3.0 for large text / UI components.
+  static double contrastRatio(Color a, Color b) {
+    final la = a.computeLuminance();
+    final lb = b.computeLuminance();
+    final hi = la > lb ? la : lb;
+    final lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  /// Returns whichever of black / white has the higher WCAG contrast against
+  /// [background]. Used to keep badge text / icons legible on any category
+  /// colour — several of the default category colours (green, orange, grey)
+  /// fail AA against hard-coded white, so foreground must be picked per colour.
+  static Color readableForeground(Color background) =>
+      contrastRatio(background, const Color(0xFFFFFFFF)) >=
+              contrastRatio(background, const Color(0xFF000000))
+          ? const Color(0xFFFFFFFF)
+          : const Color(0xFF000000);
+
+  /// Foreground colour (black or white) that reads cleanly on the badge fill
+  /// for [categoryName]. See [categoryColor] / [readableForeground].
+  Color onCategoryColor(String categoryName) =>
+      readableForeground(categoryColor(categoryName));
+
   NsfwGalleryTheme copyWith({
     Color? safeColor,
     Color? suggestiveColor,

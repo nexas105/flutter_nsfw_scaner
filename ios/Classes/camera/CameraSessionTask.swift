@@ -27,6 +27,7 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
     var deviceInput: AVCaptureDeviceInput?
 
     private(set) var isRunning = false
+    private var stopRequested = false
 
     init(config: CameraConfiguration, eventSink: ScanEventSink, processor: CameraFrameProcessor) {
         self.config = config
@@ -56,6 +57,7 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
         let configured: Bool = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             outputQueue.async { [weak self] in
                 guard let self = self else { cont.resume(returning: false); return }
+                guard !self.stopRequested else { cont.resume(returning: false); return }
                 let ok = self.configureSession()
                 if ok {
                     self.session.startRunning()
@@ -86,9 +88,6 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
     /// `ScanMethodHandler` discards the instance after this call returns —
     /// restart works because each `startCameraScan` builds a fresh task.
     func stop() async {
-        guard isRunning else { return }   // double-stop is a no-op (IOS-CAM-08)
-        isRunning = false
-
         // WIDGET-01 cross-phase contract — clear the published session so
         // any active `NsfwCameraPreviewView` detaches its preview layer
         // before we tear the session down.
@@ -100,6 +99,12 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             outputQueue.async { [weak self] in
                 guard let self = self else { cont.resume(); return }
+                self.stopRequested = true
+                guard self.isRunning || self.videoOutput != nil || self.deviceInput != nil else {
+                    cont.resume()
+                    return
+                }
+                self.isRunning = false
                 // Detach the sample-buffer delegate first so a final
                 // in-flight callback can't land mid-teardown (H13).
                 self.videoOutput?.setSampleBufferDelegate(nil, queue: nil)

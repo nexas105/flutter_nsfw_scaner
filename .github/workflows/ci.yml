@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  analyze-and-test:
+    name: Analyze + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test (full suite)
+        run: flutter test
+
+  eval-smoke:
+    name: Eval harness + FP-regression gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Runs the eval-harness machinery (tools/eval) against the checked-in
+      # smoke fixtures via scripted scan dispatchers — no native binary needed.
+      # The full native dataset run (tools/eval/bin/run.dart) still has to be
+      # invoked locally on a device/simulator; see tools/eval/README.md.
+      - name: Eval harness + false-positive regression
+        run: flutter test test/eval_harness_test.dart test/fp_regression_test.dart

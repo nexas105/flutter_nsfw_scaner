@@ -78,7 +78,7 @@ class NsfwCameraHud extends StatelessWidget {
     return Semantics(
       container: true,
       liveRegion: true,
-      label: 'NSFW live scan: ${r.topCategory.localizedName(l)}',
+      label: '${l.cameraLiveScan}: ${r.topCategory.localizedName(l)}',
       value: '$pct%',
       child: ExcludeSemantics(
         child: AnimatedSwitcher(
@@ -110,12 +110,13 @@ class NsfwCameraHud extends StatelessWidget {
 
   Widget _bottomBar(CameraFrameResult r) {
     final color = theme.categoryColor(r.topCategory.name);
+    final l = NsfwLocalizations.current;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
         Semantics(
-          label: 'Live NSFW confidence',
+          label: l.cameraLiveConfidence,
           value: '${(r.topConfidence * 100).toStringAsFixed(0)}%',
           child: ExcludeSemantics(
             child: ClipRRect(

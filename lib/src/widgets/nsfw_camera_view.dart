@@ -11,6 +11,7 @@ import '../api/camera_frame_result.dart';
 import '../api/camera_scan_session.dart';
 import '../api/camera_exceptions.dart';
 import '../api/nsfw_detector.dart';
+import '../l10n/nsfw_localizations.dart';
 import 'nsfw_camera_hud.dart';
 import 'nsfw_detection_overlay.dart';
 import 'theme/nsfw_design_tokens.dart';
@@ -95,7 +96,17 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
 
   Future<void> _start() async {
     try {
-      _session = await NsfwDetector.instance.startCameraScan(widget.config);
+      final session =
+          await NsfwDetector.instance.startCameraScan(widget.config);
+      if (!mounted) {
+        // Disposed mid-init: dispose() already ran while _session was still
+        // null, so the stopCameraScan() it issued targeted a session that
+        // didn't exist yet. Tear the now-resolved session down here so its
+        // result stream isn't leaked.
+        await NsfwDetector.instance.stopCameraScan();
+        return;
+      }
+      _session = session;
       // WIDGET-05 — permission denied may arrive as either a Future throw
       // (immediate-deny path) or a stream error from the native side
       // (`cameraPermissionDenied` event). The listener routes the latter
@@ -110,7 +121,7 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
           }
         },
       );
-      if (mounted) setState(() {});
+      setState(() {});
     } on CameraPermissionDeniedException {
       if (mounted) widget.onPermissionDenied?.call();
     } catch (e) {
@@ -163,11 +174,7 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
         widget.enableBlurOnNsfw && _lastResult != null && _lastResult!.isNsfw;
     final sigma = widget.blurSigma ?? effectiveTheme.cameraBlurSigma;
 
-    return Semantics(
-      container: true,
-      image: true,
-      label: 'NSFW live camera preview',
-      child: Stack(
+    return Stack(
       fit: StackFit.expand,
       children: [
         // WIDGET-01 — native camera preview via PlatformView. iOS hosts an
@@ -175,7 +182,18 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
         // Both attach to the same capture session the analyzer is feeding,
         // via the native-side CameraPreviewRegistry. No Flutter-side
         // texture copy of analysis frames.
-        _buildCameraPreview(),
+        //
+        // The Semantics(image:) wrapper sits on the preview alone — its
+        // PlatformView contents are opaque to Flutter's a11y tree, so it
+        // needs an explicit label. It must NOT wrap the whole Stack: the
+        // HUD's liveRegion and the detection overlay are real, dynamic
+        // semantics nodes and would be wrongly nested under an "image".
+        Semantics(
+          container: true,
+          image: true,
+          label: NsfwLocalizations.current.cameraPreviewLabel,
+          child: _buildCameraPreview(),
+        ),
 
         // WIDGET-04 — themed blur-on-NSFW with cross-fade so a single safe
         // frame in a stream of NSFW frames doesn't strobe the user. Sigma
@@ -230,7 +248,6 @@ class _NsfwCameraViewState extends State<NsfwCameraView> {
             theme: widget.theme ?? NsfwGalleryTheme.defaults,
           ),
       ],
-    ),
     );
   }
 

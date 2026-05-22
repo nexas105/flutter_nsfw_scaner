@@ -7,6 +7,7 @@ import '../api/nsfw_scan_controller.dart';
 import '../api/scan_result.dart';
 import '../api/scan_summary.dart';
 import '../api/scan_configuration.dart';
+import '../l10n/nsfw_localizations.dart';
 import '../platform/nsfw_platform_interface.dart';
 import 'nsfw_filter_bar.dart';
 import 'nsfw_media_tile.dart';
@@ -350,7 +351,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
             child: FilledButton.icon(
               onPressed: () => _startScan(resume: true),
               icon: const Icon(Icons.play_arrow, size: 18),
-              label: const Text('Resume'),
+              label: Text(NsfwLocalizations.current.buttonResumeScan),
               style: FilledButton.styleFrom(
                 backgroundColor: t.success,
               ),
@@ -361,7 +362,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
             child: OutlinedButton.icon(
               onPressed: _startScan,
               icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('New Scan'),
+              label: Text(NsfwLocalizations.current.buttonNewScan),
               style: OutlinedButton.styleFrom(
                 foregroundColor: t.onSurfaceMuted,
                 side: BorderSide(color: t.outline),
@@ -556,7 +557,7 @@ class _NsfwGalleryViewState extends State<NsfwGalleryView> {
         action: FilledButton.icon(
           onPressed: _controller.requestPermission,
           icon: const Icon(Icons.check_circle_outline_rounded),
-          label: const Text('Grant Access'),
+          label: Text(NsfwLocalizations.current.buttonGrantAccess),
           style: FilledButton.styleFrom(backgroundColor: t.accent),
         ),
       );

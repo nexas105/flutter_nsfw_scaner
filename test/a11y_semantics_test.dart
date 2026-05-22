@@ -21,7 +21,7 @@ void main() {
       handle.dispose();
     });
 
-    testWidgets('pending state announces low confidence sentinel',
+    testWidgets('pending state announces scanning, no quantitative value',
         (tester) async {
       final handle = tester.ensureSemantics();
       await tester.pumpWidget(const MaterialApp(
@@ -42,14 +42,14 @@ void main() {
         home: Scaffold(body: NsfwResultBadge(result: failed)),
       ));
       expect(tester.getSemantics(find.byType(NsfwResultBadge)).label,
-          'NSFW: error');
+          'NSFW: scan failed');
 
       final skipped = ScanResult.fake(status: ScanStatus.skipped);
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(body: NsfwResultBadge(result: skipped)),
       ));
       expect(tester.getSemantics(find.byType(NsfwResultBadge)).label,
-          'NSFW: skipped');
+          'NSFW: scan skipped');
       handle.dispose();
     });
   });
@@ -105,6 +105,34 @@ void main() {
       expect(
         tester.getSemantics(find.byType(NsfwMediaTile)).label,
         contains('Video'),
+      );
+      handle.dispose();
+    });
+
+    testWidgets('label is fully localized under a non-English bundle',
+        (tester) async {
+      NsfwLocalizations.current = const NsfwLocalizationsDe();
+      addTearDown(
+          () => NsfwLocalizations.current = const NsfwLocalizationsEn());
+      final handle = tester.ensureSemantics();
+      final result = ScanResult.fake(
+        category: NsfwCategory.nudity,
+        confidence: 0.91,
+      );
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 100,
+            height: 100,
+            child: NsfwMediaTile(item: result.item, result: result),
+          ),
+        ),
+      ));
+      // Media-kind word and category both come from the German bundle —
+      // no mixed-language fragments ("Foto, Nacktheit", not "Photo, …").
+      expect(
+        tester.getSemantics(find.byType(NsfwMediaTile)).label,
+        'Foto, Nacktheit',
       );
       handle.dispose();
     });
