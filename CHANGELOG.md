@@ -1,12 +1,23 @@
 ## 2.5.2 — 2026-05-22
 
-> iOS build hotfix. 2.5.1 does not compile against the iOS toolchain — this release restores a clean build. No API or behaviour change.
+> iOS build hotfix plus a small accessibility / localization polish pass. 2.5.1 does not compile against the iOS toolchain — this release restores a clean build. Additive only; existing app code keeps working unchanged.
 
 ### Fixed
 
 - **iOS — `CoreMLEngine.swift` compile error.** `_findModelURL(...)` is a `static` function but referenced the instance property `descriptor` (`descriptor.customAssetPath`), which Swift rejects with *"Instance member 'descriptor' cannot be used on type 'CoreMLEngine'"*. The custom-asset path is now threaded in as an explicit `customAssetPath: String?` parameter: the instance caller (`findModelURL`) passes `descriptor.customAssetPath`; static callers, including `CoreMLDetectorEngine`, can pass the registered custom path when one exists.
 - **iOS — custom registered CoreML models load correctly.** `registerModel` stores custom artefacts in `customAssetPath` without a bundled resource name; the classifier and detector engines now accept that shape and resolve the exact registered `.mlmodelc` / `.mlmodel` path instead of failing early with `modelNotFound`.
 - **iOS camera — start/stop lifecycle race closed.** A `stopCameraScan` arriving while `startCameraScan` is still awaiting permission/configuration now marks the session as stopped before the capture queue starts running, preventing an orphaned `AVCaptureSession` from staying alive after Dart has already requested stop.
+- **`shared_preferences` lower bound corrected.** `SharedPreferencesDecisionStore` uses `SharedPreferencesAsync`, which was only added in `shared_preferences` 2.3.0. The dependency constraint was `^2.2.0`, so a lower-bound resolution picked a version without that API. Bumped to `^2.3.0`.
+- **Badge contrast — WCAG AA.** `NsfwResultBadge` rendered its label / icons in hard-coded white; on the green (`safe`), orange (`suggestive`) and grey (`pending`) badge fills that falls below the 4.5:1 AA threshold. Foreground is now picked per fill colour via the new `NsfwGalleryTheme` contrast helpers — brand colours are unchanged.
+
+### New
+
+- **`NsfwGalleryTheme.contrastRatio` / `readableForeground` / `onCategoryColor`.** WCAG 2.1 contrast utilities. `readableForeground` returns the black/white foreground with the higher contrast against any opaque background — always ≥ 4.5:1.
+- **Localizable widget button labels.** `NsfwLocalizations` gains eight getters (`buttonScanLibrary`, `buttonStopScan`, `buttonScanSettings`, `buttonRequestPermission`, `buttonOpenSettings`, `buttonResumeScan`, `buttonNewScan`, `buttonGrantAccess`), translated across all five bundled locales. `NsfwScanControls`, `NsfwPermissionsView` and `NsfwGalleryView` now read their button text from the active bundle instead of hard-coded English.
+
+### Tooling
+
+- **CI workflow** (`.github/workflows/ci.yml`) — runs `flutter analyze` + the full test suite on every PR, with a dedicated job wiring the eval-harness / false-positive-regression tests in as a gate.
 
 ### Notes
 

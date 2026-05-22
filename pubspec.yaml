@@ -32,7 +32,9 @@ dependencies:
   flutter:
     sdk: flutter
   plugin_platform_interface: ^2.0.2
-  shared_preferences: ^2.2.0
+  # SharedPreferencesAsync (used by SharedPreferencesDecisionStore) was added
+  # in shared_preferences 2.3.0 — the lower bound must reflect that.
+  shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:
