@@ -340,7 +340,11 @@ class BlockPerceptualHash {
     var count = 0;
     while (x != 0) {
       count += x & 1;
-      x = (x >> 1) & 0x7FFFFFFFFFFFFFFF; // keep it unsigned-ish for safety
+      // Unsigned shift: a logical right shift that never sign-extends, so the
+      // loop terminates for negative `x` without a 64-bit mask. The mask
+      // literal (0x7FFF...FFFF) is also not representable on the web/JS int
+      // backend — `>>>` keeps this web-compatible.
+      x = x >>> 1;
     }
     return count;
   }

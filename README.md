@@ -3,7 +3,7 @@
 [![pub package](https://img.shields.io/pub/v/nsfw_detect.svg)](https://pub.dev/packages/nsfw_detect)
 [![pub points](https://img.shields.io/pub/points/nsfw_detect)](https://pub.dev/packages/nsfw_detect/score)
 [![likes](https://img.shields.io/pub/likes/nsfw_detect)](https://pub.dev/packages/nsfw_detect)
-[![platform](https://img.shields.io/badge/platform-iOS%20%7C%20Android-blue)](https://pub.dev/packages/nsfw_detect)
+[![platform](https://img.shields.io/badge/platform-iOS%20%7C%20Android%20%7C%20Web-blue)](https://pub.dev/packages/nsfw_detect)
 [![license](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
 
 Privacy-friendly NSFW detection for Flutter apps. **On-device**, no telemetry, no media uploads.
@@ -28,7 +28,7 @@ That's the whole API for the most common case. No init, no permission for files 
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.5.3
+  nsfw_detect: ^2.6.0
 ```
 
 ```bash
@@ -39,9 +39,35 @@ flutter pub get
 | --- | --- |
 | iOS | 16.0+ |
 | Android | API 24 / Android 7.0+ |
+| Web | one-shot APIs only — see below |
 | Flutter | 3.22+ |
 | Dart | 3.4+ |
 | Xcode | 15+ |
+
+---
+
+## Web
+
+The `web` platform runs the **one-shot** scan APIs in the browser — `scanBytes`,
+`scanFile` (a `blob:`/`http(s):` URL), `pickMedia`, and detection-mode scans.
+Inference runs client-side: classification on [nsfwjs](https://github.com/infinitered/nsfwjs)
+(TensorFlow.js), detection on [NudeNet](https://github.com/notAI-tech/NudeNet)
+via onnxruntime-web. The JS runtimes load on demand from a CDN — no `index.html`
+edits required.
+
+```dart
+// Detection-mode scans need a NudeNet model — point this at a
+// CORS-reachable .onnx URL once, before the first scan.
+NsfwWebConfig.nudeNetModelUrl = 'https://your-host.example/nudenet_320n.onnx';
+
+final result = await NsfwDetector.instance.scanBytes(bytes);
+```
+
+**Not available on web:** photo-library scanning (`startScan`), camera
+scanning, and background sweep — they have no browser equivalent and throw
+`UnimplementedError`. nsfwjs has no dedicated nudity class, so the web
+classifier reports `explicitNudity` rather than `nudity`, and its confidence
+scores are not numerically comparable to the native OpenNSFW2 classifier.
 
 ---
 

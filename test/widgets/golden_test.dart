@@ -8,6 +8,13 @@
 //
 // Goldens are platform-sensitive; if you see drift on a different host /
 // engine version, regenerate them rather than relaxing the comparator.
+//
+// Tagged `golden` so CI (Linux) can exclude them — goldens are generated and
+// verified locally on macOS. Run `flutter test --exclude-tags golden` to
+// reproduce the CI suite, or `flutter test test/widgets/golden_test.dart` to
+// validate / regenerate goldens on the canonical host.
+@Tags(['golden'])
+library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';

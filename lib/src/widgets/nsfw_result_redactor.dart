@@ -1,4 +1,3 @@
-import 'dart:io' as io;
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -6,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../api/body_part_detection.dart';
 import '../api/scan_result.dart';
+import '../io/io_compat.dart';
 import 'nsfw_result_badge.dart';
 
 /// Strategy used to obscure flagged regions.
@@ -115,7 +115,7 @@ class NsfwResultRedactor extends StatelessWidget {
   }) : this(
           key: key,
           child: Image(
-            image: FileImage(io.File(path)),
+            image: fileImageProvider(path),
             fit: fit,
             gaplessPlayback: true,
           ),

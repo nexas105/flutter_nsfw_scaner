@@ -285,6 +285,17 @@ enum ZipExtractor {
         }
         defer { compression_stream_destroy(streamPtr) }
 
+        // `compression_stream_init` zeroes the stream struct, including the
+        // `dst_size`/`src_size` set in the initializer above. Point the
+        // buffers AFTER init — otherwise the first `_process` call sees
+        // `dst_size == 0`, writes nothing, and `chunkSize - dst_size`
+        // miscounts a full 32 KB chunk of uninitialised memory as output
+        // (corrupts the entry and trips the compression-bomb guard).
+        streamPtr.pointee.dst_ptr  = dstBuf
+        streamPtr.pointee.dst_size = chunkSize
+        streamPtr.pointee.src_ptr  = UnsafePointer(srcBuf)
+        streamPtr.pointee.src_size = 0
+
         var remaining = count
         var inputExhausted = false
         var totalProduced: Int64 = 0

@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert' show base64Decode;
-import 'dart:io' show File, HttpClient, HttpException;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/painting.dart'
     show ImageConfiguration, ImageProvider, ImageStream, ImageStreamListener;
+import '../io/io_compat.dart';
 import 'background_sweep.dart';
 import 'body_part_detection.dart';
 import 'decision_store.dart';
@@ -871,36 +871,19 @@ class NsfwDetector {
         'only http and https schemes are supported',
       );
     }
-    final client = HttpClient()..connectionTimeout = timeout;
-    try {
-      final req = await client.getUrl(url).timeout(timeout);
-      headers?.forEach((k, v) => req.headers.add(k, v));
-      final response = await req.close().timeout(timeout);
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException(
-          'HTTP ${response.statusCode} fetching $url',
-          uri: url,
-        );
-      }
-      final builder = BytesBuilder(copy: false);
-      await for (final chunk in response.timeout(timeout)) {
-        builder.add(chunk);
-        if (builder.length > maxBytes) {
-          throw StateError(
-            'Remote payload exceeds $maxBytes bytes for $url — aborting',
-          );
-        }
-      }
-      return _scanBytesInternal(
-        builder.takeBytes(),
-        modelId: modelId,
-        confidenceThreshold: confidenceThreshold,
-        region: region,
-        telemetrySource: 'url',
-      );
-    } finally {
-      client.close(force: true);
-    }
+    final bytes = await httpGetBytes(
+      url,
+      headers: headers,
+      timeout: timeout,
+      maxBytes: maxBytes,
+    );
+    return _scanBytesInternal(
+      bytes,
+      modelId: modelId,
+      confidenceThreshold: confidenceThreshold,
+      region: region,
+      telemetrySource: 'url',
+    );
   }
 
   /// Schedule a recurring background sweep that runs even while the user

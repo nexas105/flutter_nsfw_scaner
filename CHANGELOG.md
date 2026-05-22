@@ -1,3 +1,23 @@
+## 2.6.0 — 2026-05-22
+
+> Adds a **web platform** so the one-shot scan APIs run in the browser. Additive only — existing iOS/Android app code is unchanged.
+
+### Added
+
+- **Web support — one-shot scanning in the browser.** The plugin now declares a `web` platform (`NsfwDetectWeb`). Supported APIs: `scanBytes` / `scanImageBytes`, `scanFile` / `scanFilePath` (a `blob:`/`http(s):` URL), and `pickMedia` (HTML `<input type=file>`). Classification runs on **nsfwjs** (TensorFlow.js); detection-mode (`ScanMode.detection` / `scanBytesDetectThenClassify`) runs the **NudeNet** ONNX graph via **onnxruntime-web**.
+- **`NsfwWebConfig`** — runtime configuration for the web platform. The JS runtimes (TensorFlow.js, nsfwjs, onnxruntime-web) are loaded on demand from a public CDN by default; override `tfjsScriptUrl` / `nsfwjsScriptUrl` / `ortScriptUrl` (and `nsfwjsModelUrl`) to pin or self-host them. **`nudeNetModelUrl` must be set** before any detection-mode scan — there is no universal CDN copy of the NudeNet model; detection scans throw a clear `StateError` until it points at a CORS-reachable `.onnx` file.
+
+### Notes / limitations (web)
+
+- **Not available on web:** photo-library scanning (`startScan`, `scanSingleAsset`), camera scanning (`startCameraScan`), and background sweep — there is no browser equivalent. These throw `UnimplementedError` with a descriptive message.
+- **Taxonomy:** nsfwjs has no separate "exposed-but-not-explicit" class, so the web classifier never reports `NsfwCategory.nudity` — explicit content collapses into `NsfwCategory.explicitNudity`. Web confidence scores are **not** numerically comparable to the native OpenNSFW2 classifier.
+- **`roi` cropping is ignored on web** (permitted by the platform-interface contract).
+- To run the example app on web, generate the web scaffold once with `flutter create --platforms web .` in `example/`.
+
+### CI
+
+- Golden widget tests are tagged `golden` and excluded from the Linux CI run (`flutter test --exclude-tags golden`) — goldens are rasterized on macOS and font rendering differs across hosts. Regenerate/verify them locally with `flutter test test/widgets/golden_test.dart`.
+
 ## 2.5.3 — 2026-05-22
 
 > Documentation refresh plus a round of video- and camera-scan correctness fixes. `README.md` and the `doc/` guides are brought up to date with the 2.4.0 and 2.5.x feature set.

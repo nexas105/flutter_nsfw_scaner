@@ -239,6 +239,8 @@ final class ModelDownloadManager {
                                      maxEntries: Self.maxArchiveEntries,
                                      maxCompressionRatio: Self.maxCompressionRatio)
         } catch {
+            NSLog("[NSFW] ZIP extraction failed for %@: %@",
+                  resourceName, String(describing: error))
             try? FileManager.default.removeItem(at: extractDir)
             throw ModelDownloadError.extractionFailed
         }

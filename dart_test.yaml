@@ -1,0 +1,5 @@
+tags:
+  golden:
+    # Pixel-exact widget golden tests. Goldens are rasterized on macOS;
+    # CI runs on Linux, where font rendering differs. Excluded in CI via
+    # `flutter test --exclude-tags golden`; run them locally on macOS.

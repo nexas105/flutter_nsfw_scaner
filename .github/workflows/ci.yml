@@ -31,8 +31,11 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
-      - name: Test (full suite)
-        run: flutter test
+      # Golden tests (tag `golden`) are excluded: goldens are rasterized on
+      # macOS and font rendering differs on this Linux runner. Regenerate and
+      # verify them locally with `flutter test test/widgets/golden_test.dart`.
+      - name: Test (full suite, excl. golden)
+        run: flutter test --exclude-tags golden
 
   eval-smoke:
     name: Eval harness + FP-regression gate
