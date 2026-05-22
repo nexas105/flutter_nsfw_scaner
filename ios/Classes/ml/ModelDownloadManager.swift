@@ -204,6 +204,11 @@ final class ModelDownloadManager {
         if delegate.aborted {
             throw ModelDownloadError.tooLarge(downloadedSize)
         }
+        if http.expectedContentLength > 0,
+           downloadedSize != http.expectedContentLength {
+            throw ModelDownloadError.incompleteDownload(
+                expected: http.expectedContentLength, got: downloadedSize)
+        }
 
         // Optional pinned-hash verification. Hashing 150 MB on a modern
         // iPhone is ~0.4 s — acceptable for a model fetch that already
@@ -242,7 +247,7 @@ final class ModelDownloadManager {
             NSLog("[NSFW] ZIP extraction failed for %@: %@",
                   resourceName, String(describing: error))
             try? FileManager.default.removeItem(at: extractDir)
-            throw ModelDownloadError.extractionFailed
+            throw ModelDownloadError.extractionFailed(error.localizedDescription)
         }
 
         // Find the .mlmodelc inside the extracted directory
@@ -405,17 +410,20 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate,
 
 enum ModelDownloadError: Error, LocalizedError {
     case httpError(Int)
-    case extractionFailed
+    case extractionFailed(String)
     case insecureScheme(String)
     case tooLarge(Int64)
+    case incompleteDownload(expected: Int64, got: Int64)
     case integrityMismatch(expected: String, actual: String)
 
     var errorDescription: String? {
         switch self {
         case .httpError(let code):
             return "Model download failed (HTTP \(code))"
-        case .extractionFailed:
-            return "Failed to extract model archive"
+        case .extractionFailed(let detail):
+            return "Failed to extract model archive: \(detail)"
+        case .incompleteDownload(let expected, let got):
+            return "Model download incomplete — expected \(expected) bytes, received \(got)."
         case .insecureScheme(let scheme):
             return "Refusing to download model over \(scheme)://. Use https://."
         case .tooLarge(let bytes):

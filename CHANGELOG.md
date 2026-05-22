@@ -1,3 +1,12 @@
+## 2.6.1 — 2026-05-22
+
+> Bug fix for on-demand model downloads on iOS. No API changes.
+
+### Fixed
+
+- **iOS model download — real failure cause is now surfaced.** `ModelDownloadManager` collapsed every extraction error into the opaque `Failed to extract model archive`, hiding the underlying `ZipError` (truncated archive, invalid archive, decompression failure, out-of-disk, …). `ModelDownloadError.extractionFailed` now carries the underlying error description, so `DOWNLOAD_FAILED` exceptions on the Dart side report what actually went wrong.
+- **iOS model download — incomplete downloads are caught before extraction.** The download path verified only an upper size bound. A short/truncated transfer was fed straight into the ZIP extractor and surfaced as a misleading extraction error. It now checks the downloaded byte count against the server's `Content-Length` and throws `ModelDownloadError.incompleteDownload(expected:got:)` with a clear message.
+
 ## 2.6.0 — 2026-05-22
 
 > Adds a **web platform** so the one-shot scan APIs run in the browser. Additive only — existing iOS/Android app code is unchanged.
