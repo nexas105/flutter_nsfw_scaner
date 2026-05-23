@@ -1,3 +1,16 @@
+## 2.6.2 — 2026-05-23
+
+> Fixes a noisy `EventChannel` crash on iOS after a scan finishes, and brings Android's `pickMedia` / `pickAndScan` up to iOS parity for multi-select. No API changes.
+
+### Fixed
+
+- **iOS scan_events — `"No active stream to cancel"` exception after a scan completes.** `NsfwMethodChannel.scanEventStream` returned a fresh `_eventChannel.receiveBroadcastStream()` on every read, so each subscriber (the model-download progress sink, `ScanSession`, `CameraScanSession`, `NsfwDetector.cacheUpdates`) created its own Dart broadcast controller and sent its own `listen`/`cancel` to the iOS engine. The engine tracks one `isListening` flag per handler: with two parallel Dart subscriptions, the second `cancel` hit a `NO` state and the engine surfaced `PlatformException(error, No active stream to cancel)` via `FlutterError.reportError` after each scan. The getter now caches a single shared broadcast stream, so all subscribers multiplex over one `listen`/`cancel` pair.
+- **Android `pickMedia` — `maxItems` is now honoured.** `ACTION_OPEN_DOCUMENT` has no native selection cap, so the parameter was silently ignored. The handler now trims the returned `Uri` list to `maxItems` post-selection, matching iOS' `PHPickerConfiguration.selectionLimit` behaviour.
+- **Android `pickMedia` / `pickAndScan` — calling twice no longer hangs the first caller.** A pending `MethodChannel.Result` from an earlier picker call was silently overwritten by the second call's Result, so the first Dart `Future` never completed. The previous Result is now resolved with `PICKER_REPLACED` before the new one takes over — mirroring iOS' `swapPickerMode` behaviour.
+- **Android `pickAndScan` — `includeVideos` flag now reaches the system picker.** The intent hard-coded `image/*`, so `ScanConfiguration(includeVideos: true)` could not show videos. The handler now sets `EXTRA_MIME_TYPES = [image/*, video/*]` when `includeVideos` is true and keeps `image/*` only when it's false. iOS already had this behaviour.
+- **Android `pickAndScan` — `maxItems` is now honoured.** The intent enabled `EXTRA_ALLOW_MULTIPLE` whenever `maxItems != 1`, but never capped the actual selection. Selections beyond `maxItems` are now trimmed before the scan loop runs, matching the iOS contract.
+- **Android `pickAndScan` — picked videos no longer disappear silently.** When the user selected a video via the now-working video filter, the image-only scan loop fed the URI to `BitmapPipeline.decodeOriented` which returned `null`, the result was swallowed, and the user saw fewer results than they had picked with no explanation. Video items now emit a `failed` per-asset result (`mediaType: "video"`, `status: "failed"`, `errorMessage` explaining that Android video Pick & Scan requires `scanFile()` against the underlying `.mp4`), so `ScanSession.failedCount` and the user-facing result stream reflect them.
+
 ## 2.6.1 — 2026-05-22
 
 > Bug fix for on-demand model downloads on iOS. No API changes.

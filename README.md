@@ -195,12 +195,44 @@ Presets: `.strict()` (threshold 0.85), `.moderate()` (0.7), `.permissive()` (0.5
 
 ```dart
 await NsfwDetector.instance.init(const NsfwInitOptions(
-  preloadModels: [ModelIds.openNsfw2],
+  preloadModels: [
+    ModelIds.openNsfw2,        // fast, default classifier (~11 MB)
+    ModelIds.falconsai,        // ViT classifier (~75 MB)
+    ModelIds.adamcodd,         // ViT classifier, 384px (~75 MB)
+    ModelDescriptor.nudenet,   // body-part detector (~46 MB)
+  ],
+  downloadIfMissing: [
+    ModelIds.falconsai,
+    ModelIds.adamcodd,
+    ModelDescriptor.nudenet,
+  ],
   enableNativeLogging: false,
 ));
 ```
 
+Preload **multiple** classifiers when you want to ensemble them — the more
+agreement across independent architectures (CNN + two ViTs), the lower the
+false-positive rate. See [Higher accuracy via ensemble](#higher-accuracy-via-ensemble).
+
 Skipping `init` is fine — the plugin lazy-loads on first use. Use `NsfwInitOptions.lazy()` / `.debug()` / `.production()` for typical shapes.
+
+### Higher accuracy via ensemble
+
+```dart
+final config = ScanConfiguration.strict().copyWith(
+  ensemble: MajorityEnsemble(
+    modelIds: [ModelIds.openNsfw2, ModelIds.falconsai, ModelIds.adamcodd],
+  ),
+);
+final result = await NsfwDetector.instance.scanFile(path, configuration: config);
+```
+
+`MajorityEnsemble` runs all three classifiers and takes the consensus, with
+borderline scores (~0.45 .. 0.55) abstaining so a single uncertain model can't
+flip the verdict. `WeightedEnsemble` averages per-category confidences with
+configurable per-model weights. Cost scales linearly with model count —
+preload them via `NsfwInitOptions.preloadModels` so the first ensemble scan
+is warm.
 
 ### Drop-in permissions UI
 
@@ -324,14 +356,22 @@ class ScanResult {
 
 ## Models
 
-| Id | Shape | Size | Source |
-| --- | --- | --- | --- |
-| `ModelIds.openNsfw2` | classifier, 224 | ~11 MB | downloaded on first use |
-| `ModelIds.falconsai` | classifier, 224 (ViT) | ~75 MB | opt-in download |
-| `ModelIds.adamcodd` | classifier, 384 (ViT) | ~75 MB | opt-in download |
-| `ModelDescriptor.nudenet` | detector, 640 (YOLOv8m body-parts) | ~46 MB | opt-in download |
+Four models ship out of the box — preload one for the lightest footprint, or
+several to ensemble for higher accuracy. None of them is bundled in the binary;
+each downloads on first use (or eagerly via `NsfwInitOptions.downloadIfMissing`).
 
-Set a custom mirror URL with `setModelUrl(modelId, url)`. The model archive's SHA-256 is verified before extraction when pinned on the descriptor. Manage downloads / preloads via `NsfwDetector.instance.models` (`NsfwModelManager`).
+| Id | Shape | Size | Strength |
+| --- | --- | --- | --- |
+| `ModelIds.openNsfw2` | classifier, 224 (CNN) | ~11 MB | default — small + fast, good baseline accuracy |
+| `ModelIds.falconsai` | classifier, 224 (ViT) | ~75 MB | ViT — different errors than openNsfw2, great ensemble partner |
+| `ModelIds.adamcodd` | classifier, 384 (ViT) | ~75 MB | higher-resolution ViT — best single-model accuracy |
+| `ModelDescriptor.nudenet` | detector, 640 (YOLOv8m body-parts) | ~46 MB | spatial — per-region boxes, drives redaction + detect-then-classify |
+
+Pick a single classifier via `ScanConfiguration.modelId`, or combine multiple
+classifiers via `ScanConfiguration.ensemble` ([example above](#higher-accuracy-via-ensemble)).
+Set a custom mirror URL with `setModelUrl(modelId, url)`. The model archive's
+SHA-256 is verified before extraction when pinned on the descriptor. Manage
+downloads / preloads via `NsfwDetector.instance.models` (`NsfwModelManager`).
 
 ---
 

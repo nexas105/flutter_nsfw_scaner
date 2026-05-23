@@ -10,15 +10,13 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   static const _methodChannel = MethodChannel('nsfw_detect_ios/methods');
   static const _eventChannel = EventChannel('nsfw_detect_ios/scan_events');
 
+  late final Stream<Map<dynamic, dynamic>> _scanEvents = _eventChannel
+      .receiveBroadcastStream()
+      .where((event) => event is Map)
+      .cast<Map<dynamic, dynamic>>();
+
   @override
-  Stream<Map<dynamic, dynamic>> get scanEventStream {
-    // Create a fresh stream each time — the previous stream is dead
-    // after cancel/completion. Caching would return a closed stream.
-    return _eventChannel
-        .receiveBroadcastStream()
-        .where((event) => event is Map)
-        .cast<Map<dynamic, dynamic>>();
-  }
+  Stream<Map<dynamic, dynamic>> get scanEventStream => _scanEvents;
 
   @override
   Future<PhotoLibraryPermissionStatus> requestPermission() async {

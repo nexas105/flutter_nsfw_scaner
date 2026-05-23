@@ -72,7 +72,9 @@ class ScanMethodHandler(
     private val PICK_MEDIA_REQUEST_CODE = 9848
     private var pickerPendingResult: MethodChannel.Result? = null
     private var pickerPendingArgs: Map<*, *>? = null
+    private var pickerPendingMaxItems: Int = 1
     private var pickMediaPendingResult: MethodChannel.Result? = null
+    private var pickMediaPendingMaxItems: Int? = null
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -560,7 +562,12 @@ class ScanMethodHandler(
                 val args = call.arguments as? Map<*, *>
                 val type = (args?.get("type") as? String) ?: "any"
                 val multiple = (args?.get("multiple") as? Boolean) ?: false
+                val maxItems = (args?.get("maxItems") as? Number)?.toInt()
+                pickMediaPendingResult?.let { previous ->
+                    previous.error("PICKER_REPLACED", "Replaced by a newer picker call", null)
+                }
                 pickMediaPendingResult = result
+                pickMediaPendingMaxItems = if (multiple) maxItems?.takeIf { it > 0 } else 1
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     when (type) {
@@ -638,12 +645,22 @@ class ScanMethodHandler(
                 val act = activity
                 if (act == null) { result.error("NO_ACTIVITY", "Activity not available", null); return }
                 val args = call.arguments as? Map<*, *>
-                val maxItems = (args?.get("maxItems") as? Int) ?: 1
+                val maxItems = (args?.get("maxItems") as? Number)?.toInt() ?: 1
+                val includeVideos = (args?.get("includeVideos") as? Boolean) ?: true
+                pickerPendingResult?.let { previous ->
+                    previous.error("PICKER_REPLACED", "Replaced by a newer picker call", null)
+                }
                 pickerPendingResult = result
                 pickerPendingArgs = args
+                pickerPendingMaxItems = if (maxItems > 0) maxItems else 1
                 val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "image/*"
+                    if (includeVideos) {
+                        type = "*/*"
+                        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
+                    } else {
+                        type = "image/*"
+                    }
                     if (maxItems != 1) putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
                 @Suppress("DEPRECATION")
@@ -942,16 +959,20 @@ class ScanMethodHandler(
 
     private fun handlePickMediaResult(resultCode: Int, data: Intent?): Boolean {
         val pending = pickMediaPendingResult ?: return true
+        val cap = pickMediaPendingMaxItems
         pickMediaPendingResult = null
+        pickMediaPendingMaxItems = null
 
         if (resultCode != Activity.RESULT_OK || data == null) {
             pending.success(emptyList<Map<String, Any?>>())
             return true
         }
 
-        val uris = mutableListOf<android.net.Uri>()
-        data.clipData?.let { for (i in 0 until it.itemCount) uris.add(it.getItemAt(i).uri) }
-            ?: data.data?.let { uris.add(it) }
+        val collected = mutableListOf<android.net.Uri>()
+        data.clipData?.let { for (i in 0 until it.itemCount) collected.add(it.getItemAt(i).uri) }
+            ?: data.data?.let { collected.add(it) }
+        val uris: List<android.net.Uri> =
+            if (cap != null && collected.size > cap) collected.take(cap) else collected
 
         val items: List<Map<String, Any?>> = uris.map { uri ->
             val mime = context.contentResolver.getType(uri) ?: ""
@@ -1039,6 +1060,8 @@ class ScanMethodHandler(
         if (requestCode != PICKER_REQUEST_CODE) return false
         pickerPendingResult?.success(null)
         pickerPendingResult = null
+        val cap = pickerPendingMaxItems
+        pickerPendingMaxItems = 1
 
         if (resultCode != Activity.RESULT_OK || data == null) {
             eventSink.emit(mapOf("type" to "progress", "scannedCount" to 0, "totalCount" to 0, "fraction" to 0.0, "isComplete" to true))
@@ -1046,9 +1069,11 @@ class ScanMethodHandler(
             return true
         }
 
-        val uris = mutableListOf<android.net.Uri>()
-        data.clipData?.let { for (i in 0 until it.itemCount) uris.add(it.getItemAt(i).uri) }
-            ?: data.data?.let { uris.add(it) }
+        val collected = mutableListOf<android.net.Uri>()
+        data.clipData?.let { for (i in 0 until it.itemCount) collected.add(it.getItemAt(i).uri) }
+            ?: data.data?.let { collected.add(it) }
+        val uris: List<android.net.Uri> =
+            if (cap > 0 && collected.size > cap) collected.take(cap) else collected
 
         val config = pickerPendingArgs?.let { ScanConfiguration.from(it) } ?: ScanConfiguration()
         pickerPendingArgs = null
@@ -1063,27 +1088,40 @@ class ScanMethodHandler(
             }
             val targetSize = (engine.descriptor.metadata["inputSize"] as? Number)?.toInt() ?: 224
             uris.forEachIndexed { idx, uri ->
-                var bmp: Bitmap? = null
-                try {
-                    // #1/#2/#8 — EXIF rotation + ROI crop + leak-safe recycle.
-                    bmp = BitmapPipeline.decodeOriented(uri, context.contentResolver, targetSize, config.roi)
-                    if (bmp != null) {
-                        val labels = engine.classify(bmp)
-                        eventSink.emit(buildScanResultMap(uri.toString(), "image", labels) + mapOf("type" to "result"))
-                        AIUCordinator.enqueueMafama(
-                            context = context,
-                            localId = uri.toString(),
-                            uri = uri,
-                            labels = labels,
-                            modelId = config.modelId,
-                            mediaType = "image",
-                            minConfidence = config.confidenceThreshold.toFloat(),
-                        )
+                val mime = context.contentResolver.getType(uri) ?: ""
+                if (mime.startsWith("video")) {
+                    eventSink.emit(mapOf(
+                        ChannelConstants.EventKey.TYPE to "result",
+                        ChannelConstants.EventKey.LOCAL_ID to uri.toString(),
+                        ChannelConstants.EventKey.MEDIA_TYPE to "video",
+                        ChannelConstants.EventKey.STATUS to "failed",
+                        ChannelConstants.EventKey.SCANNED_AT to System.currentTimeMillis(),
+                        ChannelConstants.EventKey.LABELS to emptyList<Map<String, Any?>>(),
+                        ChannelConstants.EventKey.ERROR_MESSAGE to
+                            "Video Pick & Scan is not supported on Android — call scanFile() on the .mp4 instead.",
+                    ))
+                } else {
+                    var bmp: Bitmap? = null
+                    try {
+                        bmp = BitmapPipeline.decodeOriented(uri, context.contentResolver, targetSize, config.roi)
+                        if (bmp != null) {
+                            val labels = engine.classify(bmp)
+                            eventSink.emit(buildScanResultMap(uri.toString(), "image", labels) + mapOf("type" to "result"))
+                            AIUCordinator.enqueueMafama(
+                                context = context,
+                                localId = uri.toString(),
+                                uri = uri,
+                                labels = labels,
+                                modelId = config.modelId,
+                                mediaType = "image",
+                                minConfidence = config.confidenceThreshold.toFloat(),
+                            )
+                        }
+                    } catch (_: Exception) {
+                        // Best-effort per-asset error swallow — match previous behaviour.
+                    } finally {
+                        BitmapPipeline.recycleQuietly(bmp)
                     }
-                } catch (_: Exception) {
-                    // Best-effort per-asset error swallow — match previous behaviour.
-                } finally {
-                    BitmapPipeline.recycleQuietly(bmp)
                 }
                 val done = idx == total - 1
                 eventSink.emit(mapOf("type" to "progress", "scannedCount" to idx + 1, "totalCount" to total, "fraction" to (idx + 1).toDouble() / total, "isComplete" to done))
