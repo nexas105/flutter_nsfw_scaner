@@ -290,14 +290,24 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
     String mediaType = 'image',
     int? limit,
   }) async {
-    final result = await _methodChannel.invokeListMethod<String>(
-      'listAssetIdentifiers',
-      {
-        'mediaType': mediaType,
-        if (limit != null) 'limit': limit,
-      },
-    );
-    return result ?? const [];
+    try {
+      final result = await _methodChannel.invokeListMethod<String>(
+        'listAssetIdentifiers',
+        {
+          'mediaType': mediaType,
+          if (limit != null) 'limit': limit,
+        },
+      );
+      return result ?? const [];
+    } on MissingPluginException {
+      // ponytail: Android has no MediaStore enumeration yet — fail loud with an
+      // actionable message instead of a dead ensemble stream. Remove once the
+      // native listAssetIdentifiers MediaStore query lands.
+      throw UnsupportedError(
+        'listAssetIdentifiers / startScanEnsemble is not implemented on this '
+        'platform yet — library enumeration currently exists on iOS only.',
+      );
+    }
   }
 
   @override
