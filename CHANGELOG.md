@@ -1,3 +1,19 @@
+## 2.7.1
+
+> Brings the 2.7.0 **asset management** surface (favorite / hide / delete / album add-remove-move) to **Android** via `MediaStore`, matching the existing iOS API. Same Dart methods, no new public surface.
+
+### Added
+
+- **Android asset management** — native `MediaStore` implementations of
+  `setAssetFavorite`, `setAssetHidden`, `deleteAssets`, `listAlbums`,
+  `createAlbum`, `addAssetsToAlbum`, `removeAssetsFromAlbum`, and
+  `moveAssetsToAlbum`, plus `loadThumbnail`. Backed by a new `AlbumStore`.
+
+### Notes
+
+- Android asset management is **early / WIP** and not yet fully device-verified;
+  file issues for gaps. iOS behaviour is unchanged from 2.7.0.
+
 ## 2.7.0
 
 > Adds native **asset management** on the *original* photo-library item: favorite, hide, delete, and album add/remove/move. All operate on the real `PHAsset` via PhotoKit and require `.readWrite` authorization (already requested by `requestPermission()` — no new Info.plist key). Additive only.
