@@ -34,6 +34,8 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -79,6 +81,11 @@ class ScanMethodHandler(
 
     /** App-managed album store — Android has no native user-album API. */
     private val albumStore = AlbumStore.getInstance(context)
+
+    // One handler-scoped IO scope for every background launch below. Cancelled
+    // in [dispose] so no coroutine delivers result.success into a detached
+    // engine or leaks the activity context after onDetachedFromEngine.
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Asset-op user consent. On API 30+ favorite/hidden(trash)/delete go
     // through a MediaStore createXRequest IntentSender the user must confirm;
@@ -141,7 +148,7 @@ class ScanMethodHandler(
                     result.error("INVALID_ARGS", "modelId required", null)
                     return
                 }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         modelRegistry.preload(modelId)
                         withContext(Dispatchers.Main) { result.success(null) }
@@ -161,7 +168,7 @@ class ScanMethodHandler(
                     return
                 }
                 val customUrl = args["url"] as? String
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         if (customUrl != null) {
                             modelRegistry.setModelDownloadUrl(customUrl, modelId)
@@ -213,7 +220,7 @@ class ScanMethodHandler(
                     result.error("INVALID_ARGS", "modelId required", null)
                     return
                 }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         val desc = modelRegistry.descriptor(modelId)
                         val resourceName = desc?.bundleResourceName
@@ -260,7 +267,7 @@ class ScanMethodHandler(
                     currentSession = newSession
                     prev
                 }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     // Drain the old session before starting the new one so
                     // checkpoint flushes and eventSink ordering don't
                     // interleave between two live ScanSessionTasks.
@@ -306,7 +313,7 @@ class ScanMethodHandler(
                 }
                 val modelId = args["modelId"] as? String
                 val roi = ScanConfiguration.parseRoi(args["roi"])
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         val map = scanSingleAsset(localId, modelId, roi)
                         withContext(Dispatchers.Main) { result.success(map) }
@@ -328,7 +335,7 @@ class ScanMethodHandler(
                 // instantiate and we silently fell back. If the engine hasn't
                 // been loaded yet, returns delegateUsed=null + loaded=false so
                 // Dart can decide whether to force a load first.
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         // Don't trigger a load just to peek — try detector first,
                         // then classifier, and report null if neither is loaded.
@@ -370,7 +377,7 @@ class ScanMethodHandler(
                 val modelId = (args["modelId"] as? String) ?: ModelIds.OPEN_NSFW_2
                 // #21 — accept optional normalised ROI ({x, y, width, height}, 0..1).
                 val roi = ScanConfiguration.parseRoi(args["roi"])
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         // Detector-kind models: detect on a single image,
                         // build the detector result map. Animated assets
@@ -503,7 +510,7 @@ class ScanMethodHandler(
                 if (bytes == null) { result.error("INVALID_ARGS", "bytes required", null); return }
                 val modelId = (args["modelId"] as? String) ?: ModelIds.OPEN_NSFW_2
                 val roi = ScanConfiguration.parseRoi(args["roi"])
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     // Detector-kind models — image-only single-shot. Same
                     // rationale as scanSingleAsset: detectorEngine, build a
                     // detector result map.
@@ -811,7 +818,7 @@ class ScanMethodHandler(
                     return
                 }
                 val modelId = (args["modelId"] as? String) ?: ModelIds.OPEN_NSFW_2
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     val rec = ScanCache.getInstance(context)
                         .cachedRecordAnyDate(localId, modelId)
                     if (rec == null) {
@@ -847,7 +854,7 @@ class ScanMethodHandler(
                 @Suppress("UNCHECKED_CAST")
                 val ids = (args?.get("localIds") as? List<String>) ?: emptyList()
                 if (ids.isEmpty()) { result.success(null); return }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     for (id in ids.take(256)) { // cap to keep this best-effort
                         val uri = try {
                             android.net.Uri.parse(id)
@@ -880,7 +887,7 @@ class ScanMethodHandler(
                 val outputFormat = (args["outputFormat"] as? String) ?: "jpeg"
                 val mode = com.example.nsfw_detect_ios.redaction.MediaRedactor.fromString(modeStr)
                 val boxes = parseBoxes(detections)
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         val out = com.example.nsfw_detect_ios.redaction.MediaRedactor
                             .redactBytes(bytes, boxes, mode, intensity, outputFormat)
@@ -907,7 +914,7 @@ class ScanMethodHandler(
                 val intensity = ((args["intensity"] as? Number)?.toFloat()) ?: 1f
                 val mode = com.example.nsfw_detect_ios.redaction.MediaRedactor.fromString(modeStr)
                 val boxes = parseBoxes(detections)
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         val outPath = com.example.nsfw_detect_ios.redaction.MediaRedactor
                             .redactFile(inputPath, boxes, mode, intensity, outputPath)
@@ -929,7 +936,7 @@ class ScanMethodHandler(
                 val maxW = (args["maxWidth"] as? Number)?.toInt() ?: 256
                 val maxH = (args["maxHeight"] as? Number)?.toInt() ?: 256
                 val target = maxOf(maxW, maxH)
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     try {
                         val uri: android.net.Uri = when {
                             localId.startsWith("content://") -> android.net.Uri.parse(localId)
@@ -991,7 +998,7 @@ class ScanMethodHandler(
             }
 
             ChannelConstants.Method.LIST_ALBUMS -> {
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     val albums = albumStore.listAlbums()
                     withContext(Dispatchers.Main) { result.success(albums) }
                 }
@@ -1000,7 +1007,7 @@ class ScanMethodHandler(
             ChannelConstants.Method.CREATE_ALBUM -> {
                 val title = (call.arguments as? Map<*, *>)?.get("title") as? String
                 if (title.isNullOrEmpty()) { result.error("INVALID_ARGS", "title required", null); return }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     val id = albumStore.createAlbum(title)
                     withContext(Dispatchers.Main) { result.success(id) }
                 }
@@ -1012,7 +1019,7 @@ class ScanMethodHandler(
                 val ids = (a?.get("localIds") as? List<String>) ?: emptyList()
                 val albumId = a?.get("albumId") as? String
                 if (albumId == null) { result.error("INVALID_ARGS", "albumId required", null); return }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     albumStore.addAssets(albumId, ids)
                     withContext(Dispatchers.Main) { result.success(null) }
                 }
@@ -1024,7 +1031,7 @@ class ScanMethodHandler(
                 val ids = (a?.get("localIds") as? List<String>) ?: emptyList()
                 val albumId = a?.get("albumId") as? String
                 if (albumId == null) { result.error("INVALID_ARGS", "albumId required", null); return }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     albumStore.removeAssets(albumId, ids)
                     withContext(Dispatchers.Main) { result.success(null) }
                 }
@@ -1037,7 +1044,7 @@ class ScanMethodHandler(
                 val toAlbumId = a?.get("toAlbumId") as? String
                 val fromAlbumId = a?.get("fromAlbumId") as? String
                 if (toAlbumId == null) { result.error("INVALID_ARGS", "toAlbumId required", null); return }
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     albumStore.moveAssets(toAlbumId, ids, fromAlbumId)
                     withContext(Dispatchers.Main) { result.success(null) }
                 }
@@ -1100,7 +1107,7 @@ class ScanMethodHandler(
         // API < 30: no createDeleteRequest. Attempt a direct delete; on API 29
         // an unowned asset throws RecoverableSecurityException carrying an
         // IntentSender we relaunch for user consent.
-        CoroutineScope(Dispatchers.IO).launch {
+        ioScope.launch {
             var deleted = 0
             var recoverable: android.content.IntentSender? = null
             for (uri in uris) {
@@ -1347,7 +1354,7 @@ class ScanMethodHandler(
         pickerPendingArgs = null
         val total = uris.size
 
-        CoroutineScope(Dispatchers.IO).launch {
+        ioScope.launch {
             val engine = try {
                 modelRegistry.engine(config.modelId, delegate = config.acceleratorDelegate)
             } catch (e: Exception) {
@@ -1484,6 +1491,7 @@ class ScanMethodHandler(
      * activity context and waste battery.
      */
     fun dispose() {
+        ioScope.cancel()
         currentSession?.cancel()
         currentSession = null
         cameraSessionActive = false

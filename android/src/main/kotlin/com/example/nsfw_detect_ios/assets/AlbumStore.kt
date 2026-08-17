@@ -126,19 +126,22 @@ class AlbumStore private constructor(context: Context) :
      * source membership rather than being duplicated). Atomic.
      */
     fun moveAssets(toAlbumId: String, localIds: List<String>, fromAlbumId: String?) {
+        if (localIds.isEmpty()) return
         val db = writableDatabase
+        val placeholders = localIds.joinToString(",") { "?" }
         db.beginTransaction()
         try {
+            // Remove existing membership in one IN (…) delete instead of one per id.
+            if (fromAlbumId != null) {
+                db.delete(
+                    "album_assets",
+                    "album_id = ? AND local_id IN ($placeholders)",
+                    arrayOf(fromAlbumId, *localIds.toTypedArray()),
+                )
+            } else {
+                db.delete("album_assets", "local_id IN ($placeholders)", localIds.toTypedArray())
+            }
             for (localId in localIds) {
-                if (fromAlbumId != null) {
-                    db.delete(
-                        "album_assets",
-                        "album_id = ? AND local_id = ?",
-                        arrayOf(fromAlbumId, localId),
-                    )
-                } else {
-                    db.delete("album_assets", "local_id = ?", arrayOf(localId))
-                }
                 db.insertWithOnConflict(
                     "album_assets", null,
                     ContentValues().apply {
@@ -158,15 +161,8 @@ class AlbumStore private constructor(context: Context) :
     fun forgetAssets(localIds: List<String>) {
         if (localIds.isEmpty()) return
         val db = writableDatabase
-        db.beginTransaction()
-        try {
-            for (localId in localIds) {
-                db.delete("album_assets", "local_id = ?", arrayOf(localId))
-            }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
+        val placeholders = localIds.joinToString(",") { "?" }
+        db.delete("album_assets", "local_id IN ($placeholders)", localIds.toTypedArray())
     }
 
     companion object {
