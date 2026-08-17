@@ -916,7 +916,12 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 let userAlbums = PHAssetCollection.fetchAssetCollections(
                     with: .album, subtype: .albumRegular, options: nil)
                 userAlbums.enumerateObjects { collection, _, _ in
-                    let count = PHAsset.fetchAssets(in: collection, options: nil).count
+                    // estimatedAssetCount is O(1); fall back to a materializing
+                    // fetch only when PhotoKit can't supply an estimate.
+                    let estimated = collection.estimatedAssetCount
+                    let count = estimated != NSNotFound
+                        ? estimated
+                        : PHAsset.fetchAssets(in: collection, options: nil).count
                     albums.append([
                         "id": collection.localIdentifier,
                         "title": collection.localizedTitle ?? "",
@@ -996,12 +1001,14 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             }
             guard ensureWriteAuthorized(result) else { return }
             let ids = (args?["localIds"] as? [String]) ?? []
-            let assets = fetchAssets(ids)
+            // Validate the target album before resolving assets — a bad id
+            // otherwise wastes a full fetch that's discarded anyway.
             guard let target = fetchCollection(toAlbumId) else {
                 result(FlutterError(code: "ALBUM_NOT_FOUND",
                                     message: "No album for id \(toAlbumId)", details: nil))
                 return
             }
+            let assets = fetchAssets(ids)
             // Optional source: iOS albums are membership sets, not folders, so
             // "move" = add to target (+ remove from the source user album when
             // given). Smart albums / "Recents" yield a nil change request and
