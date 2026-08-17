@@ -1,3 +1,12 @@
+## 2.7.2
+
+### Fixed
+
+- **`WeightedEnsemble` weight misalignment.** When a model's result was
+  non-completed (e.g. a failed scan), `combine` pulled each remaining result's
+  weight from the wrong `modelIds` position, which could silently flip the
+  ensemble's `topCategory`. Weights now stay bound to their own model.
+
 ## 2.7.1
 
 > Brings the 2.7.0 **asset management** surface (favorite / hide / delete / album add-remove-move) to **Android** via `MediaStore`, matching the existing iOS API. Same Dart methods, no new public surface.
