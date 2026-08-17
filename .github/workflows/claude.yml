@@ -10,6 +10,11 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Supersede an earlier @claude run on the same issue/PR with the newest one.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   claude:
     if: |
@@ -50,6 +55,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Cap turns so a runaway @claude request can't burn unbounded tokens.
+          claude_args: |
+            --max-turns 20
 
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
