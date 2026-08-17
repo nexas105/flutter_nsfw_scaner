@@ -11,8 +11,9 @@
 
 ### Notes
 
-- Android asset management is **early / WIP** and not yet fully device-verified;
-  file issues for gaps. iOS behaviour is unchanged from 2.7.0.
+- Android asset management is **early** — compiles and builds, but not yet
+  fully device-verified; file issues for gaps. iOS behaviour is unchanged
+  from 2.7.0.
 
 ## 2.7.0
 
