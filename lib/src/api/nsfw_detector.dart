@@ -1277,6 +1277,14 @@ class NsfwDetector {
   }
 
   /// Asset-input variant of [scanBytesEnsemble].
+  //
+  // ponytail: this fans out one channel round-trip per model, so the native
+  // side re-fetches the PHAsset and re-reads the source image M times. A true
+  // single-decode path needs a native `scanSingleAssetMulti(localId, modelIds)`
+  // that loads the Photos source ONCE, then resizes to each model's own
+  // `inputSize` (they differ, so the resized buffer can't be shared) and runs
+  // each classifier. Deferred to 2.8.0 — it touches the ImageAnalyzer / Live
+  // Photo / video pipeline and must be device-verified, not compile-checked.
   Future<ScanResult> scanAssetEnsemble(
     String localIdentifier,
     EnsembleStrategy strategy, {
