@@ -51,6 +51,19 @@ object ChannelConstants {
         const val REGISTER_MODEL    = "registerModel"
         const val SCHEDULE_BACKGROUND_SWEEP = "scheduleBackgroundSweep"
         const val CANCEL_BACKGROUND_SWEEP   = "cancelBackgroundSweep"
+
+        // Asset management (mirrors iOS' ChannelConstants.swift). PhotoKit
+        // semantics don't map 1:1 to MediaStore — see ScanMethodHandler /
+        // AlbumStore for the platform mapping (hidden -> trash, albums ->
+        // app-managed SQLite store).
+        const val SET_ASSET_FAVORITE       = "setAssetFavorite"
+        const val SET_ASSET_HIDDEN         = "setAssetHidden"
+        const val DELETE_ASSETS            = "deleteAssets"
+        const val LIST_ALBUMS              = "listAlbums"
+        const val CREATE_ALBUM             = "createAlbum"
+        const val ADD_ASSETS_TO_ALBUM      = "addAssetsToAlbum"
+        const val REMOVE_ASSETS_FROM_ALBUM = "removeAssetsFromAlbum"
+        const val MOVE_ASSETS_TO_ALBUM     = "moveAssetsToAlbum"
     }
 
     object EventKey {

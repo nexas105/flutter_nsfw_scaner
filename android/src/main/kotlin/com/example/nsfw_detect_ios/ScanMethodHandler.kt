@@ -18,6 +18,7 @@ import com.example.nsfw_detect_ios.scanner.ScanConfiguration
 import com.example.nsfw_detect_ios.background.NsfwSweepWorker
 import com.example.nsfw_detect_ios.ml.VideoResultAggregator
 import com.example.nsfw_detect_ios.cache.ScanCache
+import com.example.nsfw_detect_ios.assets.AlbumStore
 import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -75,6 +76,18 @@ class ScanMethodHandler(
     private var pickerPendingMaxItems: Int = 1
     private var pickMediaPendingResult: MethodChannel.Result? = null
     private var pickMediaPendingMaxItems: Int? = null
+
+    /** App-managed album store — Android has no native user-album API. */
+    private val albumStore = AlbumStore.getInstance(context)
+
+    // Asset-op user consent. On API 30+ favorite/hidden(trash)/delete go
+    // through a MediaStore createXRequest IntentSender the user must confirm;
+    // the outcome lands in [onActivityResult]. Only one such op is in flight
+    // at a time.
+    private val CONSENT_REQUEST_CODE = 9850
+    private var consentPendingResult: MethodChannel.Result? = null
+    private var consentKind: String? = null              // "delete" | "favorite" | "hidden"
+    private var consentAffectedIds: List<String> = emptyList()
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -947,9 +960,213 @@ class ScanMethodHandler(
                 }
             }
 
+            ChannelConstants.Method.SET_ASSET_FAVORITE -> {
+                val a = call.arguments as? Map<*, *>
+                val localId = a?.get("localId") as? String
+                val favorite = a?.get("favorite") as? Boolean
+                if (localId == null || favorite == null) {
+                    result.error("INVALID_ARGS", "localId and favorite required", null); return
+                }
+                requestFavorite(listOf(localId), favorite, result)
+            }
+
+            ChannelConstants.Method.SET_ASSET_HIDDEN -> {
+                val a = call.arguments as? Map<*, *>
+                val localId = a?.get("localId") as? String
+                val hidden = a?.get("hidden") as? Boolean
+                if (localId == null || hidden == null) {
+                    result.error("INVALID_ARGS", "localId and hidden required", null); return
+                }
+                // Android has no per-asset hidden flag; map to the MediaStore
+                // trash (reversible, system-backed) per the package's Android
+                // mapping. hidden=true trashes, hidden=false restores.
+                requestTrash(listOf(localId), hidden, result)
+            }
+
+            ChannelConstants.Method.DELETE_ASSETS -> {
+                @Suppress("UNCHECKED_CAST")
+                val ids = ((call.arguments as? Map<*, *>)?.get("localIds") as? List<String>) ?: emptyList()
+                if (ids.isEmpty()) { result.success(false); return }
+                requestDelete(ids, result)
+            }
+
+            ChannelConstants.Method.LIST_ALBUMS -> {
+                CoroutineScope(Dispatchers.IO).launch {
+                    val albums = albumStore.listAlbums()
+                    withContext(Dispatchers.Main) { result.success(albums) }
+                }
+            }
+
+            ChannelConstants.Method.CREATE_ALBUM -> {
+                val title = (call.arguments as? Map<*, *>)?.get("title") as? String
+                if (title.isNullOrEmpty()) { result.error("INVALID_ARGS", "title required", null); return }
+                CoroutineScope(Dispatchers.IO).launch {
+                    val id = albumStore.createAlbum(title)
+                    withContext(Dispatchers.Main) { result.success(id) }
+                }
+            }
+
+            ChannelConstants.Method.ADD_ASSETS_TO_ALBUM -> {
+                val a = call.arguments as? Map<*, *>
+                @Suppress("UNCHECKED_CAST")
+                val ids = (a?.get("localIds") as? List<String>) ?: emptyList()
+                val albumId = a?.get("albumId") as? String
+                if (albumId == null) { result.error("INVALID_ARGS", "albumId required", null); return }
+                CoroutineScope(Dispatchers.IO).launch {
+                    albumStore.addAssets(albumId, ids)
+                    withContext(Dispatchers.Main) { result.success(null) }
+                }
+            }
+
+            ChannelConstants.Method.REMOVE_ASSETS_FROM_ALBUM -> {
+                val a = call.arguments as? Map<*, *>
+                @Suppress("UNCHECKED_CAST")
+                val ids = (a?.get("localIds") as? List<String>) ?: emptyList()
+                val albumId = a?.get("albumId") as? String
+                if (albumId == null) { result.error("INVALID_ARGS", "albumId required", null); return }
+                CoroutineScope(Dispatchers.IO).launch {
+                    albumStore.removeAssets(albumId, ids)
+                    withContext(Dispatchers.Main) { result.success(null) }
+                }
+            }
+
+            ChannelConstants.Method.MOVE_ASSETS_TO_ALBUM -> {
+                val a = call.arguments as? Map<*, *>
+                @Suppress("UNCHECKED_CAST")
+                val ids = (a?.get("localIds") as? List<String>) ?: emptyList()
+                val toAlbumId = a?.get("toAlbumId") as? String
+                val fromAlbumId = a?.get("fromAlbumId") as? String
+                if (toAlbumId == null) { result.error("INVALID_ARGS", "toAlbumId required", null); return }
+                CoroutineScope(Dispatchers.IO).launch {
+                    albumStore.moveAssets(toAlbumId, ids, fromAlbumId)
+                    withContext(Dispatchers.Main) { result.success(null) }
+                }
+            }
+
             else -> result.notImplemented()
         }
     }
+
+    /**
+     * Resolve a Dart-side `localId` to a MediaStore content Uri. Accepts the
+     * `content://` / `file://` / absolute-path / numeric-id forms the scan
+     * pipeline emits — mirrors the inline resolution used by scanSingleAsset
+     * and loadThumbnail.
+     */
+    private fun mediaUriFor(localId: String): android.net.Uri = when {
+        localId.startsWith("content://") -> android.net.Uri.parse(localId)
+        localId.startsWith("file://") -> android.net.Uri.parse(localId)
+        localId.startsWith("/") -> android.net.Uri.fromFile(java.io.File(localId))
+        localId.toLongOrNull() != null -> android.content.ContentUris.withAppendedId(
+            android.provider.MediaStore.Files.getContentUri("external"), localId.toLong())
+        else -> throw IllegalArgumentException("Unsupported localId: $localId")
+    }
+
+    private fun requestFavorite(ids: List<String>, favorite: Boolean, result: MethodChannel.Result) {
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            result.error("UNSUPPORTED_API",
+                "Favoriting requires Android 11 (API 30) — MediaStore has no IS_FAVORITE column below it.", null)
+            return
+        }
+        val uris = try { ids.map { mediaUriFor(it) } } catch (e: Exception) {
+            result.error("INVALID_ARGS", e.message, null); return
+        }
+        val pi = android.provider.MediaStore.createFavoriteRequest(context.contentResolver, uris, favorite)
+        launchConsent(pi, "favorite", ids, result)
+    }
+
+    private fun requestTrash(ids: List<String>, trashed: Boolean, result: MethodChannel.Result) {
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            result.error("UNSUPPORTED_API",
+                "Hiding maps to the MediaStore trash, which requires Android 11 (API 30).", null)
+            return
+        }
+        val uris = try { ids.map { mediaUriFor(it) } } catch (e: Exception) {
+            result.error("INVALID_ARGS", e.message, null); return
+        }
+        val pi = android.provider.MediaStore.createTrashRequest(context.contentResolver, uris, trashed)
+        launchConsent(pi, "hidden", ids, result)
+    }
+
+    private fun requestDelete(ids: List<String>, result: MethodChannel.Result) {
+        val uris = try { ids.map { mediaUriFor(it) } } catch (e: Exception) {
+            result.error("INVALID_ARGS", e.message, null); return
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            val pi = android.provider.MediaStore.createDeleteRequest(context.contentResolver, uris)
+            launchConsent(pi, "delete", ids, result)
+            return
+        }
+        // API < 30: no createDeleteRequest. Attempt a direct delete; on API 29
+        // an unowned asset throws RecoverableSecurityException carrying an
+        // IntentSender we relaunch for user consent.
+        CoroutineScope(Dispatchers.IO).launch {
+            var deleted = 0
+            var recoverable: android.content.IntentSender? = null
+            for (uri in uris) {
+                try {
+                    deleted += context.contentResolver.delete(uri, null, null)
+                } catch (e: Exception) {
+                    if (android.os.Build.VERSION.SDK_INT >= 29 &&
+                        e is android.app.RecoverableSecurityException) {
+                        recoverable = e.userAction.actionIntent.intentSender
+                        break
+                    }
+                    // Non-recoverable (permission, missing) — skip this asset.
+                }
+            }
+            val sender = recoverable
+            withContext(Dispatchers.Main) {
+                if (sender != null) {
+                    launchConsent(sender, "delete", ids, result)
+                } else {
+                    if (deleted > 0) albumStore.forgetAssets(ids)
+                    result.success(deleted > 0)
+                }
+            }
+        }
+    }
+
+    /**
+     * Present a MediaStore consent IntentSender and remember [result] so
+     * [onActivityResult] can resolve it. Rejects if no activity is attached or
+     * another consent op is already in flight.
+     */
+    private fun launchConsent(
+        sender: android.content.IntentSender,
+        kind: String,
+        ids: List<String>,
+        result: MethodChannel.Result,
+    ) {
+        val act = activity
+        if (act == null) {
+            result.error("NO_ACTIVITY", "No foreground activity to present the consent dialog", null)
+            return
+        }
+        if (consentPendingResult != null) {
+            result.error("CONSENT_BUSY", "Another asset operation is awaiting user consent", null)
+            return
+        }
+        consentPendingResult = result
+        consentKind = kind
+        consentAffectedIds = ids
+        try {
+            act.startIntentSenderForResult(sender, CONSENT_REQUEST_CODE, null, 0, 0, 0)
+        } catch (e: Exception) {
+            consentPendingResult = null
+            consentKind = null
+            consentAffectedIds = emptyList()
+            result.error("CONSENT_LAUNCH_FAILED", e.message, null)
+        }
+    }
+
+    /** PendingIntent overload — favorite/trash/delete requests hand back one. */
+    private fun launchConsent(
+        pending: android.app.PendingIntent,
+        kind: String,
+        ids: List<String>,
+        result: MethodChannel.Result,
+    ) = launchConsent(pending.intentSender, kind, ids, result)
 
     /**
      * Parses a list of wire-shape detection maps (as emitted by Dart's
@@ -1083,6 +1300,28 @@ class ScanMethodHandler(
     }
 
     fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        if (requestCode == CONSENT_REQUEST_CODE) {
+            val pending = consentPendingResult
+            val kind = consentKind
+            val ids = consentAffectedIds
+            consentPendingResult = null
+            consentKind = null
+            consentAffectedIds = emptyList()
+            if (pending == null) return true
+            val ok = resultCode == Activity.RESULT_OK
+            when (kind) {
+                // Delete mirrors iOS: a declined consent is `false`, not an error.
+                "delete" -> {
+                    if (ok) albumStore.forgetAssets(ids)
+                    pending.success(ok)
+                }
+                // favorite/hidden are Future<void> — surface a decline as an error
+                // so callers know the flag was not applied.
+                else -> if (ok) pending.success(null)
+                    else pending.error("USER_CANCELLED", "User declined the $kind request", null)
+            }
+            return true
+        }
         if (requestCode == PICK_MEDIA_REQUEST_CODE) {
             return handlePickMediaResult(resultCode, data)
         }
@@ -1250,6 +1489,11 @@ class ScanMethodHandler(
         cameraSessionActive = false
         currentCamera?.stop()
         currentCamera = null
+        // Drop any dangling consent result — the engine is detaching, the Dart
+        // future is gone.
+        consentPendingResult = null
+        consentKind = null
+        consentAffectedIds = emptyList()
     }
 
     /**
