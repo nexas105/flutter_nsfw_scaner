@@ -289,6 +289,28 @@ void main() {
       );
     });
 
+    test('WeightedEnsemble — weight stays aligned when a middle model drops',
+        () {
+      // modelIds a,b,c with b heavily weighted; b's scan failed, so only a and
+      // c completed. c must keep its OWN weight (1.0), not inherit b's (10.0).
+      final strategy = WeightedEnsemble(
+        modelIds: const ['a', 'b', 'c'],
+        weights: const {'a': 1.0, 'b': 10.0, 'c': 1.0},
+      );
+      final combined = strategy.combine([
+        fake(NsfwCategory.safe, 0.9), // a — completed
+        ScanResult.fake(
+          category: NsfwCategory.nudity,
+          confidence: 0.6,
+          status: ScanStatus.failed,
+        ), // b — dropped
+        fake(NsfwCategory.nudity, 0.6), // c — completed
+      ]);
+      // Correct: safe 0.9*1 beats nudity 0.6*1. The old index-into-`completed`
+      // bug handed c weight 10.0, flipping the result to nudity.
+      expect(combined.topCategory, NsfwCategory.safe);
+    });
+
     test('combine on empty perModelResults throws StateError', () {
       final strategy = MajorityEnsemble(modelIds: const ['a', 'b']);
       expect(() => strategy.combine([]), throwsStateError);

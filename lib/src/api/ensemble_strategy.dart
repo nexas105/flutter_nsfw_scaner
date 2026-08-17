@@ -156,14 +156,18 @@ final class WeightedEnsemble extends EnsembleStrategy {
     if (completed.isEmpty) return perModelResults.first;
 
     // Sum per-category weighted confidences. `modelIds` order is the source
-    // of truth for which weight applies to which result — perModelResults
-    // is in the same order by contract.
+    // of truth for which weight applies to which result — perModelResults is
+    // in the same order by contract. Iterate the *unfiltered* results so a
+    // dropped (non-completed) model doesn't shift the modelId→weight mapping
+    // onto the wrong result; skip the non-completed ones inline instead.
     final weightedSum = <NsfwCategory, double>{};
     var totalWeight = 0.0;
-    for (var i = 0; i < completed.length && i < modelIds.length; i++) {
+    for (var i = 0; i < perModelResults.length && i < modelIds.length; i++) {
+      final r = perModelResults[i];
+      if (r.status != ScanStatus.completed) continue;
       final weight = _weightFor(modelIds[i]);
       totalWeight += weight;
-      for (final label in completed[i].labels) {
+      for (final label in r.labels) {
         weightedSum.update(label.category,
             (s) => s + label.confidence * weight,
             ifAbsent: () => label.confidence * weight);
