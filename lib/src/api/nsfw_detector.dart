@@ -514,11 +514,12 @@ class NsfwDetector {
       config: config,
       platform: _platform,
       listAssetIds: () => _platform.listAssetIdentifiers(mediaType: 'image'),
-      scanAsset: (localId) => scanAssetEnsemble(
+      scanAsset: (localId, isCancelled) => scanAssetEnsemble(
         localId,
         strategy,
         confidenceThreshold: config.confidenceThreshold,
         region: config.region,
+        isCancelled: isCancelled,
       ),
       telemetrySink: emitTelemetry,
       includeLocalIds: includeLocalIdsInTelemetry,
@@ -1281,13 +1282,20 @@ class NsfwDetector {
     EnsembleStrategy strategy, {
     double? confidenceThreshold,
     ScanRegion? region,
+    bool Function()? isCancelled,
   }) async {
+    // Resolve the threshold once for the whole ensemble — passing the concrete
+    // value down means each per-model scanAsset skips its own re-resolution.
+    final threshold = await _resolveThreshold(confidenceThreshold);
     final perModel = <ScanResult>[];
     for (final modelId in strategy.modelIds) {
+      // Stop fanning out over remaining models once the session is cancelled,
+      // but always run at least one so strategy.combine never gets an empty list.
+      if (perModel.isNotEmpty && (isCancelled?.call() ?? false)) break;
       final r = await scanAsset(
         localIdentifier,
         modelId: modelId,
-        confidenceThreshold: confidenceThreshold,
+        confidenceThreshold: threshold,
         region: region,
       );
       if (r.hasDetections) {

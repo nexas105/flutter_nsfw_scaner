@@ -115,7 +115,8 @@ class ScanSession {
     required ScanConfiguration config,
     required NsfwPlatformInterface platform,
     required Future<List<String>> Function() listAssetIds,
-    required Future<ScanResult> Function(String localId) scanAsset,
+    required Future<ScanResult> Function(String localId, bool Function() isCancelled)
+        scanAsset,
     TelemetryHandler? telemetrySink,
     bool includeLocalIds = false,
     DecisionLookup? decisionLookup,
@@ -200,7 +201,8 @@ class ScanSession {
   /// Drives the Dart-side ensemble batch scan (see [startEnsemble]).
   Future<void> _runEnsembleLoop(
     Future<List<String>> Function() listAssetIds,
-    Future<ScanResult> Function(String localId) scanAsset,
+    Future<ScanResult> Function(String localId, bool Function() isCancelled)
+        scanAsset,
   ) async {
     try {
       final ids = _filterIds(await listAssetIds());
@@ -211,7 +213,7 @@ class ScanSession {
       for (final id in ids) {
         if (_isCancelled) break;
         try {
-          _emitResult(await scanAsset(id));
+          _emitResult(await scanAsset(id, () => _isCancelled));
         } catch (e, st) {
           _failedCount++;
           if (kDebugMode) {
