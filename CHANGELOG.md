@@ -1,3 +1,14 @@
+## 2.7.3
+
+### Fixed
+
+- **Android build failure in host apps.** The plugin declared
+  `compileOnly 'io.flutter:flutter_embedding_debug:+'`, a dynamic version
+  Gradle can't resolve against Flutter's Maven repo (no `maven-metadata.xml`),
+  so every release build of an app using the plugin failed in
+  `:nsfw_detect:compileReleaseKotlin`. The line is gone — the Flutter Gradle
+  plugin already adds the embedding to every plugin project.
+
 ## 2.7.2
 
 ### Fixed

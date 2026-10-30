@@ -49,7 +49,6 @@ repositories {
 }
 
 dependencies {
-    compileOnly 'io.flutter:flutter_embedding_debug:+'
     // LiteRT 1.x line — drop-in replacement for the legacy
     // org.tensorflow:tensorflow-lite artifacts, provides the
     // com.google.ai.edge.litert.Interpreter / .gpu.GpuDelegate /
