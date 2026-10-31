@@ -286,6 +286,14 @@ class NsfwMethodChannel extends NsfwPlatformInterface {
   }
 
   @override
+  Future<String?> exportAsset(String localIdentifier) {
+    return _methodChannel.invokeMethod<String>(
+      'exportAsset',
+      {'localId': localIdentifier},
+    );
+  }
+
+  @override
   Future<List<String>> listAssetIdentifiers({
     String mediaType = 'image',
     int? limit,

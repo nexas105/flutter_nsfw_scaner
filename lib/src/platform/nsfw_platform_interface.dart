@@ -292,6 +292,13 @@ abstract class NsfwPlatformInterface extends PlatformInterface {
       throw UnimplementedError(
           'loadThumbnail is not implemented by this platform');
 
+  /// Export the original bytes of a photo-library asset (image or video) to a
+  /// temp file and return its absolute path, or `null` when the asset can't be
+  /// resolved. Default throws.
+  Future<String?> exportAsset(String localIdentifier) =>
+      throw UnimplementedError(
+          'exportAsset is not implemented by this platform');
+
   /// Enumerate photo-library asset identifiers (creationDate desc), so a
   /// Dart-driven batch *ensemble* scan can iterate them. [mediaType] is
   /// `'image'` (default), `'video'`, or `'any'`; [limit] caps the count

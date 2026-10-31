@@ -44,6 +44,10 @@ void main() {
               {'category': 'safe', 'confidence': 0.9},
             ],
           };
+        case 'exportAsset':
+          return call.arguments['localId'] == 'gone'
+              ? null
+              : '/tmp/nsfw_export_${call.arguments['localId']}.heic';
         default:
           return null;
       }
@@ -70,6 +74,12 @@ void main() {
     expect(models, hasLength(1));
     expect(models.first.id, 'opennsfw2_coreml');
     expect(models.first.displayName, 'OpenNSFW2');
+  });
+
+  test('exportAsset passes localId and returns the temp path or null',
+      () async {
+    expect(await platform.exportAsset('abc'), '/tmp/nsfw_export_abc.heic');
+    expect(await platform.exportAsset('gone'), isNull);
   });
 
   test('startScan does not throw', () async {

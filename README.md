@@ -44,7 +44,7 @@ That's the whole API for the common case: no init, no permission for files on di
 
 ```yaml
 dependencies:
-  nsfw_detect: ^2.6.4
+  nsfw_detect: ^2.8.0
 ```
 
 ```bash
@@ -129,9 +129,12 @@ If a test app crashes on the first scan, grep the iOS log for `NSPhotoLibraryUsa
 | System picker (image or video) | `pickMedia` · `pickAndScan` | photo library — see [setup](#platform-setup) |
 | Whole library (photos + videos) | `startScan` | photo library |
 | Live camera | `startCameraScan` | camera |
+| Export a library original (image or video) | `exportAsset(id)` → temp file path | photo library |
 | Mixed batch | `scanPaths(['file://…', 'https://…', '/abs/path', 'asset-id'])` | per-source |
 
 **Videos are first-class.** `scanFile` auto-detects the container and samples frames at a configurable interval — no separate API or model needed. Each headless API returns a `ScanResult` (full label list + detections); the `isNsfw*` variants return a `Future<bool>` shortcut.
+
+**Moving library hits elsewhere.** `exportAsset(localIdentifier)` writes the asset's full-quality bytes — photo *or* video, native container, no re-encode (HEIC/JPEG/PNG/MOV/MP4 …) — to a temp file and returns its path (`null` if the asset is gone or iCloud-only and offline). You own the file: copy/encrypt it, then delete it. Combine with `deleteAssets` to move a hit out of the library.
 
 ---
 

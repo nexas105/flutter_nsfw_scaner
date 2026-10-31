@@ -610,9 +610,8 @@ final class ScanSessionTask: @unchecked Sendable {
     /// classifier-shaped `NsfwClassification` so the rest of the pipeline
     /// (EventBatcher, ScanCache) keeps working unchanged.
     ///
-    /// Videos are not supported in detection mode in Phase B — we run the
-    /// detector on the first sampled frame and report that. (The hard-coded
-    /// per-frame detector can grow into proper aggregation in a later phase.)
+    /// Videos run the detector on every sampled frame and aggregate via
+    /// `VideoResultAggregator` (same as the classifier path).
     private func runDetectionScan() async throws {
         NSLog("[NSFW] Starting DETECTION scan with model: %@", config.modelId)
         let engine = try await ModelRegistry.shared.detectorEngine(
@@ -713,10 +712,10 @@ final class ScanSessionTask: @unchecked Sendable {
                 group.addTask { [weak self] in
                     guard let self = self else { return }
                     do {
-                        let buffer: CVPixelBuffer
+                        let cls: NsfwClassification
                         if asset.mediaType == .video {
                             let frames = try await sampler.sample(asset: asset, config: self.config, inputSize: inputSize)
-                            guard let first = frames.first else {
+                            guard !frames.isEmpty else {
                                 NSLog("[NSFW] Detection video SKIPPED (no frames): %@ duration=%.2fs",
                                       asset.localIdentifier, asset.duration)
                                 batcher.recordResult(self.eventSink.buildResultMap(
@@ -727,13 +726,25 @@ final class ScanSessionTask: @unchecked Sendable {
                                     scanned: s, total: total, isComplete: s == total, currentAsset: asset))
                                 return
                             }
-                            buffer = first
+                            // Detect on every sampled frame (not just the first) so
+                            // content past the opening frame is caught. An exposed
+                            // hit boosts a frame to 1.0, so the aggregator's hard-
+                            // threshold path returns that frame with its boxes;
+                            // otherwise keep the averaged labels + centre-frame boxes.
+                            var perFrame: [NsfwClassification] = []
+                            for frame in frames {
+                                perFrame.append(NsfwClassification.fromDetections(
+                                    try await engine.detect(pixelBuffer: frame)))
+                            }
+                            let agg = VideoResultAggregator().aggregate(perFrame)
+                            cls = agg.detections != nil ? agg : NsfwClassification(
+                                labels: agg.labels, detections: perFrame[perFrame.count / 2].detections)
                         } else {
-                            buffer = try await analyzer.pixelBuffer(
+                            let buffer = try await analyzer.pixelBuffer(
                                 for: asset, region: self.config.roi)
+                            cls = NsfwClassification.fromDetections(
+                                try await engine.detect(pixelBuffer: buffer))
                         }
-                        let raw = try await engine.detect(pixelBuffer: buffer)
-                        let cls = NsfwClassification.fromDetections(raw)
 
                         let scannedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
                         batcher.recordResult(self.eventSink.buildResultMap(

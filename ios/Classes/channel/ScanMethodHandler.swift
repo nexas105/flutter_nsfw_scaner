@@ -845,6 +845,13 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             let maxH = (args?["maxHeight"] as? Int) ?? 256
             loadThumbnail(localId: localId, maxWidth: maxW, maxHeight: maxH, result: result)
 
+        case ChannelConstants.Method.exportAsset:
+            guard let localId = args?["localId"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS", message: "localId required", details: nil))
+                return
+            }
+            exportAsset(localId: localId, result: result)
+
         // MARK: Asset management (v2.7.0)
 
         case ChannelConstants.Method.setAssetFavorite:
@@ -1141,6 +1148,43 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                 return
             }
             result(FlutterStandardTypedData(bytes: data))
+        }
+    }
+
+    /// Writes the asset's full-quality bytes (current rendition incl. edits,
+    /// falling back to the unedited original) to a temp file and returns its
+    /// path, or `nil` when the asset can't be resolved/downloaded. Uses
+    /// `PHAssetResourceManager.writeData`, which streams off the main thread
+    /// and keeps the native container (HEIC/JPEG/PNG/MOV/MP4 …).
+    private func exportAsset(localId: String, result: @escaping FlutterResult) {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localId], options: nil).firstObject else {
+            result(nil)
+            return
+        }
+        let resources = PHAssetResource.assetResources(for: asset)
+        let preferred: [PHAssetResourceType] = asset.mediaType == .video
+            ? [.fullSizeVideo, .video]
+            : [.fullSizePhoto, .photo]
+        guard let resource = preferred.lazy.compactMap({ t in resources.first { $0.type == t } }).first else {
+            result(nil)
+            return
+        }
+        var ext = (resource.originalFilename as NSString).pathExtension
+        if ext.isEmpty {
+            ext = UTType(resource.uniformTypeIdentifier)?.preferredFilenameExtension
+                ?? (asset.mediaType == .video ? "mov" : "jpg")
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nsfw_export_\(UUID().uuidString)")
+            .appendingPathExtension(ext.lowercased())
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
+            if let error = error {
+                NSLog("[NSFW] exportAsset failed for %@: %@", localId, error.localizedDescription)
+                try? FileManager.default.removeItem(at: url)
+            }
+            DispatchQueue.main.async { result(error == nil ? url.path : nil) }
         }
     }
 

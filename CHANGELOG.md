@@ -1,3 +1,28 @@
+## 2.8.0
+
+### Added
+
+- **`NsfwDetector.exportAsset(localIdentifier)`** — writes the original bytes
+  of a photo-library asset (image **or** video) to a temp file and returns its
+  absolute path, or `null` when the asset can't be resolved (deleted,
+  iCloud-only and offline …). The caller deletes the file.
+  - iOS: `PHAssetResourceManager.writeData` of the current rendition (edits
+    applied, else the unedited original), network access allowed, native
+    container and extension kept (HEIC/JPEG/PNG/… · MOV/MP4).
+  - Android: streams the `MediaStore` content URI into `cacheDir`, extension
+    from the MIME type.
+  - Web: `UnimplementedError`, like the other library APIs.
+
+### Fixed
+
+- **iOS detection-mode library scan only looked at a video's first frame.**
+  `startScan` with `ScanMode.detection` (NudeNet) now runs the detector on
+  every sampled frame and aggregates with `VideoResultAggregator`, so content
+  past the opening frame is detected and its boxes are reported.
+- **Android detection-mode video results carried the centre frame's boxes**
+  even when the NSFW verdict came from another frame. `detections` now come
+  from the first frame with an exposed hit (centre frame otherwise).
+
 ## 2.7.3
 
 ### Fixed

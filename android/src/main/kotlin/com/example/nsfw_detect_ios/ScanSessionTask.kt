@@ -663,9 +663,11 @@ class ScanSessionTask(
                             val ownsAnalysisBitmap = analysisBitmap !== bitmap
 
                             val detections: List<BodyPartDetection>
+                            var reportedDetections: List<BodyPartDetection> = emptyList()
                             val labelsMap: List<Map<String, Any>>
                             try {
                                 detections = engine.detect(analysisBitmap)
+                                reportedDetections = detections
                                 labelsMap = if (asset.mediaType == "video" && videoFrames.size > 1) {
                                     // #7 — Gaussian-weighted average across frames
                                     val perFrameDetections = ArrayList<List<BodyPartDetection>>(videoFrames.size)
@@ -682,6 +684,12 @@ class ScanSessionTask(
                                             if (cropped !== frame) BitmapPipeline.recycleQuietly(cropped)
                                         }
                                     }
+                                    // Report the boxes of the first frame with an exposed
+                                    // hit — the frame that drives the aggregated verdict —
+                                    // instead of always the centre frame, which may be safe.
+                                    perFrameDetections.firstOrNull { frame ->
+                                        frame.any { it.aggregatedCategory == "nudity" || it.aggregatedCategory == "explicitNudity" }
+                                    }?.let { reportedDetections = it }
                                     VideoResultAggregator.aggregateDetections(perFrameDetections)
                                 } else {
                                     com.example.nsfw_detect_ios.ml.DetectionAggregator.aggregate(detections)
@@ -689,7 +697,7 @@ class ScanSessionTask(
                             } finally {
                                 if (ownsAnalysisBitmap) BitmapPipeline.recycleQuietly(analysisBitmap)
                             }
-                            val detectionsMap: List<Map<String, Any>> = detections.map { it.toMap() }
+                            val detectionsMap: List<Map<String, Any>> = reportedDetections.map { it.toMap() }
                             val scannedAt = System.currentTimeMillis()
 
                             eventSink.emitResult(

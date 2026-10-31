@@ -39,6 +39,7 @@ enum ChannelConstants {
         static let redactBytes        = "redactBytes"
         static let redactFile         = "redactFile"
         static let loadThumbnail      = "loadThumbnail"
+        static let exportAsset        = "exportAsset"
         static let skipCurrentAsset   = "skipCurrentAsset"
         static let registerModel      = "registerModel"
         static let scheduleBackgroundSweep = "scheduleBackgroundSweep"

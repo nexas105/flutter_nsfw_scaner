@@ -967,6 +967,37 @@ class ScanMethodHandler(
                 }
             }
 
+            ChannelConstants.Method.EXPORT_ASSET -> {
+                val localId = (call.arguments as? Map<*, *>)?.get("localId") as? String
+                if (localId == null) {
+                    result.error("INVALID_ARGS", "localId required", null); return
+                }
+                ioScope.launch {
+                    // Copy the original bytes (no re-encode) into cacheDir; caller
+                    // deletes. Missing / unreadable asset -> null, not an error.
+                    val path = try {
+                        val uri = mediaUriFor(localId)
+                        val resolver = context.contentResolver
+                        val ext = resolver.getType(uri)
+                            ?.let { android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+                            ?: android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.toString()).ifEmpty { "bin" }
+                        val out = java.io.File(context.cacheDir, "nsfw_export_${java.util.UUID.randomUUID()}.$ext")
+                        try {
+                            val input = resolver.openInputStream(uri)
+                                ?: throw java.io.FileNotFoundException(localId)
+                            input.use { i -> out.outputStream().use { o -> i.copyTo(o) } }
+                            out.absolutePath
+                        } catch (e: Exception) {
+                            out.delete(); throw e
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("NSFW", "exportAsset failed for $localId: ${e.message}")
+                        null
+                    }
+                    withContext(Dispatchers.Main) { result.success(path) }
+                }
+            }
+
             ChannelConstants.Method.SET_ASSET_FAVORITE -> {
                 val a = call.arguments as? Map<*, *>
                 val localId = a?.get("localId") as? String

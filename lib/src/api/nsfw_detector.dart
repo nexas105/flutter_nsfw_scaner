@@ -753,6 +753,17 @@ class NsfwDetector {
         maxHeight: maxHeight,
       );
 
+  /// Exports the original bytes of a photo-library asset (image or video) to a
+  /// temp file and returns its absolute path, or null if the asset can't be
+  /// resolved (deleted, iCloud-only and offline …). Caller deletes the file.
+  ///
+  /// The native container is kept, no re-encode: iOS writes the current
+  /// rendition (edits applied, else the original) as HEIC/JPEG/PNG/… or
+  /// MOV/MP4; Android copies the MediaStore file with an extension derived
+  /// from its MIME type. iCloud originals are downloaded on demand.
+  Future<String?> exportAsset(String localIdentifier) =>
+      _platform.exportAsset(localIdentifier);
+
   // ── Asset management ────────────────────────────────────────────────────────
   // Native operations on the *original* photo-library asset (PhotoKit). All
   // require `.readWrite` permission — already covered by [requestPermission].
