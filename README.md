@@ -209,8 +209,8 @@ Presets: `.strict()` (threshold 0.85), `.moderate()` (0.7), `.permissive()` (0.5
 await NsfwDetector.instance.init(const NsfwInitOptions(
   preloadModels: [
     ModelIds.openNsfw2,        // fast default classifier (~11 MB)
-    ModelIds.falconsai,        // ViT classifier (~75 MB)
-    ModelIds.adamcodd,         // ViT classifier, 384px (~75 MB)
+    ModelIds.falconsai,        // ViT classifier (~152 MB)
+    ModelIds.adamcodd,         // ViT classifier, 384px (~152 MB)
     ModelDescriptor.nudenet,   // body-part detector (~46 MB)
   ],
   downloadIfMissing: [
@@ -376,8 +376,8 @@ Four models ship out of the box — preload one for the lightest footprint, or s
 | Id | Shape | Size | Strength |
 | --- | --- | --- | --- |
 | `ModelIds.openNsfw2` | classifier, 224 (CNN) | ~11 MB | default — small, fast, good baseline |
-| `ModelIds.falconsai` | classifier, 224 (ViT) | ~75 MB | different errors than openNsfw2 — great ensemble partner |
-| `ModelIds.adamcodd` | classifier, 384 (ViT) | ~75 MB | higher-resolution ViT — best single-model accuracy |
+| `ModelIds.falconsai` | classifier, 224 (ViT) | ~152 MB | different errors than openNsfw2 — great ensemble partner |
+| `ModelIds.adamcodd` | classifier, 384 (ViT) | ~152 MB | higher-resolution ViT — best single-model accuracy |
 | `ModelDescriptor.nudenet` | detector, 640 (YOLOv8m) | ~46 MB | spatial — per-region boxes, drives redaction + detect-then-classify |
 
 Pick a single classifier via `ScanConfiguration.modelId`, or combine several via `ScanConfiguration.ensemble`. Set a custom mirror with `setModelUrl(modelId, url)`; the archive's SHA-256 is verified before extraction when pinned on the descriptor. Manage downloads / preloads via `NsfwDetector.instance.models` (`NsfwModelManager`).

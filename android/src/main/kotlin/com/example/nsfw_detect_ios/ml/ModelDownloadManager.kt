@@ -55,8 +55,9 @@ class ModelDownloadManager private constructor(appContext: Context) {
      * Download and extract the archive at [url]. Returns the resulting on-disk path.
      *
      * Concurrent calls for the same [modelId] reuse a single in-flight job.
-     * The [onProgress] callback is invoked from a background thread with values
-     * in `[0.0, 1.0]`.
+     * The [onProgress] callback is invoked from a background thread with
+     * `(fraction in [0.0, 1.0], bytesDownloaded, totalBytes)`. For an
+     * already-downloaded model both byte values are the on-disk size.
      *
      * @param expectedSha256 when non-null, the downloaded archive's SHA-256
      *   (lowercase hex) must match before extraction is attempted. Mismatch
@@ -67,11 +68,12 @@ class ModelDownloadManager private constructor(appContext: Context) {
         resourceName: String,
         url: String,
         expectedSha256: String? = null,
-        onProgress: (Double) -> Unit = {},
+        onProgress: (Double, Long, Long) -> Unit = { _, _, _ -> },
     ): File {
         // Already on disk — short-circuit.
         localFile(resourceName)?.let {
-            onProgress(1.0)
+            val size = it.walkTopDown().filter { f -> f.isFile }.sumOf { f -> f.length() }
+            onProgress(1.0, size, size)
             return it
         }
 
@@ -138,12 +140,13 @@ class ModelDownloadManager private constructor(appContext: Context) {
         resourceName: String,
         url: String,
         expectedSha256: String?,
-        onProgress: (Double) -> Unit,
+        onProgress: (Double, Long, Long) -> Unit,
     ): File = withContext(Dispatchers.IO) {
         Log.i(TAG, "Downloading $resourceName from $url")
 
         val tmpFile = File(appContext.cacheDir, "nsfw_dl_${resourceName}_${System.currentTimeMillis()}.bin")
         if (tmpFile.exists()) tmpFile.delete()
+        var downloadedBytes = 0L
 
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 30_000
@@ -183,9 +186,10 @@ class ModelDownloadManager private constructor(appContext: Context) {
                         }
                         output.write(buf, 0, n)
                         if (total > 0) {
-                            onProgress((written.toDouble() / total.toDouble()).coerceIn(0.0, 1.0))
+                            onProgress((written.toDouble() / total.toDouble()).coerceIn(0.0, 1.0), written, total)
                         }
                     }
+                    downloadedBytes = written
                 }
             }
         } finally {
@@ -242,7 +246,7 @@ class ModelDownloadManager private constructor(appContext: Context) {
             if (tmpFile.exists()) tmpFile.delete()
         }
 
-        onProgress(1.0)
+        onProgress(1.0, downloadedBytes, downloadedBytes)
         Log.i(TAG, "Model ready: $resourceName at ${finalPath.absolutePath}")
         finalPath
     }

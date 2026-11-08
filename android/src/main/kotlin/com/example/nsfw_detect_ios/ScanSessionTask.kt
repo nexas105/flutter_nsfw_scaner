@@ -227,12 +227,14 @@ class ScanSessionTask(
                         resourceName = resourceName,
                         url = url,
                         expectedSha256 = descriptor.expectedSha256,
-                        onProgress = { fraction ->
+                        onProgress = { fraction, bytesDownloaded, totalBytes ->
                             eventSink.emit(
                                 mapOf(
                                     "type" to "modelDownloadProgress",
                                     "modelId" to config.modelId,
                                     "fraction" to fraction,
+                                    "bytesDownloaded" to bytesDownloaded,
+                                    "totalBytes" to totalBytes,
                                 )
                             )
                         },

@@ -1,3 +1,23 @@
+## 2.8.2
+
+### Fixed
+
+- **`NsfwModelManager.ensureReady` threw "Bad state: Stream has already been
+  listened to"** on the second call (or on the first call once `changes` had
+  a listener). `NsfwDetector.downloadProgress` now returns a multi-subscription
+  stream — every `listen` gets its own subscription on the native broadcast
+  source and still receives the replayed in-flight progress. The native
+  subscription is also re-attached after the last listener cancelled, so
+  re-opening a progress UI keeps receiving events.
+- **Download progress events now carry `bytesDownloaded` / `totalBytes`**
+  (iOS and Android). `ModelDownloadProgress.bytesLabel` and
+  `TelemetryEvent.downloadProgress` previously saw `null` for both.
+  An already-downloaded model reports its on-disk size for both values.
+- **Real model sizes.** iOS `ModelDescriptor.downloadSizeBytes` now matches
+  the published release assets: adamcodd 159 128 678 B, falconsai
+  158 575 968 B, nudenet 47 940 063 B (were 151 M / 151 M / 48 M). README
+  "Models" table corrected (adamcodd / falconsai ≈ 152 MB, not ~75 MB).
+
 ## 2.8.1
 
 ### Fixed

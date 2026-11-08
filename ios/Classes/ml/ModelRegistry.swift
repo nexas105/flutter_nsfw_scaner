@@ -209,12 +209,12 @@ final class ModelRegistry {
         let falconsai = ModelDescriptorNative(
             id:                 ModelIds.falconsai,
             displayName:        "Falconsai ViT NSFW",
-            description:        "High-accuracy ViT classifier (98%). ~151 MB download.",
+            description:        "High-accuracy ViT classifier (98%). ~152 MB download.",
             version:            "1.0",
             bundleResourceName: "FalconsaiNSFW",
             metadata:           ["inputSize": 224, "framework": "CoreML"],
             downloadUrl:        UserDefaults.standard.string(forKey: "nsfw_model_url_\(ModelIds.falconsai)") ?? falconsaiDefaultUrl,
-            downloadSizeBytes:  151_000_000
+            downloadSizeBytes:  158_575_968
         )
         register(descriptor: falconsai) { CoreMLEngine(descriptor: $0) }
 
@@ -222,12 +222,12 @@ final class ModelRegistry {
         let adamcodd = ModelDescriptorNative(
             id:                 ModelIds.adamcodd,
             displayName:        "AdamCodd ViT NSFW",
-            description:        "Highest-accuracy ViT-384 detector (AUC 0.9948). ~151 MB download.",
+            description:        "Highest-accuracy ViT-384 detector (AUC 0.9948). ~152 MB download.",
             version:            "1.0",
             bundleResourceName: "AdamCoddNSFW",
             metadata:           ["inputSize": 384, "framework": "CoreML"],
             downloadUrl:        UserDefaults.standard.string(forKey: "nsfw_model_url_\(ModelIds.adamcodd)") ?? adamcoddDefaultUrl,
-            downloadSizeBytes:  151_000_000
+            downloadSizeBytes:  159_128_678
         )
         register(descriptor: adamcodd) { CoreMLEngine(descriptor: $0) }
 
@@ -249,7 +249,7 @@ final class ModelRegistry {
                 "kind":      "detector",
             ],
             downloadUrl:        UserDefaults.standard.string(forKey: "nsfw_model_url_\(ModelIds.nudenet)") ?? nudenetDefaultUrl,
-            downloadSizeBytes:  48_000_000
+            downloadSizeBytes:  47_940_063
         )
         register(detectorDescriptor: nudenet) { CoreMLDetectorEngine(descriptor: $0) }
     }

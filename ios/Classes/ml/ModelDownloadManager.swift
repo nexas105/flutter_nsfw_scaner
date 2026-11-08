@@ -2,6 +2,12 @@ import CryptoKit
 import Foundation
 import os
 
+/// Progress callback for model downloads: `fraction` in `[0, 1]`, plus the
+/// raw byte counters so the Dart side can show "42 MB / 152 MB". For an
+/// already-downloaded model both byte values are the on-disk size.
+typealias ModelDownloadProgressHandler =
+    (_ fraction: Double, _ bytesDownloaded: Int64, _ totalBytes: Int64) -> Void
+
 /// Downloads and manages on-demand ML model files.
 /// Models are stored in Application Support/nsfw_models/ and persist across launches.
 final class ModelDownloadManager {
@@ -60,11 +66,12 @@ final class ModelDownloadManager {
         resourceName: String,
         from url: URL,
         expectedSha256: String? = nil,
-        progress: @escaping (Double) -> Void
+        progress: @escaping ModelDownloadProgressHandler
     ) async throws -> URL {
         // Already downloaded?
         if let existing = localURL(for: resourceName) {
-            progress(1.0)
+            let size = directorySize(existing)
+            progress(1.0, size, size)
             return existing
         }
 
@@ -131,7 +138,7 @@ final class ModelDownloadManager {
         resourceName: String,
         from url: URL,
         expectedSha256: String?,
-        progress: @escaping (Double) -> Void
+        progress: @escaping ModelDownloadProgressHandler
     ) async throws -> URL {
         NSLog("[NSFW] Downloading model: %@ from %@", resourceName, url.absoluteString)
 
@@ -261,7 +268,7 @@ final class ModelDownloadManager {
         // Cleanup
         try? FileManager.default.removeItem(at: extractDir)
 
-        progress(1.0)
+        progress(1.0, downloadedSize, downloadedSize)
         let sizeStr = ByteCountFormatter.string(fromByteCount: Int64(directorySize(destURL)), countStyle: .file)
         NSLog("[NSFW] Model ready: %@ (%@)", resourceName, sizeStr)
         return destURL
@@ -321,7 +328,7 @@ final class ModelDownloadManager {
 /// are wired — see comment in `performDownload`.
 private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate,
                                        @unchecked Sendable {
-    let onProgress: (Double) -> Void
+    let onProgress: ModelDownloadProgressHandler
     let maxBytes:   Int64
     /// Flipped to `true` when we cancel the task for exceeding `maxBytes`.
     /// `performDownload` checks this to distinguish a legitimate 200-byte
@@ -335,7 +342,7 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate,
     private let lock = NSLock()
     private weak var task: URLSessionDownloadTask?
 
-    init(onProgress: @escaping (Double) -> Void, maxBytes: Int64) {
+    init(onProgress: @escaping ModelDownloadProgressHandler, maxBytes: Int64) {
         self.onProgress = onProgress
         self.maxBytes   = maxBytes
     }
@@ -373,7 +380,9 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate,
         }
         guard totalBytesExpectedToWrite > 0 else { return }
         let frac = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        DispatchQueue.main.async { self.onProgress(frac) }
+        DispatchQueue.main.async {
+            self.onProgress(frac, totalBytesWritten, totalBytesExpectedToWrite)
+        }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,

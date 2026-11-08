@@ -328,20 +328,28 @@ class NsfwDetector {
 
   void _ensureDownloadProgressController() {
     final existing = _downloadProgressController;
-    if (existing != null && !existing.isClosed) return;
-    StreamController<ModelDownloadProgress>? controller;
-    controller = StreamController<ModelDownloadProgress>.broadcast(
-      onCancel: () {
-        // Only tear down the native subscription when the controller has no
-        // listeners left. Otherwise we'd cancel mid-download for other
-        // subscribers.
-        if (controller?.hasListener == false) {
-          _downloadProgressSub?.cancel();
-          _downloadProgressSub = null;
-        }
-      },
-    );
-    _downloadProgressController = controller;
+    final StreamController<ModelDownloadProgress> controller;
+    if (existing != null && !existing.isClosed) {
+      controller = existing;
+    } else {
+      StreamController<ModelDownloadProgress>? created;
+      created = StreamController<ModelDownloadProgress>.broadcast(
+        onCancel: () {
+          // Only tear down the native subscription when the controller has no
+          // listeners left. Otherwise we'd cancel mid-download for other
+          // subscribers. The next `downloadProgress` access re-attaches.
+          if (created?.hasListener == false) {
+            _downloadProgressSub?.cancel();
+            _downloadProgressSub = null;
+          }
+        },
+      );
+      controller = created;
+      _downloadProgressController = controller;
+    }
+    // (Re-)attach to the native event stream when no subscription is live —
+    // either on first access or after the last listener cancelled.
+    if (_downloadProgressSub != null) return;
     _downloadProgressSub = _platform.scanEventStream.listen(
       (event) {
         if (event['type'] == 'modelDownloadProgress') {
@@ -351,7 +359,7 @@ class NsfwDetector {
           } else {
             _lastDownloadProgress[progress.modelId] = progress;
           }
-          if (!controller!.isClosed) controller.add(progress);
+          if (!controller.isClosed) controller.add(progress);
           // Mirror progress as a telemetry event so analytics pipelines can
           // observe download throughput without subscribing to the user-facing
           // stream.
@@ -368,31 +376,33 @@ class NsfwDetector {
     );
   }
 
-  /// Wraps [source] in a per-listener stream that synchronously emits the
-  /// last cached in-flight progress event(s) before forwarding live events.
+  /// Wraps [source] in a multi-subscription stream: every `listen` call gets
+  /// its own subscription on the broadcast [source] and first receives the
+  /// last cached in-flight progress event(s) synchronously.
+  ///
+  /// The returned stream is safe to listen to more than once (e.g.
+  /// [NsfwModelManager] keeps one long-lived listener and opens a second,
+  /// filtered one per `ensureReady` call). A plain single-subscription
+  /// `StreamController` here caused "Bad state: Stream has already been
+  /// listened to" on the second `ensureReady`.
   Stream<ModelDownloadProgress> _replayDownloadProgress(
     Stream<ModelDownloadProgress> source,
   ) {
-    late StreamController<ModelDownloadProgress> out;
-    StreamSubscription<ModelDownloadProgress>? sub;
-    out = StreamController<ModelDownloadProgress>(
-      onListen: () {
-        // Replay any in-flight progress synchronously so late subscribers
-        // don't see a 0% gap.
-        for (final cached in _lastDownloadProgress.values) {
-          out.add(cached);
-        }
-        sub = source.listen(
-          out.add,
-          onError: out.addError,
-          onDone: out.close,
-        );
-      },
-      onPause: () => sub?.pause(),
-      onResume: () => sub?.resume(),
-      onCancel: () => sub?.cancel(),
-    );
-    return out.stream;
+    return Stream<ModelDownloadProgress>.multi((controller) {
+      // Replay any in-flight progress synchronously so late subscribers
+      // don't see a 0% gap.
+      for (final cached in _lastDownloadProgress.values) {
+        controller.add(cached);
+      }
+      final sub = source.listen(
+        controller.add,
+        onError: controller.addError,
+        onDone: controller.close,
+      );
+      controller.onPause = sub.pause;
+      controller.onResume = sub.resume;
+      controller.onCancel = sub.cancel;
+    });
   }
 
   /// Requests access to the user's photo library.

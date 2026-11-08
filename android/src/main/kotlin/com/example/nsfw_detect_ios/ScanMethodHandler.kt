@@ -192,14 +192,14 @@ class ScanMethodHandler(
                             // verifies; one that doesn't is exactly what we
                             // want to catch.
                             expectedSha256 = desc.expectedSha256,
-                            onProgress = { fraction ->
-                                // TODO Stage 2: forward progress events to Dart via the
-                                // ScanEventSink (iOS already does this).
+                            onProgress = { fraction, bytesDownloaded, totalBytes ->
                                 eventSink.emit(
                                     mapOf(
                                         "type" to "modelDownloadProgress",
                                         "modelId" to modelId,
                                         "fraction" to fraction,
+                                        "bytesDownloaded" to bytesDownloaded,
+                                        "totalBytes" to totalBytes,
                                     )
                                 )
                             },

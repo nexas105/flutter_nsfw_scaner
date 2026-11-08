@@ -293,11 +293,13 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
                             resourceName: resourceName,
                             from: url,
                             expectedSha256: desc.expectedSha256,
-                            progress: { [weak self] fraction in
+                            progress: { [weak self] fraction, bytesDownloaded, totalBytes in
                                 self?.eventSink.emit([
                                     "type": "modelDownloadProgress",
                                     "modelId": config.modelId,
                                     "fraction": fraction,
+                                    "bytesDownloaded": bytesDownloaded,
+                                    "totalBytes": totalBytes,
                                 ])
                             }
                         )
@@ -1702,12 +1704,14 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
             // descriptor's pinned hash. A mirror serving identical bytes
             // verifies; a mirror that doesn't is what we want to catch.
             expectedSha256: desc.expectedSha256,
-            progress: { fraction in
+            progress: { fraction, bytesDownloaded, totalBytes in
                 // Emit progress via event sink
                 self.eventSink.emit([
                     "type": "modelDownloadProgress",
                     "modelId": id,
                     "fraction": fraction,
+                    "bytesDownloaded": bytesDownloaded,
+                    "totalBytes": totalBytes,
                 ])
             }
         )

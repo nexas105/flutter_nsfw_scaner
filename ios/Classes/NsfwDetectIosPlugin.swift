@@ -73,7 +73,7 @@ import Photos
                         resourceName: resourceName,
                         from: url,
                         expectedSha256: desc.expectedSha256,
-                        progress: { _ in }
+                        progress: { _, _, _ in }
                     )
                 }
 
