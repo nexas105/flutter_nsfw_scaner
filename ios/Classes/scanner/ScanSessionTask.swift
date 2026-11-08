@@ -18,7 +18,7 @@ final class ScanSessionTask: @unchecked Sendable {
     /// Effective concurrency for this scan after DeviceLoadMonitor multipliers
     /// (low-power + thermal) have been applied. Recomputed live whenever the
     /// monitor posts a change. Reads guarded by `loadLock`.
-    private let loadLock = OSAllocatedUnfairLock()
+    private let loadLock = UnfairLock()
     private var _effectiveConcurrency: Int
     private var loadObserver: NSObjectProtocol?
 
@@ -26,7 +26,7 @@ final class ScanSessionTask: @unchecked Sendable {
     /// `skipCurrentAsset` channel method) and consumed by the next asset
     /// entering the scan loop. Multiple sets between consumptions collapse
     /// to a single skip — matches the public API contract.
-    private let skipFlag = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let skipFlag = UnfairLock<Bool>(initialState: false)
 
     /// Public entry point invoked by `ScanMethodHandler.handle(skipCurrentAsset)`.
     /// Best-effort: a no-op if the scan has already completed the current
@@ -988,9 +988,9 @@ private final class CheckpointWriter: @unchecked Sendable {
 }
 
 /// Thread-safe counter for parallel scan progress tracking.
-/// Uses `OSAllocatedUnfairLock` (iOS 16+) — cheaper than `NSLock` under contention.
+/// Uses `UnfairLock` (os_unfair_lock) — cheaper than `NSLock` under contention.
 private final class Counter: @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock(initialState: 0)
+    private let state = UnfairLock(initialState: 0)
 
     var value: Int { state.withLock { $0 } }
 

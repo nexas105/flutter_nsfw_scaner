@@ -44,9 +44,9 @@ final class CoreMLEngine: MLEngine {
     /// Built once at load() time; nil-ed in unload(). Guarded by `requestLock`
     /// because VNCoreMLRequest is not safe to use concurrently.
     private var cachedRequest: VNCoreMLRequest?
-    private let requestLock = OSAllocatedUnfairLock()
+    private let requestLock = UnfairLock()
 
-    private let loadLock = OSAllocatedUnfairLock()
+    private let loadLock = UnfairLock()
 
     init(descriptor: ModelDescriptorNative) {
         self.descriptor = descriptor

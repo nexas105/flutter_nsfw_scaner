@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'nsfw_detect'
-  s.version          = '2.1.0'
+  s.version          = '2.8.1'
   s.summary          = 'On-device NSFW/nudity detection for iOS and Android.'
   s.description      = <<-DESC
     Flutter plugin for fast, accurate, on-device NSFW/nudity detection.
@@ -13,7 +13,7 @@ Pod::Spec.new do |s|
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*.swift'
   s.dependency 'Flutter'
-  s.platform         = :ios, '16.0'
+  s.platform         = :ios, '15.0'
   s.swift_version    = '5.9'
   s.frameworks       = 'Photos', 'Vision', 'CoreML', 'AVFoundation', 'CoreVideo'
   s.library          = 'sqlite3'

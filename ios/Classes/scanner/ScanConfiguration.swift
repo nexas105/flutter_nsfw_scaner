@@ -12,7 +12,11 @@ enum ComputeUnitsPreference: String {
     var mlComputeUnits: MLComputeUnits {
         switch self {
         case .all:                return .all
-        case .cpuAndNeuralEngine: return .cpuAndNeuralEngine
+        case .cpuAndNeuralEngine:
+            // `.cpuAndNeuralEngine` is iOS 16+. On iOS 15 fall back to `.all`,
+            // which also includes the Neural Engine (plus the GPU).
+            if #available(iOS 16.0, *) { return .cpuAndNeuralEngine }
+            return .all
         case .cpuAndGPU:          return .cpuAndGPU
         case .cpuOnly:            return .cpuOnly
         }

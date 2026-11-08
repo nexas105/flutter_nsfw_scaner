@@ -19,8 +19,8 @@ final class CoreMLDetectorEngine: MLDetectorEngine {
 
     /// Re-used per request because VNCoreMLRequest is not safe to share concurrently.
     private var cachedRequest: VNCoreMLRequest?
-    private let requestLock = OSAllocatedUnfairLock()
-    private let loadLock = OSAllocatedUnfairLock()
+    private let requestLock = UnfairLock()
+    private let loadLock = UnfairLock()
 
     private var preferredComputeUnits: ComputeUnitsPreference = .all
     private var actualLoadedComputeUnits: ComputeUnitsPreference = .all

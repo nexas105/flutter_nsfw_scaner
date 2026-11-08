@@ -18,7 +18,7 @@ final class ScanMethodHandler: NSObject, FlutterPlugin {
     /// cooperative-pool Tasks (after the async download/preload step in
     /// `startScan`/`startCameraScan`). Without serialization, `cancelScan`
     /// can race with a just-published session.
-    private let stateLock = OSAllocatedUnfairLock()
+    private let stateLock = UnfairLock()
     private var _currentSession: ScanSessionTask?
     private var _currentCameraSession: CameraSessionTask?
     private var _pickerMode: PickerMode?
@@ -1828,7 +1828,7 @@ extension ScanMethodHandler: PHPickerViewControllerDelegate {
         return await withTaskGroup(of: [String: Any]?.self) { group in
             group.addTask {
                 await withCheckedContinuation { (cont: CheckedContinuation<[String: Any]?, Never>) in
-                    let resumeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+                    let resumeLock = UnfairLock<Bool>(initialState: false)
                     let resumeOnce: ([String: Any]?) -> Void = { value in
                         let shouldResume = resumeLock.withLock { state -> Bool in
                             guard !state else { return false }

@@ -190,12 +190,12 @@ final class ImageAnalyzer {
 
     private func fetchViaImageManagerCore(asset: PHAsset) async throws -> CGImage {
         try await withCheckedThrowingContinuation { continuation in
-            // OSAllocatedUnfairLock<Bool> — PhotoKit *normally* serialises
+            // UnfairLock<Bool> — PhotoKit *normally* serialises
             // result-handler callbacks, but that's documented behaviour, not
             // a language-level guarantee. A plain `var hasResumed = false`
             // would crash with a double-resume if the callback ever fires
             // twice (degraded → full, queue-priority interactions).
-            let resumeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+            let resumeLock = UnfairLock<Bool>(initialState: false)
             let resumeOnce: (Result<CGImage, Error>) -> Void = { result in
                 let shouldResume = resumeLock.withLock { state -> Bool in
                     guard !state else { return false }
@@ -256,7 +256,7 @@ final class ImageAnalyzer {
             opts.isSynchronous = false
             opts.deliveryMode = .fastFormat
 
-            let resumeLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+            let resumeLock = UnfairLock<Bool>(initialState: false)
             let resumeOnce: (Result<CGImage, Error>) -> Void = { result in
                 let shouldResume = resumeLock.withLock { state -> Bool in
                     guard !state else { return false }

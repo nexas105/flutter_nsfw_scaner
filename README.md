@@ -53,7 +53,7 @@ flutter pub get
 
 | Platform | Minimum |
 | --- | --- |
-| iOS | 16.0+ (Xcode 15+) |
+| iOS | 15.0+ (Xcode 15+) |
 | Android | API 24 / Android 7.0+ |
 | Web | one-shot APIs only — see [Web](#web) |
 | Flutter / Dart | 3.22+ / 3.4+ |

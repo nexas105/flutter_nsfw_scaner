@@ -53,10 +53,10 @@ final class CameraFrameProcessor {
     /// Counter of in-flight inferences. Lock-protected because the entry
     /// gate runs on the capture output queue while the decrement runs in a
     /// detached Task that may resume on any cooperative thread.
-    let inflightLock = OSAllocatedUnfairLock<Int>(initialState: 0)
+    let inflightLock = UnfairLock<Int>(initialState: 0)
 
 
-    private let stoppedLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let stoppedLock = UnfairLock<Bool>(initialState: false)
     var isStopped: Bool { stoppedLock.withLock { $0 } }
     func markStopped() { stoppedLock.withLock { $0 = true } }
 

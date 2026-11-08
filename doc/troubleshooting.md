@@ -14,7 +14,7 @@ debugPrint(status.name);
 Also verify platform setup:
 
 - iOS has `NSPhotoLibraryUsageDescription`.
-- iOS deployment target is 16.0 or higher.
+- iOS deployment target is 15.0 or higher.
 - Android manifest includes the media permissions your workflow needs.
 
 ## Picker scan returns no results

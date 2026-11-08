@@ -1,3 +1,14 @@
+## 2.8.1
+
+### Fixed
+
+- **iOS minimum deployment target lowered to 15.0** (was 16.0). Apps targeting
+  iOS 15 no longer fail `pod install` with "The plugin nsfw_detect requires a
+  higher minimum iOS deployment version". `OSAllocatedUnfairLock` (iOS 16+)
+  was replaced by a small `os_unfair_lock` wrapper with the same API, and
+  `IosComputeUnits.cpuAndNeuralEngine` falls back to `.all` on iOS 15 where
+  that CoreML option doesn't exist.
+
 ## 2.8.0
 
 ### Added

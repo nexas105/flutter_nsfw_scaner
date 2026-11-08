@@ -25,7 +25,7 @@ final class ModelRegistry {
     private var kinds:       [String: ModelKind]             = [:]
     private var loaded:      [String: MLEngine]              = [:]
     private var loadedDetectors: [String: MLDetectorEngine]  = [:]
-    private let lock = OSAllocatedUnfairLock()
+    private let lock = UnfairLock()
 
     // MARK: - Registration
 

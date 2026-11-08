@@ -24,7 +24,7 @@ final class ModelDownloadManager {
         try? FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
     }
 
-    private let lock = OSAllocatedUnfairLock()
+    private let lock = UnfairLock()
     private var activeDownloads: [String: Task<URL, Error>] = [:]
 
     /// Directory where downloaded models are stored

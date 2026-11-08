@@ -34,7 +34,7 @@ final class CameraSessionTask: NSObject, @unchecked Sendable {
     /// observes it and refuses to publish a session the caller has already
     /// torn down. Lock-protected: written from the arbitrary task that calls
     /// `stop()`, read on both `outputQueue` and the `MainActor`.
-    private let stopRequestedLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let stopRequestedLock = UnfairLock<Bool>(initialState: false)
     private var stopRequested: Bool {
         get { stopRequestedLock.withLock { $0 } }
         set { stopRequestedLock.withLock { $0 = newValue } }

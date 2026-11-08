@@ -32,7 +32,7 @@ Add camera usage text when using camera scanning:
 Ensure the iOS deployment target is 16 or higher:
 
 ```ruby
-platform :ios, '16.0'
+platform :ios, '15.0'
 ```
 
 ## Android setup
