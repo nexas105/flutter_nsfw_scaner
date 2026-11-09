@@ -1,3 +1,19 @@
+## 2.8.3
+
+### Added
+
+- **Swift Package Manager support (iOS).** The iOS sources moved to
+  `ios/nsfw_detect/Sources/nsfw_detect/` with a `Package.swift`, following
+  Flutter's plugin SPM layout. Apps with SPM enabled no longer get the
+  "does not support Swift Package Manager" warning. CocoaPods keeps working
+  unchanged. The bundled `OpenNSFW2.mlmodelc` is shipped as an SPM resource
+  and found via `Bundle.module`.
+
+### Changed
+
+- Removed the empty Objective-C bridging header (not supported by SPM).
+- Podspec version corrected (was still 2.8.1).
+
 ## 2.8.2
 
 ### Fixed

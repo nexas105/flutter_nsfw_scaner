@@ -422,7 +422,12 @@ final class CoreMLEngine: MLEngine {
 
         let extensions     = ["mlmodelc", "mlpackage", "mlmodel"]
         let pluginBundle   = Bundle(for: referenceClass)
+        #if SWIFT_PACKAGE
+        // Swift Package Manager puts resources into a generated bundle.
+        let searchBundles: [Bundle] = [Bundle.module, pluginBundle, Bundle.main]
+        #else
         let searchBundles: [Bundle] = [pluginBundle, Bundle.main]
+        #endif
 
         // 1. Standard bundle resource lookup
         for bundle in searchBundles {
